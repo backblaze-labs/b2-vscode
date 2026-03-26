@@ -1,0 +1,543 @@
+{
+  "name": "b2-vscode",
+  "publisher": "backblaze",
+  "displayName": "Backblaze B2",
+  "description": "Browse, upload, and download files from Backblaze B2 Cloud Storage directly in VS Code.",
+  "version": "0.0.1",
+  "icon": "resources/b2-icon.png",
+  "categories": [
+    "Cloud",
+    "Other"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/backblaze-demos/b2-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=18.0.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "scripts": {
+    "build:icons": "node scripts/build-icons.js",
+    "compile": "npm run build:icons && webpack",
+    "watch": "webpack --watch",
+    "package": "npm run build:icons && webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write 'src/**/*.ts' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
+    "format:check": "prettier --check 'src/**/*.ts' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
+    "check": "npm run format:check && npm run lint && npm run type-check",
+    "check:fix": "npm run format && npm run lint:fix && npm run type-check",
+    "type-check": "tsc --noEmit",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "test": "vscode-test",
+    "clean": "rm -rf dist out *.vsix",
+    "clean:vsix": "rm -rf *.vsix",
+    "docs": "typedoc",
+    "vsix": "npm run clean:vsix && npm run package && npx @vscode/vsce package --no-yarn --no-dependencies",
+    "vsix:install": "code --install-extension ./b2-vscode-*.vsix --force",
+    "vscode:prepublish": "npm run build:icons && npm run package"
+  },
+  "prettier": {
+    "singleQuote": false,
+    "trailingComma": "all",
+    "printWidth": 100
+  },
+  "contributes": {
+    "icons": {
+      "backblaze-flame": {
+        "description": "Backblaze flame logo",
+        "default": {
+          "fontPath": "./resources/b2-icons.woff",
+          "fontCharacter": "\\e900"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "b2Explorer",
+          "title": "Backblaze B2",
+          "icon": "resources/b2-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "b2Explorer": [
+        {
+          "id": "b2Buckets",
+          "name": "Buckets",
+          "icon": "$(backblaze-flame)",
+          "contextualTitle": "Backblaze B2"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "b2Buckets",
+        "contents": "Welcome to Backblaze B2.\n[Authenticate](command:b2.authenticate) to view your buckets and files.\n\nYou can also set the environment variables B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY.",
+        "when": "!b2.authenticated"
+      }
+    ],
+    "commands": [
+      {
+        "command": "b2.authenticate",
+        "title": "Authenticate",
+        "category": "B2",
+        "icon": "$(key)"
+      },
+      {
+        "command": "b2.logout",
+        "title": "Logout",
+        "category": "B2",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "b2.refresh",
+        "title": "Refresh",
+        "category": "B2",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "b2.copyPath",
+        "title": "Copy B2 Path",
+        "category": "B2",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "b2.copyFileId",
+        "title": "Copy File ID",
+        "category": "B2",
+        "icon": "$(key)"
+      },
+      {
+        "command": "b2.openFile",
+        "title": "Open File",
+        "category": "B2",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "b2.createBucket",
+        "title": "Create Bucket",
+        "category": "B2",
+        "icon": "$(add)"
+      },
+      {
+        "command": "b2.changeBucketVisibility",
+        "title": "Change Bucket Visibility",
+        "category": "B2"
+      },
+      {
+        "command": "b2.createFolder",
+        "title": "New Folder",
+        "category": "B2",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "b2.deleteBucket",
+        "title": "Delete Bucket",
+        "category": "B2",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "b2.deleteFolder",
+        "title": "Delete Folder",
+        "category": "B2",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "b2.deleteFile",
+        "title": "Delete File",
+        "category": "B2",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "b2.renameFile",
+        "title": "Rename File",
+        "category": "B2",
+        "icon": "$(edit)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "b2.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "b2.copyFileId",
+          "when": "false"
+        },
+        {
+          "command": "b2.openFile",
+          "when": "false"
+        },
+        {
+          "command": "b2.changeBucketVisibility",
+          "when": "false"
+        },
+        {
+          "command": "b2.createFolder",
+          "when": "false"
+        },
+        {
+          "command": "b2.deleteBucket",
+          "when": "false"
+        },
+        {
+          "command": "b2.deleteFolder",
+          "when": "false"
+        },
+        {
+          "command": "b2.deleteFile",
+          "when": "false"
+        },
+        {
+          "command": "b2.renameFile",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "b2.refresh",
+          "when": "view == b2Buckets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "b2.authenticate",
+          "when": "view == b2Buckets && !b2.authenticated",
+          "group": "navigation@2"
+        },
+        {
+          "command": "b2.createBucket",
+          "when": "view == b2Buckets && b2.authenticated",
+          "group": "navigation@2"
+        },
+        {
+          "command": "b2.logout",
+          "when": "view == b2Buckets && b2.authenticated",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "b2.copyPath",
+          "when": "view == b2Buckets",
+          "group": "inline@1"
+        },
+        {
+          "command": "b2.copyFileId",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "inline@2"
+        },
+        {
+          "command": "b2.openFile",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "b2.createBucket",
+          "when": "view == b2Buckets && b2.authenticated",
+          "group": "2_bucket@1"
+        },
+        {
+          "command": "b2.changeBucketVisibility",
+          "when": "view == b2Buckets && viewItem == bucket",
+          "group": "2_bucket@2"
+        },
+        {
+          "command": "b2.createFolder",
+          "when": "view == b2Buckets && viewItem == bucket",
+          "group": "2_bucket@3"
+        },
+        {
+          "command": "b2.createFolder",
+          "when": "view == b2Buckets && viewItem == folder",
+          "group": "2_bucket@1"
+        },
+        {
+          "command": "b2.createFolder",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "b2.deleteBucket",
+          "when": "view == b2Buckets && viewItem == bucket",
+          "group": "3_destructive@1"
+        },
+        {
+          "command": "b2.deleteFolder",
+          "when": "view == b2Buckets && viewItem == folder",
+          "group": "3_destructive@1"
+        },
+        {
+          "command": "b2.deleteFile",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "3_destructive@1"
+        },
+        {
+          "command": "b2.renameFile",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "navigation@2"
+        },
+        {
+          "command": "b2.copyPath",
+          "when": "view == b2Buckets",
+          "group": "1_copy@1"
+        },
+        {
+          "command": "b2.copyFileId",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "1_copy@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Backblaze B2",
+      "properties": {
+        "b2.apiUrl": {
+          "type": "string",
+          "default": "https://api.backblazeb2.com",
+          "description": "Base URL for the B2 API. Change only for B2-compatible endpoints."
+        }
+      }
+    },
+    "languageModelTools": [
+      {
+        "name": "b2_listBuckets",
+        "displayName": "B2: List Buckets",
+        "tags": [
+          "b2",
+          "bucket",
+          "list"
+        ],
+        "toolReferenceName": "listBuckets",
+        "modelDescription": "Lists all Backblaze B2 buckets accessible by the authenticated account. Returns bucket names, types (allPublic/allPrivate), and IDs.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "b2_listFiles",
+        "displayName": "B2: List Files",
+        "tags": [
+          "b2",
+          "file",
+          "list"
+        ],
+        "toolReferenceName": "listFiles",
+        "modelDescription": "Lists files in a Backblaze B2 bucket. Optionally filter by prefix (folder path). Use recursive=true to list all files, or omit for just the immediate level.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket to list files from."
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Optional prefix (folder path) to filter files. Example: \"data/train/\""
+            },
+            "recursive": {
+              "type": "boolean",
+              "description": "If true, list all files recursively. If false (default), list only the immediate level."
+            }
+          },
+          "required": [
+            "bucket"
+          ]
+        }
+      },
+      {
+        "name": "b2_getFileInfo",
+        "displayName": "B2: Get File Info",
+        "tags": [
+          "b2",
+          "file",
+          "info",
+          "metadata"
+        ],
+        "toolReferenceName": "getFileInfo",
+        "modelDescription": "Gets metadata for a specific file in a B2 bucket, including size, content type, upload timestamp, and file ID.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket containing the file."
+            },
+            "path": {
+              "type": "string",
+              "description": "Full file path within the bucket. Example: \"data/train.csv\""
+            }
+          },
+          "required": [
+            "bucket",
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "b2_downloadFile",
+        "displayName": "B2: Download File",
+        "tags": [
+          "b2",
+          "file",
+          "download"
+        ],
+        "toolReferenceName": "downloadFile",
+        "modelDescription": "Downloads a file from a B2 bucket to the local workspace. Returns the local file path where the file was saved.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket containing the file."
+            },
+            "path": {
+              "type": "string",
+              "description": "Full file path within the bucket. Example: \"data/results.csv\""
+            },
+            "localPath": {
+              "type": "string",
+              "description": "Optional local path to save the file. Defaults to the workspace root with the same file name."
+            }
+          },
+          "required": [
+            "bucket",
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "b2_uploadFile",
+        "displayName": "B2: Upload File",
+        "tags": [
+          "b2",
+          "file",
+          "upload"
+        ],
+        "toolReferenceName": "uploadFile",
+        "modelDescription": "Uploads a local file to a B2 bucket. Returns the uploaded file info including file ID and size.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "localPath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the local file to upload."
+            },
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket to upload to."
+            },
+            "remotePath": {
+              "type": "string",
+              "description": "Optional remote path (key) in the bucket. Defaults to the file name. Example: \"data/output.csv\""
+            }
+          },
+          "required": [
+            "localPath",
+            "bucket"
+          ]
+        }
+      },
+      {
+        "name": "b2_deleteFile",
+        "displayName": "B2: Delete File",
+        "tags": [
+          "b2",
+          "file",
+          "delete"
+        ],
+        "toolReferenceName": "deleteFile",
+        "modelDescription": "Deletes a file from a B2 bucket. Requires the bucket name and file path. This action is irreversible.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket containing the file."
+            },
+            "path": {
+              "type": "string",
+              "description": "Full file path within the bucket. Example: \"data/old-results.csv\""
+            }
+          },
+          "required": [
+            "bucket",
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "b2_presignUrl",
+        "displayName": "B2: Pre-sign URL",
+        "tags": [
+          "b2",
+          "file",
+          "presign",
+          "url"
+        ],
+        "toolReferenceName": "presignUrl",
+        "modelDescription": "Generates a pre-signed download URL for a file in a B2 bucket. The URL is valid for the specified duration (default: 1 hour).",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "description": "Name of the B2 bucket containing the file."
+            },
+            "path": {
+              "type": "string",
+              "description": "Full file path within the bucket. Example: \"reports/q4.pdf\""
+            },
+            "expiresIn": {
+              "type": "number",
+              "description": "URL validity duration in seconds. Default: 3600 (1 hour). Maximum: 604800 (7 days)."
+            }
+          },
+          "required": [
+            "bucket",
+            "path"
+          ]
+        }
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.0",
+    "@types/sql.js": "^1.4.10",
+    "@types/vscode": "^1.95.0",
+    "@typescript-eslint/eslint-plugin": "^8.30.1",
+    "@typescript-eslint/parser": "^8.30.1",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.7.1",
+    "copy-webpack-plugin": "^14.0.0",
+    "eslint": "^9.25.0",
+    "prettier": "^3.5.3",
+    "svg2ttf": "^6.0.3",
+    "svgicons2svgfont": "^15.0.1",
+    "ts-loader": "^9.5.2",
+    "ttf2woff": "^3.0.0",
+    "typedoc": "^0.28.18",
+    "typescript": "^5.8.3",
+    "webpack": "^5.99.5",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  }
+}

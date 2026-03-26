@@ -1,0 +1,217 @@
+/**
+ * Credential management and authentication state service.
+ *
+ * Resolves credentials with 4-tier priority:
+ *   1. VS Code SecretStorage (persisted, encrypted)
+ *   2. Environment variables (B2_APPLICATION_KEY_ID + B2_APPLICATION_KEY)
+ *   3. B2 CLI stored credentials (~/.b2_account_info SQLite database)
+ *   4. Not authenticated
+ *
+ * @module services/authService
+ */
+
+import * as vscode from "vscode";
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import initSqlJs from "sql.js";
+import {
+  ENV_KEY_ID,
+  ENV_APP_KEY,
+  SECRET_KEY_ID,
+  SECRET_APP_KEY,
+  CTX_AUTHENTICATED,
+} from "../constants";
+import type { B2AuthState } from "../types";
+import { log, logError } from "../logger";
+
+/**
+ * Resolved B2 credentials.
+ */
+export interface B2Credentials {
+  keyId: string;
+  appKey: string;
+}
+
+/**
+ * Manages B2 credential resolution, persistence, and authentication state.
+ */
+export class AuthService implements vscode.Disposable {
+  private readonly _onAuthStateChanged = new vscode.EventEmitter<B2AuthState>();
+
+  /** Fires whenever the authentication state changes. */
+  readonly onAuthStateChanged: vscode.Event<B2AuthState> = this._onAuthStateChanged.event;
+
+  private state: B2AuthState = { isAuthenticated: false };
+
+  constructor(private readonly secrets: vscode.SecretStorage) {}
+
+  dispose(): void {
+    this._onAuthStateChanged.dispose();
+  }
+
+  // ── State ───────────────────────────────────────────────────────────────
+
+  /** Get the current authentication state. */
+  getAuthState(): B2AuthState {
+    return this.state;
+  }
+
+  /** Whether the user is currently authenticated. */
+  isAuthenticated(): boolean {
+    return this.state.isAuthenticated;
+  }
+
+  /**
+   * Update the authentication state and notify listeners.
+   */
+  async setAuthState(state: B2AuthState): Promise<void> {
+    this.state = state;
+    await vscode.commands.executeCommand("setContext", CTX_AUTHENTICATED, state.isAuthenticated);
+    this._onAuthStateChanged.fire(state);
+  }
+
+  // ── Credential Resolution ─────────────────────────────────────────────
+
+  /**
+   * Resolve credentials from SecretStorage first, then environment variables.
+   * Returns `null` if no credentials are found.
+   */
+  async resolveCredentials(): Promise<B2Credentials | null> {
+    // 1. VS Code SecretStorage
+    const storedKeyId = await this.secrets.get(SECRET_KEY_ID);
+    const storedAppKey = await this.secrets.get(SECRET_APP_KEY);
+    if (storedKeyId && storedAppKey) {
+      return { keyId: storedKeyId, appKey: storedAppKey };
+    }
+
+    // 2. Environment variables
+    const envKeyId = process.env[ENV_KEY_ID];
+    const envAppKey = process.env[ENV_APP_KEY];
+    if (envKeyId && envAppKey) {
+      return { keyId: envKeyId, appKey: envAppKey };
+    }
+
+    // 3. B2 CLI stored credentials (SQLite database)
+    const cliCreds = await this.resolveB2CliCredentials();
+    if (cliCreds) {
+      return cliCreds;
+    }
+
+    // 4. Not authenticated
+    return null;
+  }
+
+  /**
+   * Store credentials in VS Code SecretStorage.
+   */
+  async storeCredentials(keyId: string, appKey: string): Promise<void> {
+    await this.secrets.store(SECRET_KEY_ID, keyId);
+    await this.secrets.store(SECRET_APP_KEY, appKey);
+  }
+
+  /**
+   * Clear credentials from VS Code SecretStorage.
+   */
+  async clearCredentials(): Promise<void> {
+    await this.secrets.delete(SECRET_KEY_ID);
+    await this.secrets.delete(SECRET_APP_KEY);
+  }
+
+  // ── B2 CLI Credential Resolution ──────────────────────────────────────
+
+  /**
+   * Attempt to read credentials from the B2 CLI's SQLite database.
+   *
+   * The B2 CLI (`b2` command) stores credentials in a SQLite database at:
+   *   - `~/.b2_account_info` (default on all platforms)
+   *   - `$XDG_CONFIG_HOME/b2/account_info` (Linux/BSD XDG path)
+   *
+   * The `account` table contains `account_id_or_app_key_id` and `application_key`.
+   * Uses sql.js (pure WASM SQLite) — works on all platforms including Windows.
+   */
+  private async resolveB2CliCredentials(): Promise<B2Credentials | null> {
+    log("CLI-AUTH: Starting B2 CLI credential resolution...");
+    const dbPath = this.findB2CliDatabase();
+    if (!dbPath) {
+      log("CLI-AUTH: No B2 CLI database file found.");
+      return null;
+    }
+
+    log(`CLI-AUTH: Found database at: ${dbPath}`);
+    try {
+      const result = await this.queryB2Database(dbPath);
+      log(`CLI-AUTH: Query result: ${result ? "credentials found" : "no credentials"}`);
+      return result;
+    } catch (err) {
+      logError("CLI-AUTH: Error reading B2 CLI database", err);
+      return null;
+    }
+  }
+
+  private findB2CliDatabase(): string | null {
+    const home = os.homedir();
+    log(`CLI-AUTH: Home directory: ${home}`);
+
+    const legacyPath = path.join(home, ".b2_account_info");
+    log(`CLI-AUTH: Checking legacy path: ${legacyPath} -> exists=${fs.existsSync(legacyPath)}`);
+    if (fs.existsSync(legacyPath)) {
+      return legacyPath;
+    }
+
+    const xdgHome = process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
+    const xdgPath = path.join(xdgHome, "b2", "account_info");
+    log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${fs.existsSync(xdgPath)}`);
+    if (fs.existsSync(xdgPath)) {
+      return xdgPath;
+    }
+
+    return null;
+  }
+
+  private async queryB2Database(dbPath: string): Promise<B2Credentials | null> {
+    log(`CLI-AUTH: Reading database file...`);
+    const fileBuffer = fs.readFileSync(dbPath);
+    log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
+
+    // Load WASM binary directly to avoid all path resolution issues
+    const extensionRoot = path.join(__dirname, "..");
+    const wasmPath = path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
+    log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
+
+    const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;
+    log(`CLI-AUTH: WASM binary size: ${wasmBinary.byteLength} bytes`);
+
+    const SQL = await initSqlJs({ wasmBinary });
+    log("CLI-AUTH: sql.js initialized successfully");
+
+    const db = new SQL.Database(fileBuffer);
+    log("CLI-AUTH: Database opened successfully");
+
+    try {
+      const result = db.exec(
+        "SELECT account_id_or_app_key_id, application_key FROM account LIMIT 1",
+      );
+      log(`CLI-AUTH: Query returned ${result.length} result set(s)`);
+      if (result.length > 0) {
+        log(`CLI-AUTH: First result has ${result[0].values.length} row(s)`);
+      }
+
+      if (result.length === 0 || result[0].values.length === 0) {
+        return null;
+      }
+
+      const row = result[0].values[0];
+      const keyId = row[0] as string | null;
+      const appKey = row[1] as string | null;
+
+      if (keyId && appKey) {
+        log(`CLI-AUTH: Found keyId: ${keyId.substring(0, 8)}...`);
+        return { keyId, appKey };
+      }
+      return null;
+    } finally {
+      db.close();
+    }
+  }
+}

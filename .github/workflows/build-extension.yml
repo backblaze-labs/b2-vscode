@@ -1,0 +1,138 @@
+name: Build Extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/build-icons.js"
+      - "package.json"
+      - "webpack.config.js"
+      - ".github/workflows/build-extension.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/build-icons.js"
+      - "package.json"
+      - "webpack.config.js"
+      - ".github/workflows/build-extension.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Package VSIX
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run compile
+
+      - name: Package VSIX
+        run: npm run vsix
+
+      - name: Get VSIX filename
+        id: vsix-info
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          VSIX_FILE="b2-vscode-${VERSION}.vsix"
+          if [ -f "$VSIX_FILE" ]; then
+            echo "Found VSIX: $VSIX_FILE"
+          else
+            echo "Error: VSIX file not found"
+            ls -la *.vsix 2>/dev/null || echo "No .vsix files"
+            exit 1
+          fi
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: "*.vsix"
+          retention-days: 30
+
+  test-installation:
+    name: Verify VSIX
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix
+          path: ./artifacts
+
+      - name: Verify extension package
+        run: |
+          VSIX_FILE=$(find ./artifacts -name "*.vsix" -type f | head -1)
+          if [ -z "$VSIX_FILE" ]; then
+            echo "Error: No .vsix file found"
+            exit 1
+          fi
+          echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
+          unzip -t "$VSIX_FILE" > /dev/null 2>&1 || { echo "Invalid ZIP"; exit 1; }
+          echo "VSIX validation passed"
+
+  post-pr-comment:
+    name: PR Comment
+    needs: build
+    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      actions: read
+
+    steps:
+      - name: Get artifact URL
+        id: get-artifact
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const vsix = artifacts.data.artifacts.find(a => a.name === 'vsix');
+            const url = vsix
+              ? `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/artifacts/${vsix.id}`
+              : '';
+            core.setOutput('vsix_url', url);
+
+      - name: Post PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: extension-artifact
+          message: |
+            ## Extension Build Ready
+
+            Download the VSIX from the workflow artifacts above.
+
+            <details>
+            <summary>Installation</summary>
+
+            **VS Code UI:** Extensions > ... > Install from VSIX...
+
+            **CLI:**
+            ```
+            code --install-extension b2-vscode-*.vsix
+            ```
+            </details>

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/extension.ts"],
+  "entryPointStrategy": "expand",
+  "out": "docs/api",
+  "exclude": ["**/test/**", "**/node_modules/**"],
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "includeVersion": true,
+  "name": "Backblaze B2 for VS Code",
+  "readme": "none",
+  "tsconfig": "tsconfig.json"
+}
