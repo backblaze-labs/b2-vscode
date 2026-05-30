@@ -8,6 +8,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { streamToBuffer } from "../../services/b2";
 
 interface DownloadFileParams {
   bucket: string;
@@ -28,6 +29,11 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
+    const bucket = await client.getBucket(params.bucket);
+    if (!bucket) {
+      throw new Error(`Bucket "${params.bucket}" not found.`);
+    }
+
     // Determine local save path
     let savePath: string;
     if (params.localPath) {
@@ -41,8 +47,9 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
       savePath = path.join(workspaceFolder.uri.fsPath, fileName);
     }
 
-    // Download
-    const data = await client.downloadFile(params.bucket, params.path);
+    // Download and collect the streaming body
+    const { body } = await bucket.download(params.path);
+    const data = await streamToBuffer(body);
 
     // Ensure directory exists and write
     const dir = path.dirname(savePath);

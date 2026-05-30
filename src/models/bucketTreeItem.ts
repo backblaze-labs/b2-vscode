@@ -5,36 +5,38 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Bucket } from "../types";
+import type { Bucket } from "@backblaze-labs/b2-sdk";
 
 /**
  * A collapsible tree item representing a single B2 bucket.
+ *
+ * Carries the live SDK {@link Bucket} handle so commands can act on it directly.
  */
 export class BucketTreeItem extends vscode.TreeItem {
-  readonly bucket: B2Bucket;
+  readonly bucket: Bucket;
   readonly bucketId: string;
   readonly bucketName: string;
   readonly bucketType: string;
 
-  constructor(bucket: B2Bucket) {
-    super(bucket.bucketName, vscode.TreeItemCollapsibleState.Collapsed);
+  constructor(bucket: Bucket) {
+    super(bucket.name, vscode.TreeItemCollapsibleState.Collapsed);
 
     this.bucket = bucket;
-    this.bucketId = bucket.bucketId;
-    this.bucketName = bucket.bucketName;
-    this.bucketType = bucket.bucketType;
+    this.bucketId = bucket.id;
+    this.bucketName = bucket.name;
+    this.bucketType = bucket.info.bucketType;
     this.contextValue = "bucket";
-    this.description = bucket.bucketType;
+    this.description = bucket.info.bucketType;
 
     this.iconPath =
-      bucket.bucketType === "allPublic"
+      bucket.info.bucketType === "allPublic"
         ? new vscode.ThemeIcon("globe")
         : new vscode.ThemeIcon("lock");
 
     this.tooltip = new vscode.MarkdownString(
-      `**${bucket.bucketName}**\n\n` +
-        `- Type: \`${bucket.bucketType}\`\n` +
-        `- ID: \`${bucket.bucketId}\``,
+      `**${bucket.name}**\n\n` +
+        `- Type: \`${bucket.info.bucketType}\`\n` +
+        `- ID: \`${bucket.id}\``,
     );
   }
 }

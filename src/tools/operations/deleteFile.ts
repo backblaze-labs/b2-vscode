@@ -22,20 +22,18 @@ export const deleteFileOperation: B2ToolOperation<DeleteFileParams, DeleteFileRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    // Resolve bucket ID
-    const buckets = await client.listBuckets();
-    const bucket = buckets.find((b) => b.bucketName === params.bucket);
+    const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new Error(`Bucket "${params.bucket}" not found.`);
     }
 
-    // Get file info to get fileId
-    const file = await client.getFileInfo(bucket.bucketId, params.path);
+    // Look up the file to get its version ID
+    const file = await bucket.getFileInfoByName(params.path);
     if (!file) {
       throw new Error(`File "${params.path}" not found in bucket "${params.bucket}".`);
     }
 
-    await client.deleteFileVersion(file.fileId, file.fileName);
+    await bucket.deleteFileVersion(file.fileName, file.fileId);
 
     return {
       message: `Deleted ${params.path} from bucket ${params.bucket} (file ID: ${file.fileId})`,

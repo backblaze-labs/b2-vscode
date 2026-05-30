@@ -5,34 +5,40 @@
  */
 
 import * as vscode from "vscode";
-import type { B2FileInfo } from "../types";
+import type { Bucket, FileVersion } from "@backblaze-labs/b2-sdk";
 
 /**
  * A leaf tree item representing a single B2 file.
  * Clicking it opens the file in VS Code's default viewer.
  */
 export class FileTreeItem extends vscode.TreeItem {
+  readonly bucket: Bucket;
   readonly bucketId: string;
   readonly bucketName: string;
-  readonly fileInfo: B2FileInfo;
+  readonly file: FileVersion;
 
-  constructor(bucketId: string, bucketName: string, file: B2FileInfo) {
+  constructor(bucket: Bucket, file: FileVersion) {
     // Extract just the file name from the full path: "data/train.csv" → "train.csv"
     const segments = file.fileName.split("/");
     const fileName = segments[segments.length - 1];
 
     super(fileName, vscode.TreeItemCollapsibleState.None);
 
-    this.bucketId = bucketId;
-    this.bucketName = bucketName;
-    this.fileInfo = file;
+    this.bucket = bucket;
+    this.bucketId = bucket.id;
+    this.bucketName = bucket.name;
+    this.file = file;
     this.contextValue = "file";
     this.description = humanSize(file.contentLength);
 
     this.iconPath = vscode.ThemeIcon.File;
 
     // Set resourceUri so VS Code applies file-type icons (e.g., .csv, .json, .png)
-    this.resourceUri = vscode.Uri.parse(`b2://${bucketName}/${file.fileName}`);
+    this.resourceUri = vscode.Uri.from({
+      scheme: "b2",
+      authority: bucket.name,
+      path: `/${file.fileName}`,
+    });
 
     this.tooltip = new vscode.MarkdownString(
       `**${fileName}**\n\n` +

@@ -37,5 +37,5 @@ export interface B2ToolOperation<TParams, TResult> {
  */
 export interface ToolExtras {
   /** The authenticated B2 client. */
-  getClient: () => import("../services/b2Client").B2Client | null;
+  getClient: () => import("@backblaze-labs/b2-sdk").B2Client | null;
 }

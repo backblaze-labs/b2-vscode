@@ -27,13 +27,12 @@ export const getFileInfoOperation: B2ToolOperation<GetFileInfoParams, GetFileInf
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const buckets = await client.listBuckets();
-    const bucket = buckets.find((b) => b.bucketName === params.bucket);
+    const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new Error(`Bucket "${params.bucket}" not found.`);
     }
 
-    const file = await client.getFileInfo(bucket.bucketId, params.path);
+    const file = await bucket.getFileInfoByName(params.path);
     if (!file) {
       throw new Error(`File "${params.path}" not found in bucket "${params.bucket}".`);
     }

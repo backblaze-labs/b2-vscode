@@ -25,15 +25,17 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    // Resolve bucket ID
-    const buckets = await client.listBuckets();
-    const bucket = buckets.find((b) => b.bucketName === params.bucket);
+    const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new Error(`Bucket "${params.bucket}" not found.`);
     }
 
     const expiresIn = params.expiresIn ?? 3600;
-    const url = await client.presignUrl(params.bucket, bucket.bucketId, params.path, expiresIn);
+    const { authorizationToken } = await bucket.getDownloadAuthorization(params.path, expiresIn);
+    const downloadUrl = client.accountInfo.getDownloadUrl();
+    // Encode each path segment (preserving "/") and the token for safe URL use.
+    const encodedPath = params.path.split("/").map(encodeURIComponent).join("/");
+    const url = `${downloadUrl}/file/${params.bucket}/${encodedPath}?Authorization=${encodeURIComponent(authorizationToken)}`;
 
     return {
       url,

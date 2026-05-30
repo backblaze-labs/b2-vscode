@@ -7,6 +7,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { B2ToolOperation, ToolExtras } from "../types";
 
 interface UploadFileParams {
@@ -43,19 +44,20 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       throw new Error(`Local file not found: ${localPath}`);
     }
 
-    // Resolve remote path
-    const remotePath = params.remotePath ?? path.basename(localPath);
-
-    // Resolve bucket ID
-    const buckets = await client.listBuckets();
-    const bucket = buckets.find((b) => b.bucketName === params.bucket);
+    const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new Error(`Bucket "${params.bucket}" not found.`);
     }
 
+    // Resolve remote path
+    const remotePath = params.remotePath ?? path.basename(localPath);
+
     // Read and upload
     const data = await fs.promises.readFile(localPath);
-    const result = await client.uploadFile(bucket.bucketId, remotePath, data);
+    const result = await bucket.upload({
+      fileName: remotePath,
+      source: new BufferSource(data),
+    });
 
     return {
       fileId: result.fileId,
