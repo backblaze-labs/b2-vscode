@@ -1,12 +1,30 @@
 import { defineConfig } from "@vscode/test-cli";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+const testHome = join(root, ".vscode-test", "home");
+const testXdgConfig = join(root, ".vscode-test", "xdg-config");
+
+mkdirSync(join(testHome, ".vscode"), { recursive: true });
+mkdirSync(testXdgConfig, { recursive: true });
 
 export default defineConfig([
   {
     files: "out/src/test/suite/**/*.test.js",
     version: "stable",
+    env: {
+      B2_APPLICATION_KEY_ID: "",
+      B2_APPLICATION_KEY: "",
+      HOME: testHome,
+      XDG_CONFIG_HOME: testXdgConfig,
+    },
     mocha: {
       ui: "tdd",
       timeout: 20000,
+      failZero: true,
+      forbidOnly: true,
     },
     launchArgs: ["--disable-extensions", "--disable-workspace-trust"],
   },
