@@ -14,7 +14,7 @@ import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { registerB2Tools } from "../tools/registration";
-import { createB2Client, streamToBuffer } from "../services/b2";
+import { createConfiguredB2Client, streamToBuffer } from "../services/b2";
 
 /**
  * Extract a human-friendly message from an error.
@@ -68,7 +68,10 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        const client = createB2Client({ keyId, appKey }, context.extension.packageJSON.version);
+        const client = await createConfiguredB2Client(
+          { keyId, appKey },
+          context.extension.packageJSON.version,
+        );
         await client.authorize();
 
         await authService.storeCredentials(keyId, appKey);
