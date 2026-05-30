@@ -320,10 +320,18 @@ export function registerCommands(services: CommandServices): void {
           },
           async () => {
             let deleted = 0;
+            const errors: string[] = [];
             for await (const event of item.bucket.deleteAll({ prefix: item.prefix })) {
               if (event.type === "delete") {
                 deleted++;
+              } else if (event.type === "error") {
+                errors.push(`${event.fileName}: ${event.message}`);
               }
+            }
+            if (errors.length > 0) {
+              throw new Error(
+                `Deleted ${deleted} file(s), but ${errors.length} file(s) failed. ${errors[0]}`,
+              );
             }
             return deleted;
           },
