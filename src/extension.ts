@@ -9,7 +9,7 @@
 
 import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
-import { createB2Client } from "./services/b2";
+import { createConfiguredB2Client } from "./services/b2";
 import { AuthService } from "./services/authService";
 import { TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
@@ -66,7 +66,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     const credentials = await authService.resolveCredentials();
     if (credentials) {
-      const client = createB2Client(credentials, context.extension.packageJSON.version);
+      const client = await createConfiguredB2Client(
+        credentials,
+        context.extension.packageJSON.version,
+      );
       await client.authorize();
 
       currentClient = client;

@@ -301,7 +301,9 @@
         "b2.apiUrl": {
           "type": "string",
           "default": "https://api.backblazeb2.com",
-          "description": "Base URL for the B2 API. Change only for B2-compatible endpoints."
+          "scope": "application",
+          "description": "Base URL for B2 account authorization. Custom HTTPS endpoints are accepted only from user settings and require confirmation before credentials are sent.",
+          "markdownDescription": "Base URL for B2 account authorization. Custom HTTPS endpoints are accepted only from user settings and require confirmation before credentials are sent."
         }
       }
     },
