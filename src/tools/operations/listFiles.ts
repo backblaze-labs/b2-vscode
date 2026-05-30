@@ -33,23 +33,35 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    // Resolve bucket ID from bucket name
-    const buckets = await client.listBuckets();
-    const bucket = buckets.find((b) => b.bucketName === params.bucket);
+    const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new Error(`Bucket "${params.bucket}" not found.`);
     }
 
+    // Omit the delimiter to recurse; use "/" to list a single level.
     const delimiter = params.recursive ? undefined : "/";
-    const files = await client.listAllFileNames(bucket.bucketId, params.prefix, delimiter);
+    const files: FileEntry[] = [];
+    let startFileName: string | undefined;
+
+    do {
+      const page = await bucket.listFileNames({
+        ...(params.prefix !== undefined ? { prefix: params.prefix } : {}),
+        ...(delimiter !== undefined ? { delimiter } : {}),
+        ...(startFileName !== undefined ? { startFileName } : {}),
+      });
+      for (const f of page.files) {
+        files.push({
+          name: f.fileName,
+          size: f.contentLength,
+          type: f.contentType,
+          isFolder: f.action === "folder",
+        });
+      }
+      startFileName = page.nextFileName ?? undefined;
+    } while (startFileName !== undefined);
 
     return {
-      files: files.map((f) => ({
-        name: f.fileName,
-        size: f.contentLength,
-        type: f.contentType,
-        isFolder: f.action === "folder",
-      })),
+      files,
       count: files.length,
       bucket: params.bucket,
       prefix: params.prefix ?? "",

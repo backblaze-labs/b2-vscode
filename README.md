@@ -10,6 +10,7 @@ Browse, manage, and interact with your Backblaze B2 Cloud Storage directly from 
 - **File operations** — open, download, rename, and delete files; create folders
 - **Copilot tools** — language model tools for B2 operations (list buckets, get file info, download, upload, delete, presign URLs)
 - **SARIF-compatible output** — structured logging for CI/CD integration
+- **Powered by the official SDK**: all B2 access goes through [`@backblaze-labs/b2-sdk`](https://www.npmjs.com/package/@backblaze-labs/b2-sdk) (product User-Agent, auth refresh, retry with backoff, SSRF guard)
 
 ## Getting Started
 
@@ -95,7 +96,7 @@ src/
 ├── commands/index.ts         # Command registrations
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
-│   ├── b2Client.ts           # Pure HTTP B2 API client
+│   ├── b2.ts                 # B2 SDK client factory + stream helper
 │   └── tempFileManager.ts    # Downloaded file cache
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider

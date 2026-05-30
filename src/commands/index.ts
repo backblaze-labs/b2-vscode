@@ -5,7 +5,8 @@
  */
 
 import * as vscode from "vscode";
-import { B2Client } from "../services/b2Client";
+import type { B2Client } from "@backblaze-labs/b2-sdk";
+import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
 import type { TempFileManager } from "../services/tempFileManager";
@@ -13,28 +14,16 @@ import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { registerB2Tools } from "../tools/registration";
+import { createB2Client, streamToBuffer } from "../services/b2";
 
 /**
- * Extract a human-friendly message from B2 API errors.
- * B2 errors come as JSON: { "code": "...", "message": "...", "status": N }
+ * Extract a human-friendly message from an error.
+ *
+ * The SDK throws typed `B2Error`s whose `message` is already human-readable, so
+ * we just surface that.
  */
 function friendlyError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-
-  // Try to parse the JSON body from "B2 API error (NNN): { ... }"
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as { code?: string; message?: string };
-      if (parsed.message) {
-        return parsed.message;
-      }
-    } catch {
-      // fall through
-    }
-  }
-
-  return raw;
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -79,8 +68,8 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        const client = new B2Client(keyId, appKey);
-        const authResponse = await client.authorize();
+        const client = createB2Client({ keyId, appKey }, context.extension.packageJSON.version);
+        await client.authorize();
 
         await authService.storeCredentials(keyId, appKey);
         setClient(client);
@@ -88,17 +77,19 @@ export function registerCommands(services: CommandServices): void {
 
         await authService.setAuthState({
           isAuthenticated: true,
-          accountId: authResponse.accountId,
-          apiUrl: authResponse.apiUrl,
-          downloadUrl: authResponse.downloadUrl,
+          accountId: client.accountInfo.getAccountId(),
+          apiUrl: client.accountInfo.getApiUrl(),
+          downloadUrl: client.accountInfo.getDownloadUrl(),
         });
 
         // Register Copilot tools now that we have a client
         registerB2Tools(context, client);
 
-        vscode.window.showInformationMessage(`B2: Authenticated as ${authResponse.accountId}`);
+        vscode.window.showInformationMessage(
+          `B2: Authenticated as ${client.accountInfo.getAccountId()}`,
+        );
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Authentication failed — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Authentication failed. ${friendlyError(error)}`);
         await authService.setAuthState({ isAuthenticated: false, error: friendlyError(error) });
       }
     }),
@@ -162,11 +153,14 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        const bucket = await client.createBucket(bucketName, visibility.value);
+        const bucket = await client.createBucket({
+          bucketName,
+          bucketType: visibility.value,
+        });
         treeProvider.refresh();
-        vscode.window.showInformationMessage(`B2: Bucket "${bucket.bucketName}" created.`);
+        vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to create bucket — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to create bucket. ${friendlyError(error)}`);
       }
     }),
   );
@@ -174,18 +168,16 @@ export function registerCommands(services: CommandServices): void {
   // ── Change Bucket Visibility ─────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.changeBucketVisibility", async (item?: BucketTreeItem) => {
-      const client = getClient();
-      if (!client) {
+      if (!getClient()) {
         vscode.window.showErrorMessage("B2: Not authenticated.");
         return;
       }
-
       if (!item) {
         vscode.window.showErrorMessage("B2: Select a bucket first.");
         return;
       }
 
-      const currentType = item.bucket.bucketType;
+      const currentType = item.bucketType;
       const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
       const newLabel = newType === "allPublic" ? "Public" : "Private";
       const currentLabel = currentType === "allPublic" ? "Public" : "Private";
@@ -200,7 +192,7 @@ export function registerCommands(services: CommandServices): void {
           { label: "Cancel", value: false },
         ],
         {
-          title: `Change Visibility — ${item.bucketName}`,
+          title: `Change Visibility: ${item.bucketName}`,
           placeHolder: `Bucket is currently ${currentLabel}`,
           ignoreFocusOut: true,
         },
@@ -211,11 +203,11 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        await client.updateBucket(item.bucket.bucketId, newType);
+        await item.bucket.update({ bucketType: newType });
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to update bucket — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to update bucket. ${friendlyError(error)}`);
       }
     }),
   );
@@ -225,12 +217,10 @@ export function registerCommands(services: CommandServices): void {
     vscode.commands.registerCommand(
       "b2.createFolder",
       async (item?: BucketTreeItem | FolderTreeItem) => {
-        const client = getClient();
-        if (!client) {
+        if (!getClient()) {
           vscode.window.showErrorMessage("B2: Not authenticated.");
           return;
         }
-
         if (!item) {
           vscode.window.showErrorMessage("B2: Select a bucket or folder first.");
           return;
@@ -255,16 +245,19 @@ export function registerCommands(services: CommandServices): void {
           return;
         }
 
-        const bucketId = item instanceof BucketTreeItem ? item.bucketId : item.bucketId;
         const prefix = item instanceof FolderTreeItem ? item.prefix : "";
         const fullPath = `${prefix}${folderName}/.bzEmpty`;
 
         try {
-          await client.uploadFile(bucketId, fullPath, Buffer.alloc(0), "application/x-bzEmpty");
+          await item.bucket.upload({
+            fileName: fullPath,
+            source: new BufferSource(new Uint8Array(0)),
+            contentType: "application/x-bzEmpty",
+          });
           treeProvider.refresh();
           vscode.window.showInformationMessage(`B2: Folder "${folderName}" created.`);
         } catch (error) {
-          vscode.window.showErrorMessage(`B2: Failed to create folder — ${friendlyError(error)}`);
+          vscode.window.showErrorMessage(`B2: Failed to create folder. ${friendlyError(error)}`);
         }
       },
     ),
@@ -273,8 +266,7 @@ export function registerCommands(services: CommandServices): void {
   // ── Delete Bucket ─────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.deleteBucket", async (item?: BucketTreeItem) => {
-      const client = getClient();
-      if (!client || !item) {
+      if (!getClient() || !item) {
         return;
       }
 
@@ -293,12 +285,12 @@ export function registerCommands(services: CommandServices): void {
             location: vscode.ProgressLocation.Notification,
             title: `Deleting bucket "${item.bucketName}"...`,
           },
-          () => client.deleteBucket(item.bucketId),
+          () => item.bucket.delete(),
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Bucket "${item.bucketName}" deleted.`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to delete bucket — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to delete bucket. ${friendlyError(error)}`);
       }
     }),
   );
@@ -306,8 +298,7 @@ export function registerCommands(services: CommandServices): void {
   // ── Delete Folder ────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.deleteFolder", async (item?: FolderTreeItem) => {
-      const client = getClient();
-      if (!client || !item) {
+      if (!getClient() || !item) {
         return;
       }
 
@@ -327,12 +318,20 @@ export function registerCommands(services: CommandServices): void {
             title: `Deleting "${item.prefix}"...`,
             cancellable: false,
           },
-          () => client.deleteAllFilesWithPrefix(item.bucketId, item.prefix),
+          async () => {
+            let deleted = 0;
+            for await (const event of item.bucket.deleteAll({ prefix: item.prefix })) {
+              if (event.type === "delete") {
+                deleted++;
+              }
+            }
+            return deleted;
+          },
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Deleted ${count} file(s) from "${item.prefix}".`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to delete folder — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to delete folder. ${friendlyError(error)}`);
       }
     }),
   );
@@ -340,12 +339,11 @@ export function registerCommands(services: CommandServices): void {
   // ── Delete File ──────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.deleteFile", async (item?: FileTreeItem) => {
-      const client = getClient();
-      if (!client || !item) {
+      if (!getClient() || !item) {
         return;
       }
 
-      const segments = item.fileInfo.fileName.split("/");
+      const segments = item.file.fileName.split("/");
       const displayName = segments[segments.length - 1];
 
       const answer = await vscode.window.showWarningMessage(
@@ -358,11 +356,11 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        await client.deleteFileVersion(item.fileInfo.fileId, item.fileInfo.fileName);
+        await item.bucket.deleteFileVersion(item.file.fileName, item.file.fileId);
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: "${displayName}" deleted.`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to delete file — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to delete file. ${friendlyError(error)}`);
       }
     }),
   );
@@ -370,12 +368,11 @@ export function registerCommands(services: CommandServices): void {
   // ── Rename File ──────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.renameFile", async (item?: FileTreeItem) => {
-      const client = getClient();
-      if (!client || !item) {
+      if (!getClient() || !item) {
         return;
       }
 
-      const oldPath = item.fileInfo.fileName;
+      const oldPath = item.file.fileName;
       const segments = oldPath.split("/");
       const oldName = segments[segments.length - 1];
       const parentPrefix = segments.slice(0, -1).join("/");
@@ -410,14 +407,14 @@ export function registerCommands(services: CommandServices): void {
           { location: vscode.ProgressLocation.Notification, title: `Renaming to "${newName}"...` },
           async () => {
             // Server-side copy then delete the original
-            await client.copyFile(item.fileInfo.fileId, item.bucketId, newPath);
-            await client.deleteFileVersion(item.fileInfo.fileId, oldPath);
+            await item.bucket.copyFile({ sourceFileId: item.file.fileId, fileName: newPath });
+            await item.bucket.deleteFileVersion(oldPath, item.file.fileId);
           },
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Renamed to "${newName}".`);
       } catch (error) {
-        vscode.window.showErrorMessage(`B2: Failed to rename — ${friendlyError(error)}`);
+        vscode.window.showErrorMessage(`B2: Failed to rename. ${friendlyError(error)}`);
       }
     }),
   );
@@ -452,7 +449,7 @@ export function registerCommands(services: CommandServices): void {
         } else if (item instanceof FolderTreeItem) {
           b2Path = `b2://${item.bucketName}/${item.prefix}`;
         } else {
-          b2Path = `b2://${item.bucketName}/${item.fileInfo.fileName}`;
+          b2Path = `b2://${item.bucketName}/${item.file.fileName}`;
         }
 
         await vscode.env.clipboard.writeText(b2Path);
@@ -464,25 +461,23 @@ export function registerCommands(services: CommandServices): void {
   // ── Copy File ID ────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.copyFileId", async (item: FileTreeItem) => {
-      await vscode.env.clipboard.writeText(item.fileInfo.fileId);
-      vscode.window.showInformationMessage(`Copied file ID: ${item.fileInfo.fileId}`);
+      await vscode.env.clipboard.writeText(item.file.fileId);
+      vscode.window.showInformationMessage(`Copied file ID: ${item.file.fileId}`);
     }),
   );
 
   // ── Open File ───────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.openFile", async (item: FileTreeItem) => {
-      const client = getClient();
-      if (!client) {
+      if (!getClient()) {
         vscode.window.showErrorMessage("B2: Not authenticated.");
         return;
       }
 
       // Check cache first
-      const cached = tempFileManager.getCachedPath(item.bucketName, item.fileInfo.fileName);
+      const cached = tempFileManager.getCachedPath(item.bucketName, item.file.fileName);
       if (cached) {
-        const uri = vscode.Uri.file(cached);
-        await vscode.commands.executeCommand("vscode.open", uri);
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(cached));
         return;
       }
 
@@ -490,18 +485,18 @@ export function registerCommands(services: CommandServices): void {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `Downloading ${item.fileInfo.fileName}...`,
+          title: `Downloading ${item.file.fileName}...`,
           cancellable: false,
         },
         async () => {
-          const data = await client.downloadFile(item.bucketName, item.fileInfo.fileName);
+          const { body } = await item.bucket.download(item.file.fileName);
+          const data = await streamToBuffer(body);
           const localPath = await tempFileManager.saveFile(
             item.bucketName,
-            item.fileInfo.fileName,
+            item.file.fileName,
             data,
           );
-          const uri = vscode.Uri.file(localPath);
-          await vscode.commands.executeCommand("vscode.open", uri);
+          await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(localPath));
         },
       );
     }),

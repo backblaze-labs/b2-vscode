@@ -8,7 +8,8 @@
  */
 
 import * as vscode from "vscode";
-import { B2Client } from "./services/b2Client";
+import type { B2Client } from "@backblaze-labs/b2-sdk";
+import { createB2Client } from "./services/b2";
 import { AuthService } from "./services/authService";
 import { TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
@@ -65,23 +66,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     const credentials = await authService.resolveCredentials();
     if (credentials) {
-      const client = new B2Client(credentials.keyId, credentials.appKey);
-      const authResponse = await client.authorize();
+      const client = createB2Client(credentials, context.extension.packageJSON.version);
+      await client.authorize();
 
       currentClient = client;
       treeProvider.setClient(client);
 
       await authService.setAuthState({
         isAuthenticated: true,
-        accountId: authResponse.accountId,
-        apiUrl: authResponse.apiUrl,
-        downloadUrl: authResponse.downloadUrl,
+        accountId: client.accountInfo.getAccountId(),
+        apiUrl: client.accountInfo.getApiUrl(),
+        downloadUrl: client.accountInfo.getDownloadUrl(),
       });
 
       // Register Copilot tools
       registerB2Tools(context, client);
 
-      log(`Auto-authenticated as ${authResponse.accountId}`);
+      log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
     } else {
       await authService.setAuthState({ isAuthenticated: false });
       log("No stored credentials found.");

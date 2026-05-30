@@ -21,9 +21,9 @@ export const listBucketsOperation: B2ToolOperation<unknown, ListBucketsResult> =
     const buckets = await client.listBuckets();
     return {
       buckets: buckets.map((b) => ({
-        name: b.bucketName,
-        type: b.bucketType,
-        id: b.bucketId,
+        name: b.name,
+        type: b.info.bucketType,
+        id: b.id,
       })),
       count: buckets.length,
     };

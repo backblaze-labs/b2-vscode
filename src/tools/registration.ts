@@ -5,7 +5,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client } from "../services/b2Client";
+import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { B2ToolAdapter } from "./b2ToolAdapter";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
 

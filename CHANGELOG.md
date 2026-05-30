@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Replaced the hand-rolled native B2 HTTP client with the official
+  [`@backblaze-labs/b2-sdk`](https://www.npmjs.com/package/@backblaze-labs/b2-sdk)
+  package. Bucket and file operations now use the SDK's high-level `B2Client` /
+  `Bucket` facade, which adds a product User-Agent, automatic auth refresh and
+  retry with backoff, and an SSRF guard.
+
 ## [0.0.1] — 2026-03-25
 
 ### Added
