@@ -15,6 +15,13 @@ import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { registerB2Tools } from "../tools/registration";
 import { createConfiguredB2Client, streamToBuffer } from "../services/b2";
+import {
+  buildPublicBucketWarningMessage,
+  CONFIRM_PUBLIC_BUCKET_LABEL,
+  isPublicBucketConfirmationAccepted,
+  shouldConfirmPublicBucketVisibility,
+  type PublicBucketVisibilityAction,
+} from "./publicBucketVisibility";
 
 /**
  * Extract a human-friendly message from an error.
@@ -24,6 +31,19 @@ import { createConfiguredB2Client, streamToBuffer } from "../services/b2";
  */
 function friendlyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function confirmPublicBucketVisibility(
+  action: PublicBucketVisibilityAction,
+  bucketName: string,
+): Promise<boolean> {
+  const answer = await vscode.window.showWarningMessage(
+    buildPublicBucketWarningMessage(action, bucketName),
+    { modal: true },
+    CONFIRM_PUBLIC_BUCKET_LABEL,
+  );
+
+  return isPublicBucketConfirmationAccepted(answer);
 }
 
 /**
@@ -155,6 +175,13 @@ export function registerCommands(services: CommandServices): void {
         return;
       }
 
+      if (
+        shouldConfirmPublicBucketVisibility(undefined, visibility.value) &&
+        !(await confirmPublicBucketVisibility("create", bucketName))
+      ) {
+        return;
+      }
+
       try {
         const bucket = await client.createBucket({
           bucketName,
@@ -202,6 +229,13 @@ export function registerCommands(services: CommandServices): void {
       );
 
       if (!confirm?.value) {
+        return;
+      }
+
+      if (
+        shouldConfirmPublicBucketVisibility(currentType, newType) &&
+        !(await confirmPublicBucketVisibility("change", item.bucketName))
+      ) {
         return;
       }
 
