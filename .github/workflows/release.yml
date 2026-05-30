@@ -6,21 +6,30 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read # default read-only access; release job escalates below
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build VSIX
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # needed to check out and package the extension
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
@@ -42,11 +51,14 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates or updates the GitHub Release
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download VSIX artifact
@@ -61,9 +73,10 @@ jobs:
           echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Verify version match
+        env:
+          TAG_VERSION: ${{ steps.version.outputs.version }}
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${{ steps.version.outputs.version }}"
           if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
             echo "Error: package.json ($PACKAGE_VERSION) != tag ($TAG_VERSION)"
             exit 1
@@ -92,6 +105,7 @@ jobs:
     name: Publish to Marketplace
     needs: build
     runs-on: ubuntu-latest
+    permissions: {}
     if: ${{ !contains(github.ref_name, '-') }}
 
     steps:
@@ -99,6 +113,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Check marketplace credentials
         id: check-creds

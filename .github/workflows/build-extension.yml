@@ -24,16 +24,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   build:
     name: Build & Package VSIX
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: read # needed to check out and build the extension
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -58,7 +62,7 @@ jobs:
             echo "Found VSIX: $VSIX_FILE"
           else
             echo "Error: VSIX file not found"
-            ls -la *.vsix 2>/dev/null || echo "No .vsix files"
+            ls -la -- ./*.vsix 2>/dev/null || echo "No .vsix files"
             exit 1
           fi
 
@@ -99,8 +103,8 @@ jobs:
     if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
-      actions: read
+      pull-requests: write # posts the VSIX artifact link on same-repo PRs
+      actions: read # reads workflow artifacts to build the PR comment URL
 
     steps:
       - name: Get artifact URL
