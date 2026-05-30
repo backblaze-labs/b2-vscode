@@ -36,6 +36,10 @@ The `b2.apiUrl` setting defaults to `https://api.backblazeb2.com`. Custom B2-com
 
 Custom values must be HTTPS URLs without embedded credentials, query strings, or fragments. When the value is not the default Backblaze endpoint, the extension shows a confirmation warning before sending any B2 application key material to that endpoint.
 
+### Public Bucket Visibility
+
+Creating a public bucket or changing a private bucket to public requires a modal confirmation. Public B2 buckets can make files accessible without authorization, so use public visibility only when object-level public access is intentional.
+
 ## Commands
 
 | Command                        | Description                               |
