@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/build-icons.js"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "webpack.config.js"
+      - ".vscode-test.mjs"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/build-icons.js"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "webpack.config.js"
+      - ".vscode-test.mjs"
+      - ".github/workflows/test.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: VS Code Extension Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run VS Code tests
+        run: xvfb-run -a npm test
