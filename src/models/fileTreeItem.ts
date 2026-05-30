@@ -34,7 +34,11 @@ export class FileTreeItem extends vscode.TreeItem {
     this.iconPath = vscode.ThemeIcon.File;
 
     // Set resourceUri so VS Code applies file-type icons (e.g., .csv, .json, .png)
-    this.resourceUri = vscode.Uri.parse(`b2://${bucket.name}/${file.fileName}`);
+    this.resourceUri = vscode.Uri.from({
+      scheme: "b2",
+      authority: bucket.name,
+      path: `/${file.fileName}`,
+    });
 
     this.tooltip = new vscode.MarkdownString(
       `**${fileName}**\n\n` +
