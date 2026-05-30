@@ -9,6 +9,8 @@
   package. Bucket and file operations now use the SDK's high-level `B2Client` /
   `Bucket` facade, which adds a product User-Agent, automatic auth refresh and
   retry with backoff, and an SSRF guard.
+- Raised the minimum supported VS Code to 1.111 (the first release bundling
+  Node 22), matching the SDK's Node runtime requirement.
 
 ## [0.0.1] — 2026-03-25
 

@@ -33,7 +33,9 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
     const expiresIn = params.expiresIn ?? 3600;
     const { authorizationToken } = await bucket.getDownloadAuthorization(params.path, expiresIn);
     const downloadUrl = client.accountInfo.getDownloadUrl();
-    const url = `${downloadUrl}/file/${params.bucket}/${params.path}?Authorization=${authorizationToken}`;
+    // Encode each path segment (preserving "/") and the token for safe URL use.
+    const encodedPath = params.path.split("/").map(encodeURIComponent).join("/");
+    const url = `${downloadUrl}/file/${params.bucket}/${encodedPath}?Authorization=${encodeURIComponent(authorizationToken)}`;
 
     return {
       url,

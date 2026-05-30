@@ -14,8 +14,8 @@
     "url": "https://github.com/backblaze-demos/b2-vscode.git"
   },
   "engines": {
-    "vscode": "^1.95.0",
-    "node": ">=18.0.0"
+    "vscode": "^1.111.0",
+    "node": ">=22.0.0"
   },
   "main": "./dist/extension.js",
   "activationEvents": [],
