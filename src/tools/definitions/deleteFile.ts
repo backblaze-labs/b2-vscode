@@ -26,4 +26,7 @@ export const deleteFileTool: B2ToolDefinition = {
     required: ["bucket", "path"],
   },
   tags: ["b2", "file", "delete"],
+  risk: "destructive",
+  describeEffect: (input) =>
+    `permanently delete b2://${String(input.bucket)}/${String(input.path)}`,
 };

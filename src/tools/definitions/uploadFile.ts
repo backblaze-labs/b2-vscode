@@ -31,4 +31,7 @@ export const uploadFileTool: B2ToolDefinition = {
     required: ["localPath", "bucket"],
   },
   tags: ["b2", "file", "upload"],
+  risk: "write",
+  describeEffect: (input) =>
+    `upload ${String(input.localPath)} to b2://${String(input.bucket)}/${String(input.remotePath ?? "(file name)")}`,
 };

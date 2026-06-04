@@ -31,4 +31,7 @@ export const presignUrlTool: B2ToolDefinition = {
     required: ["bucket", "path"],
   },
   tags: ["b2", "file", "presign", "url"],
+  risk: "exfiltration",
+  describeEffect: (input) =>
+    `create a shareable download URL for b2://${String(input.bucket)}/${String(input.path)}`,
 };

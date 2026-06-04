@@ -26,4 +26,6 @@ export const getFileInfoTool: B2ToolDefinition = {
     required: ["bucket", "path"],
   },
   tags: ["b2", "file", "info", "metadata"],
+  risk: "readOnly",
+  describeEffect: (input) => `read metadata for b2://${String(input.bucket)}/${String(input.path)}`,
 };

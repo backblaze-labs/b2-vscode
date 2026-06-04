@@ -24,13 +24,46 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
     options: vscode.LanguageModelToolInvocationPrepareOptions<TParams>,
     _token: vscode.CancellationToken,
   ): Promise<vscode.PreparedToolInvocation> {
+    const input = (options.input ?? {}) as unknown as Record<string, unknown>;
+    const effect = this.definition.describeEffect?.(input);
+    const inputJson = "```json\n" + JSON.stringify(input, null, 2) + "\n```";
+
+    // Confirmation strength scales with the tool's risk. Every tool still
+    // requires a confirmation, so an agent cannot run one silently; the
+    // destructive and exfiltration tools additionally spell out that the
+    // action is irreversible or exposes data.
+    const parts: string[] = [];
+    let title = this.definition.displayName;
+
+    switch (this.definition.risk) {
+      case "destructive":
+        title = `Confirm: ${this.definition.displayName}`;
+        parts.push(`⚠️ This will **${effect ?? "delete data in B2"}**.`);
+        parts.push(
+          "This is irreversible and **cannot be undone**. Only continue if you intended this action.",
+        );
+        break;
+      case "exfiltration":
+        title = `Confirm: ${this.definition.displayName}`;
+        parts.push(`⚠️ This will **${effect ?? "create a shareable download link"}**.`);
+        parts.push(
+          "Anyone who obtains the link can download the file until it expires, with no Backblaze login required.",
+        );
+        break;
+      case "write":
+        parts.push(`This will ${effect ?? "write data to B2 or your workspace"}.`);
+        break;
+      default:
+        parts.push(`Read-only: this will ${effect ?? "read from B2"}. No changes are made.`);
+        break;
+    }
+    parts.push(inputJson);
+
     return {
       invocationMessage: `Running ${this.definition.displayName}...`,
       confirmationMessages: {
-        title: this.definition.displayName,
-        message: new vscode.MarkdownString(
-          `Execute **${this.definition.displayName}** with:\n\n\`\`\`json\n${JSON.stringify(options.input, null, 2)}\n\`\`\``,
-        ),
+        title,
+        message: new vscode.MarkdownString(parts.join("\n\n")),
       },
     };
   }
