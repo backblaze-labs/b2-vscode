@@ -31,4 +31,7 @@ export const listFilesTool: B2ToolDefinition = {
     required: ["bucket"],
   },
   tags: ["b2", "file", "list"],
+  risk: "readOnly",
+  describeEffect: (input) =>
+    `list files in b2://${String(input.bucket)}${input.prefix ? `/${String(input.prefix)}` : ""}`,
 };

@@ -5,6 +5,17 @@
  */
 
 /**
+ * Risk class for a tool, controlling how strongly the user is prompted before
+ * it runs.
+ *
+ * - `readOnly`: reads B2 metadata/objects; makes no changes.
+ * - `write`: writes to B2 or the local workspace.
+ * - `destructive`: irreversibly deletes data.
+ * - `exfiltration`: exposes data outside B2 (e.g. a shareable download URL).
+ */
+export type ToolRisk = "readOnly" | "write" | "destructive" | "exfiltration";
+
+/**
  * Definition of a single B2 tool for Copilot integration.
  */
 export interface B2ToolDefinition {
@@ -22,6 +33,13 @@ export interface B2ToolDefinition {
   };
   /** Tags for categorization. */
   tags: string[];
+  /** Risk class controlling confirmation strength before the tool runs. */
+  risk: ToolRisk;
+  /**
+   * Optional: a short, human-readable description of the concrete effect, shown
+   * in the confirmation prompt (e.g. "permanently delete b2://bucket/key").
+   */
+  describeEffect?: (input: Record<string, unknown>) => string;
 }
 
 /**

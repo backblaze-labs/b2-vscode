@@ -12,6 +12,14 @@
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
 
+### Security
+
+- Copilot (Language Model) tools now show explicit, effect-naming confirmations
+  classified by risk. The irreversible `deleteFile` and the shareable-link
+  `presignUrl` tools warn that the action cannot be undone or exposes data, so an
+  agent cannot run them without a clear prompt. Documented the prompt-injection
+  caution for agent mode in the README.
+
 ## [0.0.1] — 2026-03-25
 
 ### Added

@@ -16,4 +16,6 @@ export const listBucketsTool: B2ToolDefinition = {
     properties: {},
   },
   tags: ["b2", "bucket", "list"],
+  risk: "readOnly",
+  describeEffect: () => "list all accessible buckets",
 };

@@ -31,4 +31,7 @@ export const downloadFileTool: B2ToolDefinition = {
     required: ["bucket", "path"],
   },
   tags: ["b2", "file", "download"],
+  risk: "write",
+  describeEffect: (input) =>
+    `download b2://${String(input.bucket)}/${String(input.path)} to your local workspace`,
 };
