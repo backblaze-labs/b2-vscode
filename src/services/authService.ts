@@ -33,6 +33,22 @@ export interface B2Credentials {
   appKey: string;
 }
 
+export function resolveSqlWasmPath(moduleDir: string): string {
+  const candidates = [
+    path.join(moduleDir, "sql-wasm.wasm"),
+    path.join(moduleDir, "..", "node_modules", "sql.js", "dist", "sql-wasm.wasm"),
+  ];
+
+  const wasmPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!wasmPath) {
+    throw new Error(
+      `Unable to initialize B2 CLI credential detection because sql-wasm.wasm was not found. Checked: ${candidates.join(", ")}`,
+    );
+  }
+
+  return wasmPath;
+}
+
 /**
  * Manages B2 credential resolution, persistence, and authentication state.
  */
@@ -174,9 +190,8 @@ export class AuthService implements vscode.Disposable {
     const fileBuffer = fs.readFileSync(dbPath);
     log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
 
-    // Load WASM binary directly to avoid all path resolution issues
-    const extensionRoot = path.join(__dirname, "..");
-    const wasmPath = path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
+    // Load WASM binary directly so packaged VSIX installs do not depend on node_modules.
+    const wasmPath = resolveSqlWasmPath(__dirname);
     log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
 
     const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;
