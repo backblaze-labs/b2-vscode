@@ -4,7 +4,17 @@
  * @module tools/definitions/uploadFile
  */
 
+import * as path from "path";
 import type { B2ToolDefinition } from "../types";
+
+function remotePathFor(input: Record<string, unknown>): string {
+  if (input.remotePath !== undefined && input.remotePath !== null) {
+    return String(input.remotePath);
+  }
+  const localPath =
+    typeof input.localPath === "string" ? input.localPath : String(input.localPath ?? "");
+  return path.basename(localPath) || "(file name)";
+}
 
 export const uploadFileTool: B2ToolDefinition = {
   name: "b2_uploadFile",
@@ -33,5 +43,5 @@ export const uploadFileTool: B2ToolDefinition = {
   tags: ["b2", "file", "upload"],
   risk: "write",
   describeEffect: (input) =>
-    `upload ${String(input.localPath)} to b2://${String(input.bucket)}/${String(input.remotePath ?? "(file name)")}`,
+    `upload ${String(input.localPath)} to b2://${String(input.bucket)}/${remotePathFor(input)}`,
 };

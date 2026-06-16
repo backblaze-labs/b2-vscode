@@ -9,6 +9,20 @@
 import * as vscode from "vscode";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
 
+function formatInlineCode(value: string): string {
+  const normalized = value.replace(/\r\n|\r|\n/g, "\\n");
+  const backtickRuns = normalized.match(/`+/g) ?? [];
+  const delimiterLength = Math.max(1, ...backtickRuns.map((run) => run.length + 1));
+  const delimiter = "`".repeat(delimiterLength);
+  const padded = normalized.startsWith("`") || normalized.endsWith("`");
+  const content = padded ? ` ${normalized} ` : normalized;
+  return `${delimiter}${content}${delimiter}`;
+}
+
+function assertNeverRisk(risk: never): never {
+  throw new Error(`Unhandled tool risk: ${String(risk)}`);
+}
+
 /**
  * Adapter that wraps a B2ToolDefinition + B2ToolOperation into a
  * vscode.LanguageModelTool for registration with vscode.lm.registerTool().
@@ -38,23 +52,31 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
     switch (this.definition.risk) {
       case "destructive":
         title = `Confirm: ${this.definition.displayName}`;
-        parts.push(`⚠️ This will **${effect ?? "delete data in B2"}**.`);
+        parts.push(`Warning: this will ${formatInlineCode(effect ?? "delete data in B2")}.`);
         parts.push(
           "This is irreversible and **cannot be undone**. Only continue if you intended this action.",
         );
         break;
       case "exfiltration":
         title = `Confirm: ${this.definition.displayName}`;
-        parts.push(`⚠️ This will **${effect ?? "create a shareable download link"}**.`);
+        parts.push(
+          `Warning: this will ${formatInlineCode(effect ?? "create a shareable download link")}.`,
+        );
         parts.push(
           "Anyone who obtains the link can download the file until it expires, with no Backblaze login required.",
         );
         break;
       case "write":
-        parts.push(`This will ${effect ?? "write data to B2 or your workspace"}.`);
+        parts.push(
+          `This will ${formatInlineCode(effect ?? "write data to B2 or your workspace")}.`,
+        );
+        break;
+      case "readOnly":
+        parts.push(`Read-only: this will ${formatInlineCode(effect ?? "read from B2")}.`);
+        parts.push("No changes are made.");
         break;
       default:
-        parts.push(`Read-only: this will ${effect ?? "read from B2"}. No changes are made.`);
+        assertNeverRisk(this.definition.risk);
         break;
     }
     parts.push(inputJson);
