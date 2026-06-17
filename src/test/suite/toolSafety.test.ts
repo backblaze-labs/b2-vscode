@@ -132,6 +132,23 @@ suite("LM Tool Safety", () => {
     assert.doesNotMatch(text, /your local workspace/);
   });
 
+  test("downloadFile marks relative localPath as workspace-relative", async () => {
+    const text = await confirmText(downloadFileTool, {
+      bucket: "my-bucket",
+      path: "data/out.csv",
+      localPath: "downloads/out.csv",
+    });
+
+    assert.match(text, /workspace-relative path downloads\/out\.csv/);
+  });
+
+  test("malformed required inputs use a placeholder in confirmations", async () => {
+    const text = await confirmText(deleteFileTool, { bucket: "my-bucket" });
+
+    assert.match(text, /my-bucket\/\?/);
+    assert.doesNotMatch(text, /undefined/);
+  });
+
   test("read-only listBuckets is marked read-only", async () => {
     const text = await confirmText(listBucketsTool, {});
     assert.match(text, /read-only/i);

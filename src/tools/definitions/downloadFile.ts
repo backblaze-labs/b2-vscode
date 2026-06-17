@@ -4,12 +4,17 @@
  * @module tools/definitions/downloadFile
  */
 
+import * as path from "path";
 import type { B2ToolDefinition } from "../types";
+import { inputText } from "./inputText";
 
 function localDestinationFor(input: Record<string, unknown>): string {
-  return typeof input.localPath === "string" && input.localPath.length > 0
+  if (typeof input.localPath !== "string" || input.localPath.length === 0) {
+    return "your local workspace";
+  }
+  return path.isAbsolute(input.localPath)
     ? input.localPath
-    : "your local workspace";
+    : `workspace-relative path ${input.localPath}`;
 }
 
 export const downloadFileTool: B2ToolDefinition = {
@@ -31,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional local path to save the file. Defaults to the workspace root with the same file name.",
+          "Optional absolute or workspace-relative local path to save the file. Defaults to the workspace root with the same file name.",
       },
     },
     required: ["bucket", "path"],
@@ -39,5 +44,5 @@ export const downloadFileTool: B2ToolDefinition = {
   tags: ["b2", "file", "download"],
   risk: "write",
   describeEffect: (input) =>
-    `download b2://${String(input.bucket)}/${String(input.path)} to ${localDestinationFor(input)}`,
+    `download b2://${inputText(input.bucket)}/${inputText(input.path)} to ${localDestinationFor(input)}`,
 };

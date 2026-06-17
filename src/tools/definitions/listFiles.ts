@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolDefinition } from "../types";
+import { inputText } from "./inputText";
 
 export const listFilesTool: B2ToolDefinition = {
   name: "b2_listFiles",
@@ -33,5 +34,5 @@ export const listFilesTool: B2ToolDefinition = {
   tags: ["b2", "file", "list"],
   risk: "readOnly",
   describeEffect: (input) =>
-    `list files in b2://${String(input.bucket)}${input.prefix ? `/${String(input.prefix)}` : ""}`,
+    `list files in b2://${inputText(input.bucket)}${input.prefix ? `/${inputText(input.prefix)}` : ""}`,
 };

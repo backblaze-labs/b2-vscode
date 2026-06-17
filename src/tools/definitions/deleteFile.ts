@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolDefinition } from "../types";
+import { inputText } from "./inputText";
 
 export const deleteFileTool: B2ToolDefinition = {
   name: "b2_deleteFile",
@@ -28,5 +29,5 @@ export const deleteFileTool: B2ToolDefinition = {
   tags: ["b2", "file", "delete"],
   risk: "destructive",
   describeEffect: (input) =>
-    `permanently delete b2://${String(input.bucket)}/${String(input.path)}`,
+    `permanently delete b2://${inputText(input.bucket)}/${inputText(input.path)}`,
 };

@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolDefinition } from "../types";
+import { inputText } from "./inputText";
 
 export const getFileInfoTool: B2ToolDefinition = {
   name: "b2_getFileInfo",
@@ -27,5 +28,6 @@ export const getFileInfoTool: B2ToolDefinition = {
   },
   tags: ["b2", "file", "info", "metadata"],
   risk: "readOnly",
-  describeEffect: (input) => `read metadata for b2://${String(input.bucket)}/${String(input.path)}`,
+  describeEffect: (input) =>
+    `read metadata for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
 };

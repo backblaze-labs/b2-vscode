@@ -86,7 +86,6 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
         break;
       default:
         assertNeverRisk(this.definition.risk);
-        break;
     }
     parts.push(inputJson);
 
