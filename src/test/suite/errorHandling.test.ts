@@ -11,6 +11,7 @@ import {
   B2ResourceNotFoundError,
   formatB2DiagnosticMessage,
   formatB2DiagnosticStack,
+  formatB2ToolUserMessage,
   formatB2UserMessage,
   redactSensitiveText,
 } from "../../errors";
@@ -42,7 +43,7 @@ suite("B2 error handling", () => {
         expected: /missing permission.*listFiles, readFiles/i,
       },
       {
-        error: new B2ResourceNotFoundError("File missing"),
+        error: b2Error(404, "no_such_file", "file missing"),
         expected: /bucket or object was not found/i,
       },
       {
@@ -95,6 +96,25 @@ suite("B2 error handling", () => {
     );
 
     assert.equal(message, "Not authenticated. Please run the B2: Authenticate command first.");
+  });
+
+  test("preserves extension-originated not-found details", () => {
+    const message = formatB2UserMessage(new B2ResourceNotFoundError('Bucket "b" not found.'));
+
+    assert.equal(message, 'Bucket "b" not found.');
+  });
+
+  test("tool messages preserve safe local file errors", () => {
+    const error = new Error(
+      "ENOENT: no such file or directory, open '/tmp/missing.txt'",
+    ) as Error & {
+      code: string;
+    };
+    error.code = "ENOENT";
+
+    const message = formatB2ToolUserMessage(error);
+
+    assert.match(message, /ENOENT.*missing\.txt/);
   });
 
   test("keeps partial operation failures visible", () => {
@@ -159,10 +179,10 @@ suite("B2 error handling", () => {
 
   test("redacts secret-looking free text", () => {
     const text = redactSensitiveText(
-      'B2_APPLICATION_KEY=abc123 {"authorizationToken":"tok123"} https://x.test?token=tok',
+      'B2_APPLICATION_KEY=abc123 {"authorizationToken":"tok123"} https://x.test?token=tok&X-Amz-Signature=sig&X-Amz-Credential=cred&X-Amz-Security-Token=session',
     );
 
-    assert.doesNotMatch(text, /abc123|tok123|token=tok/);
+    assert.doesNotMatch(text, /abc123|tok123|token=tok|sig|cred|session/);
     assert.match(text, /<redacted>/);
   });
 });

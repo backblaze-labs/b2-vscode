@@ -140,6 +140,28 @@ suite("B2 LM tool failure handling", () => {
     );
   });
 
+  test("tool adapters surface safe local file errors", async () => {
+    const localError = new Error(
+      "ENOENT: no such file or directory, open '/tmp/missing.txt'",
+    ) as Error & { code: string };
+    localError.code = "ENOENT";
+    const operation: B2ToolOperation<unknown, unknown> = {
+      async execute() {
+        throw localError;
+      },
+    };
+    const adapter = new B2ToolAdapter(uploadFileTool, operation, noClientExtras);
+
+    await assert.rejects(
+      () =>
+        adapter.invoke(
+          { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+          new vscode.CancellationTokenSource().token,
+        ),
+      /B2: Upload File failed: ENOENT.*missing\.txt/i,
+    );
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(

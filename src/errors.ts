@@ -34,6 +34,9 @@ const SENSITIVE_QUERY_KEYS = [
   "appKey",
   "secret",
   "password",
+  "X-Amz-Credential",
+  "X-Amz-Security-Token",
+  "X-Amz-Signature",
 ];
 
 function sensitiveKeyReplacements(key: string): Array<readonly [RegExp, string]> {
@@ -61,6 +64,18 @@ const SAFE_EXTENSION_MESSAGE_PREFIXES = [
   "b2.apiUrl ",
   "B2 CLI credentials could not be read.",
 ];
+
+const SAFE_LOCAL_ERROR_CODES = new Set([
+  "EACCES",
+  "EEXIST",
+  "EISDIR",
+  "EMFILE",
+  "ENAMETOOLONG",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
 
 /**
  * Error used when a multi-step operation made progress but could not complete.
@@ -127,6 +142,11 @@ function getErrorMessage(error: unknown): string {
 
 function isSafeExtensionMessage(message: string): boolean {
   return SAFE_EXTENSION_MESSAGE_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
+
+function isSafeLocalError(error: unknown): boolean {
+  const code = stringProperty(asRecord(error), "code");
+  return code === undefined ? false : SAFE_LOCAL_ERROR_CODES.has(code);
 }
 
 function getB2Code(error: unknown): string | undefined {
@@ -300,6 +320,13 @@ export function formatB2UserMessage(error: unknown): string {
     return redactSensitiveText(getErrorMessage(error));
   }
 
+  if (
+    error instanceof B2ResourceNotFoundError ||
+    matchesErrorName(error, "B2ResourceNotFoundError")
+  ) {
+    return redactSensitiveText(getErrorMessage(error));
+  }
+
   if (isExpiredAuth(error)) {
     return "B2 authorization expired. Retry the operation; the SDK refreshes auth automatically when possible. If this keeps happening, run B2: Authenticate again.";
   }
@@ -344,6 +371,18 @@ export function formatB2UserMessage(error: unknown): string {
   return message
     ? `Unexpected B2 error: ${message}`
     : "Unexpected B2 error. Check the Backblaze B2 output log for details.";
+}
+
+/**
+ * User-facing message for LM tools, where safe local path errors are useful
+ * feedback the model can use to correct the next tool call.
+ */
+export function formatB2ToolUserMessage(error: unknown): string {
+  if (isSafeLocalError(error)) {
+    return redactSensitiveText(getErrorMessage(error));
+  }
+
+  return formatB2UserMessage(error);
 }
 
 /**
