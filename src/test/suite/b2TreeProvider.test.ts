@@ -25,6 +25,7 @@ import { B2TreeProvider } from "../../providers/b2TreeProvider";
 
 type ListFileNamesOptions = Parameters<Bucket["listFileNames"]>[0];
 type ListFileNamesPage = Awaited<ReturnType<Bucket["listFileNames"]>>;
+type ListFileNamesPageSource = ListFileNamesPage | (() => Promise<ListFileNamesPage>);
 
 function file(fileName: string, action: "folder" | "upload" = "upload"): FileVersion {
   return {
@@ -54,7 +55,7 @@ function fakeAuthService(): AuthService {
   } as unknown as AuthService;
 }
 
-function makeBucket(pages: ListFileNamesPage[]): {
+function makeBucket(pages: ListFileNamesPageSource[]): {
   readonly bucket: Bucket;
   readonly calls: ListFileNamesOptions[];
 } {
@@ -66,7 +67,11 @@ function makeBucket(pages: ListFileNamesPage[]): {
     info: { bucketType: "allPrivate" },
     async listFileNames(options?: ListFileNamesOptions): Promise<ListFileNamesPage> {
       calls.push(options);
-      return remainingPages.shift() ?? { files: [], nextFileName: null };
+      const nextPage = remainingPages.shift();
+      if (typeof nextPage === "function") {
+        return nextPage();
+      }
+      return nextPage ?? { files: [], nextFileName: null };
     },
   } as unknown as Bucket;
 
@@ -122,6 +127,34 @@ suite("B2 tree provider paging", () => {
       calls.map((call) => call?.startFileName ?? null),
       [null, "b.txt"],
     );
+  });
+
+  test("ignores duplicate load-more activation while a page is in flight", async () => {
+    let releasePage: (() => void) | undefined;
+    const secondPageReady = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+    const { bucket, calls } = makeBucket([
+      { files: [file("a.txt")], nextFileName: "b.txt" },
+      async () => {
+        await secondPageReady;
+        return { files: [file("b.txt")], nextFileName: null };
+      },
+    ]);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+    const firstPage = await provider.getChildren(bucketItem);
+    const loadMore = firstPage[firstPage.length - 1];
+    assert.ok(loadMore instanceof LoadMoreTreeItem);
+
+    const firstLoad = provider.loadMore(loadMore as LoadMoreTreeItem);
+    const secondLoad = provider.loadMore(loadMore as LoadMoreTreeItem);
+    releasePage?.();
+    await Promise.all([firstLoad, secondLoad]);
+    const loadedChildren = await provider.getChildren(bucketItem);
+
+    assert.deepStrictEqual(loadedChildren.map(label), ["a.txt", "b.txt"]);
+    assert.strictEqual(calls.length, 2);
   });
 
   test("preserves deep prefixes and special characters when listing folders", async () => {

@@ -102,6 +102,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "b2.loadMore",
+        "title": "Load More",
+        "category": "B2",
+        "icon": "$(more)"
+      },
+      {
         "command": "b2.copyPath",
         "title": "Copy B2 Path",
         "category": "B2",
@@ -173,6 +179,10 @@
         },
         {
           "command": "b2.openFile",
+          "when": "false"
+        },
+        {
+          "command": "b2.loadMore",
           "when": "false"
         },
         {

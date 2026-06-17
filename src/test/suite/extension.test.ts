@@ -31,6 +31,7 @@ suite("B2 Extension Test Suite", () => {
       "b2.authenticate",
       "b2.logout",
       "b2.refresh",
+      "b2.loadMore",
       "b2.copyPath",
       "b2.copyFileId",
       "b2.openFile",

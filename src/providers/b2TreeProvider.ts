@@ -38,6 +38,7 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
 
   private client: B2Client | null = null;
   private readonly listingStates = new Map<string, ListingState>();
+  private readonly loadingListings = new Set<string>();
 
   constructor(authService: AuthService) {
     // Refresh when auth state changes
@@ -48,28 +49,38 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
   setClient(client: B2Client | null): void {
     this.client = client;
     this.listingStates.clear();
+    this.loadingListings.clear();
   }
 
   /** Refresh the entire tree. */
   refresh(): void {
     this.listingStates.clear();
+    this.loadingListings.clear();
     this._onDidChangeTreeData.fire();
   }
 
   /** Load the next page for a bucket/folder that has more objects. */
   async loadMore(item: LoadMoreTreeItem): Promise<void> {
-    const state = await this.getOrCreateListingState(item.bucket, item.prefix);
-    if (state.nextFileName === undefined || state.items.length >= TREE_LIST_HARD_CAP) {
+    const key = this.listingKey(item.bucket, item.prefix);
+    if (this.loadingListings.has(key)) {
       return;
     }
 
+    this.loadingListings.add(key);
     try {
+      const state = await this.getOrCreateListingState(item.bucket, item.prefix);
+      if (state.nextFileName === undefined || state.items.length >= TREE_LIST_HARD_CAP) {
+        return;
+      }
+
       await this.fetchNextPage(item.bucket, item.prefix, state);
       this._onDidChangeTreeData.fire(item.parent);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logError(`Tree: loadMore failed`, error);
       vscode.window.showErrorMessage(`B2: ${message}`);
+    } finally {
+      this.loadingListings.delete(key);
     }
   }
 
@@ -158,7 +169,8 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       ...(startFileName !== undefined ? { startFileName } : {}),
     });
 
-    for (const file of page.files.slice(0, remaining)) {
+    const visibleFiles = page.files.slice(0, remaining);
+    for (const file of visibleFiles) {
       if (file.action === "folder") {
         state.items.push(new FolderTreeItem(bucket, file.fileName));
       } else {
@@ -166,7 +178,10 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       }
     }
 
-    const nextFileName = page.nextFileName ?? undefined;
+    const nextFileName =
+      page.files.length > visibleFiles.length
+        ? visibleFiles[visibleFiles.length - 1]?.fileName
+        : (page.nextFileName ?? undefined);
     if (nextFileName !== undefined && nextFileName === startFileName) {
       throw new Error("B2 returned an unchanged continuation token; listing stopped.");
     }
@@ -187,7 +202,7 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
     if (state.items.length >= TREE_LIST_HARD_CAP) {
       items.push(new ListingLimitTreeItem(TREE_LIST_HARD_CAP));
     } else {
-      items.push(new LoadMoreTreeItem(bucket, bucket.name, prefix, parent));
+      items.push(new LoadMoreTreeItem(bucket, prefix, parent));
     }
 
     return items;

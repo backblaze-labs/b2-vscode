@@ -19,13 +19,12 @@ export class LoadMoreTreeItem extends vscode.TreeItem {
 
   constructor(
     readonly bucket: Bucket,
-    readonly bucketName: string,
     readonly prefix: string,
     readonly parent: PageableTreeItem,
   ) {
     super("Load more", vscode.TreeItemCollapsibleState.None);
     this.description = prefix ? `More in ${prefix}` : "More objects";
-    this.tooltip = `Load more objects from b2://${bucketName}/${prefix}`;
+    this.tooltip = `Load more objects from b2://${bucket.name}/${prefix}`;
     this.iconPath = new vscode.ThemeIcon("more");
     this.command = {
       command: "b2.loadMore",

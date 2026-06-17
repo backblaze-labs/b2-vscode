@@ -41,7 +41,6 @@ interface ListFilesResult {
   continuationToken: string | null;
   nextContinuationToken: string | null;
   truncated: boolean;
-  hasMore: boolean;
   pageCount: number;
 }
 
@@ -101,7 +100,8 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
       });
       pageCount++;
 
-      for (const f of page.files.slice(0, remaining)) {
+      const visibleFiles = page.files.slice(0, remaining);
+      for (const f of visibleFiles) {
         throwIfCancellationRequested(token);
         files.push({
           name: f.fileName,
@@ -111,7 +111,10 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
         });
       }
 
-      nextContinuationToken = page.nextFileName ?? undefined;
+      nextContinuationToken =
+        page.files.length > visibleFiles.length
+          ? visibleFiles[visibleFiles.length - 1]?.fileName
+          : (page.nextFileName ?? undefined);
       if (nextContinuationToken === undefined) {
         break;
       }
@@ -134,7 +137,6 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
       continuationToken: params.continuationToken ?? null,
       nextContinuationToken: nextContinuationToken ?? null,
       truncated: nextContinuationToken !== undefined,
-      hasMore: nextContinuationToken !== undefined,
       pageCount,
     };
   },
