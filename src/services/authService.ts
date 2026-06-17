@@ -24,6 +24,7 @@ import {
 } from "../constants";
 import type { B2AuthState } from "../types";
 import { log, logError } from "../logger";
+import { formatB2UserMessage } from "../errors";
 
 /**
  * Resolved B2 credentials.
@@ -31,6 +32,15 @@ import { log, logError } from "../logger";
 export interface B2Credentials {
   keyId: string;
   appKey: string;
+}
+
+export interface AuthServiceOptions {
+  /** Override environment lookup for tests. Defaults to process.env. */
+  environment?: Record<string, string | undefined>;
+  /** Override B2 CLI database search paths for tests. */
+  b2CliDatabasePaths?: readonly string[];
+  /** Override sql.js WASM path for tests. */
+  sqlWasmPath?: string;
 }
 
 /**
@@ -44,7 +54,12 @@ export class AuthService implements vscode.Disposable {
 
   private state: B2AuthState = { isAuthenticated: false };
 
-  constructor(private readonly secrets: vscode.SecretStorage) {}
+  private credentialResolutionWarning: string | undefined;
+
+  constructor(
+    private readonly secrets: vscode.SecretStorage,
+    private readonly options: AuthServiceOptions = {},
+  ) {}
 
   dispose(): void {
     this._onAuthStateChanged.dispose();
@@ -60,6 +75,11 @@ export class AuthService implements vscode.Disposable {
   /** Whether the user is currently authenticated. */
   isAuthenticated(): boolean {
     return this.state.isAuthenticated;
+  }
+
+  /** Last non-fatal credential resolution warning, if CLI credentials failed to load. */
+  getCredentialResolutionWarning(): string | undefined {
+    return this.credentialResolutionWarning;
   }
 
   /**
@@ -78,6 +98,8 @@ export class AuthService implements vscode.Disposable {
    * Returns `null` if no credentials are found.
    */
   async resolveCredentials(): Promise<B2Credentials | null> {
+    this.credentialResolutionWarning = undefined;
+
     // 1. VS Code SecretStorage
     const storedKeyId = await this.secrets.get(SECRET_KEY_ID);
     const storedAppKey = await this.secrets.get(SECRET_APP_KEY);
@@ -86,8 +108,9 @@ export class AuthService implements vscode.Disposable {
     }
 
     // 2. Environment variables
-    const envKeyId = process.env[ENV_KEY_ID];
-    const envAppKey = process.env[ENV_APP_KEY];
+    const environment = this.options.environment ?? process.env;
+    const envKeyId = environment[ENV_KEY_ID];
+    const envAppKey = environment[ENV_APP_KEY];
     if (envKeyId && envAppKey) {
       return { keyId: envKeyId, appKey: envAppKey };
     }
@@ -145,11 +168,25 @@ export class AuthService implements vscode.Disposable {
       return result;
     } catch (err) {
       logError("CLI-AUTH: Error reading B2 CLI database", err);
+      this.credentialResolutionWarning = `B2 CLI credentials could not be read. ${formatB2UserMessage(err)}`;
       return null;
     }
   }
 
   private findB2CliDatabase(): string | null {
+    if (this.options.b2CliDatabasePaths) {
+      for (const candidate of this.options.b2CliDatabasePaths) {
+        log(
+          `CLI-AUTH: Checking configured path: ${candidate} -> exists=${fs.existsSync(candidate)}`,
+        );
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      }
+
+      return null;
+    }
+
     const home = os.homedir();
     log(`CLI-AUTH: Home directory: ${home}`);
 
@@ -159,7 +196,8 @@ export class AuthService implements vscode.Disposable {
       return legacyPath;
     }
 
-    const xdgHome = process.env.XDG_CONFIG_HOME ?? path.join(home, ".config");
+    const environment = this.options.environment ?? process.env;
+    const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
     log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${fs.existsSync(xdgPath)}`);
     if (fs.existsSync(xdgPath)) {
@@ -176,7 +214,9 @@ export class AuthService implements vscode.Disposable {
 
     // Load WASM binary directly to avoid all path resolution issues
     const extensionRoot = path.join(__dirname, "..");
-    const wasmPath = path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
+    const wasmPath =
+      this.options.sqlWasmPath ??
+      path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
     log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
 
     const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;
@@ -206,7 +246,7 @@ export class AuthService implements vscode.Disposable {
       const appKey = row[1] as string | null;
 
       if (keyId && appKey) {
-        log(`CLI-AUTH: Found keyId: ${keyId.substring(0, 8)}...`);
+        log("CLI-AUTH: Found key ID and application key in CLI database.");
         return { keyId, appKey };
       }
       return null;

@@ -8,6 +8,8 @@
 
 import * as vscode from "vscode";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
+import { formatB2UserMessage } from "../errors";
+import { logError } from "../logger";
 
 /**
  * Adapter that wraps a B2ToolDefinition + B2ToolOperation into a
@@ -44,7 +46,8 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
       const message = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      logError(`${this.definition.displayName} tool failed`, error);
+      const errorMessage = formatB2UserMessage(error);
       throw new Error(`${this.definition.displayName} failed: ${errorMessage}`);
     }
   }

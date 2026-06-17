@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { B2ResourceNotFoundError } from "../../errors";
 
 interface ListFilesParams {
   bucket: string;
@@ -35,7 +36,7 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
-      throw new Error(`Bucket "${params.bucket}" not found.`);
+      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
     // Omit the delimiter to recurse; use "/" to list a single level.

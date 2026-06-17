@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { B2ResourceNotFoundError } from "../../errors";
 
 interface DeleteFileParams {
   bucket: string;
@@ -24,13 +25,15 @@ export const deleteFileOperation: B2ToolOperation<DeleteFileParams, DeleteFileRe
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
-      throw new Error(`Bucket "${params.bucket}" not found.`);
+      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
     // Look up the file to get its version ID
     const file = await bucket.getFileInfoByName(params.path);
     if (!file) {
-      throw new Error(`File "${params.path}" not found in bucket "${params.bucket}".`);
+      throw new B2ResourceNotFoundError(
+        `File "${params.path}" not found in bucket "${params.bucket}".`,
+      );
     }
 
     await bucket.deleteFileVersion(file.fileName, file.fileId);

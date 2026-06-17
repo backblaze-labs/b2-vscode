@@ -12,6 +12,7 @@ import * as vscode from "vscode";
 import type { B2Client, Bucket } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import { log, logError } from "../logger";
+import { formatB2UserMessage } from "../errors";
 import { MAX_FILE_COUNT } from "../constants";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
@@ -19,6 +20,10 @@ import { FileTreeItem } from "../models/fileTreeItem";
 
 /** Union of all tree item types used in the B2 Buckets view. */
 export type B2TreeItem = BucketTreeItem | FolderTreeItem | FileTreeItem;
+
+export function buildTreeErrorMessage(error: unknown): string {
+  return `B2: Could not load bucket contents. ${formatB2UserMessage(error)}`;
+}
 
 /**
  * Tree data provider for browsing B2 buckets and files.
@@ -77,9 +82,8 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       // File → no children
       return [];
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       logError(`Tree: getChildren failed`, error);
-      vscode.window.showErrorMessage(`B2: ${message}`);
+      vscode.window.showErrorMessage(buildTreeErrorMessage(error));
       return [];
     }
   }

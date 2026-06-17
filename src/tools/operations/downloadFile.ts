@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { streamToBuffer } from "../../services/b2";
+import { B2ResourceNotFoundError } from "../../errors";
 
 interface DownloadFileParams {
   bucket: string;
@@ -31,7 +32,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
-      throw new Error(`Bucket "${params.bucket}" not found.`);
+      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
     // Determine local save path
