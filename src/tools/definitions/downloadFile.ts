@@ -6,6 +6,12 @@
 
 import type { B2ToolDefinition } from "../types";
 
+function localDestinationFor(input: Record<string, unknown>): string {
+  return typeof input.localPath === "string" && input.localPath.length > 0
+    ? input.localPath
+    : "your local workspace";
+}
+
 export const downloadFileTool: B2ToolDefinition = {
   name: "b2_downloadFile",
   displayName: "B2: Download File",
@@ -33,5 +39,5 @@ export const downloadFileTool: B2ToolDefinition = {
   tags: ["b2", "file", "download"],
   risk: "write",
   describeEffect: (input) =>
-    `download b2://${String(input.bucket)}/${String(input.path)} to your local workspace`,
+    `download b2://${String(input.bucket)}/${String(input.path)} to ${localDestinationFor(input)}`,
 };

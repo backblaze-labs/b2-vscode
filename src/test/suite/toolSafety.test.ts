@@ -121,6 +121,17 @@ suite("LM Tool Safety", () => {
     assert.doesNotMatch(text, /\(file name\)/);
   });
 
+  test("downloadFile names an explicit localPath destination", async () => {
+    const text = await confirmText(downloadFileTool, {
+      bucket: "my-bucket",
+      path: "data/out.csv",
+      localPath: "/tmp/downloads/out.csv",
+    });
+
+    assert.match(text, /\/tmp\/downloads\/out\.csv/);
+    assert.doesNotMatch(text, /your local workspace/);
+  });
+
   test("read-only listBuckets is marked read-only", async () => {
     const text = await confirmText(listBucketsTool, {});
     assert.match(text, /read-only/i);
