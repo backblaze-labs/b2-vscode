@@ -24,7 +24,7 @@
     "compile": "npm run build:icons && webpack",
     "watch": "webpack --watch",
     "package": "npm run build:icons && webpack --mode production --devtool hidden-source-map",
-    "compile-tests": "tsc -p tsconfig.test.json",
+    "compile-tests": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && tsc -p tsconfig.test.json",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write 'src/**/*.ts' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",

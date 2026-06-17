@@ -5,6 +5,7 @@
  */
 
 import * as vscode from "vscode";
+import { formatB2DiagnosticMessage, formatB2DiagnosticStack, redactSensitiveText } from "./errors";
 
 let channel: vscode.OutputChannel | undefined;
 
@@ -14,14 +15,23 @@ export function initLogger(): vscode.OutputChannel {
 }
 
 export function log(message: string): void {
-  const line = `[${new Date().toISOString()}] ${message}`;
+  const safeMessage = redactSensitiveText(message);
+  const line = `[${new Date().toISOString()}] ${safeMessage}`;
   channel?.appendLine(line);
-  console.log(`[B2] ${message}`);
+  console.log(`[B2] ${safeMessage}`);
 }
 
 export function logError(message: string, error?: unknown): void {
-  const errStr = error instanceof Error ? error.message : String(error ?? "");
-  const line = `[${new Date().toISOString()}] ERROR: ${message}${errStr ? ` — ${errStr}` : ""}`;
+  const safeMessage = redactSensitiveText(message);
+  const errStr = error === undefined ? "" : formatB2DiagnosticMessage(error);
+  const stack = error === undefined ? undefined : formatB2DiagnosticStack(error);
+  const line = `[${new Date().toISOString()}] ERROR: ${safeMessage}${errStr ? ` — ${errStr}` : ""}`;
   channel?.appendLine(line);
-  console.error(`[B2] ${message}`, error);
+  if (stack) {
+    channel?.appendLine(stack);
+  }
+  console.error(`[B2] ${safeMessage}${errStr ? ` — ${errStr}` : ""}`);
+  if (stack) {
+    console.error(stack);
+  }
 }

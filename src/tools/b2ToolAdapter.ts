@@ -8,6 +8,8 @@
 
 import * as vscode from "vscode";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
+import { formatB2UserMessage } from "../errors";
+import { logError } from "../logger";
 
 function backtickDelimiter(value: string, minimumLength: number): string {
   const backtickRuns = value.match(/`+/g) ?? [];
@@ -110,7 +112,8 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
       if (error instanceof vscode.CancellationError) {
         throw error;
       }
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      logError(`${this.definition.displayName} tool failed`, error);
+      const errorMessage = formatB2UserMessage(error);
       throw new Error(`${this.definition.displayName} failed: ${errorMessage}`);
     }
   }

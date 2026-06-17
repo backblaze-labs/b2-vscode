@@ -18,6 +18,7 @@ import { registerCommands } from "./commands";
 import { registerB2Tools } from "./tools/registration";
 import { VIEW_BUCKETS } from "./constants";
 import { initLogger, log, logError } from "./logger";
+import { formatB2UserMessage } from "./errors";
 
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
@@ -87,11 +88,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
     } else {
-      await authService.setAuthState({ isAuthenticated: false });
+      const warning = authService.getCredentialResolutionWarning();
+      await authService.setAuthState({
+        isAuthenticated: false,
+        ...(warning ? { error: warning } : {}),
+      });
       log("No stored credentials found.");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatB2UserMessage(error);
     logError("Auto-auth failed", error);
     await authService.setAuthState({ isAuthenticated: false, error: message });
   }

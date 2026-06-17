@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { B2ResourceNotFoundError } from "../../errors";
 
 interface PresignUrlParams {
   bucket: string;
@@ -27,7 +28,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
-      throw new Error(`Bucket "${params.bucket}" not found.`);
+      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
     const expiresIn = params.expiresIn ?? 3600;

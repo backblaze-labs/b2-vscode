@@ -40,7 +40,9 @@ export class B2StatusBar implements vscode.Disposable {
       this.statusBarItem.backgroundColor = undefined;
     } else {
       this.statusBarItem.text = "$(backblaze-flame) B2: Not Connected";
-      this.statusBarItem.tooltip = "Backblaze B2 — Click to authenticate";
+      this.statusBarItem.tooltip = state.error
+        ? `Backblaze B2 — ${state.error}\nClick to authenticate`
+        : "Backblaze B2 — Click to authenticate";
       this.statusBarItem.backgroundColor = undefined;
     }
   }
