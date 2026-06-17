@@ -5,6 +5,7 @@
  */
 
 import type { B2ToolDefinition } from "../types";
+import { inputText } from "./inputText";
 
 export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
@@ -31,4 +32,7 @@ export const presignUrlTool: B2ToolDefinition = {
     required: ["bucket", "path"],
   },
   tags: ["b2", "file", "presign", "url"],
+  risk: "exfiltration",
+  describeEffect: (input) =>
+    `create a shareable download URL for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
 };

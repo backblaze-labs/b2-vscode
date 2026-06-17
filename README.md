@@ -62,10 +62,16 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `listBuckets` — list all accessible buckets
 - `listFiles` — list files in a bucket/folder
 - `getFileInfo` — get metadata for a specific file
-- `downloadFile` — download a file to a local temp directory
+- `downloadFile` — download a file to the workspace by default, or to `localPath`
 - `uploadFile` — upload a file to a bucket
 - `deleteFile` — delete a file by name
 - `presignUrl` — generate a time-limited download URL
+
+### Tool safety
+
+Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable download link. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
+
+In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 
 ## Development
 

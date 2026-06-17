@@ -22,6 +22,14 @@ interface DownloadFileResult {
   message: string;
 }
 
+function workspacePath(relativePath: string, missingWorkspaceMessage: string): string {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    throw new Error(missingWorkspaceMessage);
+  }
+  return path.join(workspaceFolder.uri.fsPath, relativePath);
+}
+
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
   async execute(params: DownloadFileParams, extras: ToolExtras): Promise<DownloadFileResult> {
     const client = extras.getClient();
@@ -37,14 +45,15 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     // Determine local save path
     let savePath: string;
     if (params.localPath) {
-      savePath = params.localPath;
+      savePath = path.isAbsolute(params.localPath)
+        ? params.localPath
+        : workspacePath(
+            params.localPath,
+            "No workspace folder open. Please use an absolute localPath.",
+          );
     } else {
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder) {
-        throw new Error("No workspace folder open. Please specify a localPath.");
-      }
       const fileName = path.basename(params.path);
-      savePath = path.join(workspaceFolder.uri.fsPath, fileName);
+      savePath = workspacePath(fileName, "No workspace folder open. Please specify a localPath.");
     }
 
     // Download and collect the streaming body

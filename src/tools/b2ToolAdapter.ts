@@ -9,6 +9,29 @@
 import * as vscode from "vscode";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
 
+function backtickDelimiter(value: string, minimumLength: number): string {
+  const backtickRuns = value.match(/`+/g) ?? [];
+  const delimiterLength = Math.max(minimumLength, ...backtickRuns.map((run) => run.length + 1));
+  return "`".repeat(delimiterLength);
+}
+
+function formatInlineCode(value: string): string {
+  const normalized = value.replace(/\r\n|\r|\n/g, "\\n");
+  const delimiter = backtickDelimiter(normalized, 1);
+  const padded = normalized.startsWith("`") || normalized.endsWith("`");
+  const content = padded ? ` ${normalized} ` : normalized;
+  return `${delimiter}${content}${delimiter}`;
+}
+
+function formatFencedCode(language: string, value: string): string {
+  const delimiter = backtickDelimiter(value, 3);
+  return `${delimiter}${language}\n${value}\n${delimiter}`;
+}
+
+function assertNeverRisk(risk: never): never {
+  throw new Error(`Unhandled tool risk: ${String(risk)}`);
+}
+
 /**
  * Adapter that wraps a B2ToolDefinition + B2ToolOperation into a
  * vscode.LanguageModelTool for registration with vscode.lm.registerTool().
@@ -24,13 +47,53 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
     options: vscode.LanguageModelToolInvocationPrepareOptions<TParams>,
     _token: vscode.CancellationToken,
   ): Promise<vscode.PreparedToolInvocation> {
+    const input = (options.input ?? {}) as unknown as Record<string, unknown>;
+    const effect = this.definition.describeEffect?.(input);
+    const inputJson = formatFencedCode("json", JSON.stringify(input, null, 2));
+
+    // Confirmation strength scales with the tool's risk. Every tool still
+    // requires a confirmation, so an agent cannot run one silently; the
+    // destructive and exfiltration tools additionally spell out that the
+    // action is irreversible or exposes data.
+    const parts: string[] = [];
+    let title = this.definition.displayName;
+
+    switch (this.definition.risk) {
+      case "destructive":
+        title = `Confirm: ${this.definition.displayName}`;
+        parts.push(`Warning: this will ${formatInlineCode(effect ?? "delete data in B2")}.`);
+        parts.push(
+          "This is irreversible and **cannot be undone**. Only continue if you intended this action.",
+        );
+        break;
+      case "exfiltration":
+        title = `Confirm: ${this.definition.displayName}`;
+        parts.push(
+          `Warning: this will ${formatInlineCode(effect ?? "create a shareable download link")}.`,
+        );
+        parts.push(
+          "Anyone who obtains the link can download the file until it expires, with no Backblaze login required.",
+        );
+        break;
+      case "write":
+        parts.push(
+          `This will ${formatInlineCode(effect ?? "write data to B2 or your workspace")}.`,
+        );
+        break;
+      case "readOnly":
+        parts.push(`Read-only: this will ${formatInlineCode(effect ?? "read from B2")}.`);
+        parts.push("No changes are made.");
+        break;
+      default:
+        assertNeverRisk(this.definition.risk);
+    }
+    parts.push(inputJson);
+
     return {
       invocationMessage: `Running ${this.definition.displayName}...`,
       confirmationMessages: {
-        title: this.definition.displayName,
-        message: new vscode.MarkdownString(
-          `Execute **${this.definition.displayName}** with:\n\n\`\`\`json\n${JSON.stringify(options.input, null, 2)}\n\`\`\``,
-        ),
+        title,
+        message: new vscode.MarkdownString(parts.join("\n\n")),
       },
     };
   }
