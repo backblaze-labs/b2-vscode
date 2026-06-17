@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
+const launchArgs = ["--disable-extensions", "--disable-workspace-trust"];
+
+if (process.platform === "darwin") {
+  launchArgs.push("--use-mock-keychain");
+}
 
 mkdirSync(join(testHome, ".vscode"), { recursive: true });
 mkdirSync(testXdgConfig, { recursive: true });
@@ -26,6 +31,6 @@ export default defineConfig([
       failZero: true,
       forbidOnly: true,
     },
-    launchArgs: ["--disable-extensions", "--disable-workspace-trust"],
+    launchArgs,
   },
 ]);
