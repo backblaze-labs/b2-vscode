@@ -13,6 +13,7 @@ import type { TempFileManager } from "../services/tempFileManager";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
+import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
 import { registerB2Tools } from "../tools/registration";
 import { createConfiguredB2Client, streamToBuffer } from "../services/b2";
 import {
@@ -479,6 +480,15 @@ export function registerCommands(services: CommandServices): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.refresh", () => {
       treeProvider.refresh();
+    }),
+  );
+
+  // ── Load More ────────────────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("b2.loadMore", async (item?: LoadMoreTreeItem) => {
+      if (item) {
+        await treeProvider.loadMore(item);
+      }
     }),
   );
 

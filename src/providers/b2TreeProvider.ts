@@ -12,13 +12,21 @@ import * as vscode from "vscode";
 import type { B2Client, Bucket } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import { log, logError } from "../logger";
-import { MAX_FILE_COUNT } from "../constants";
+import { TREE_LIST_HARD_CAP, TREE_LIST_PAGE_SIZE } from "../constants";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
+import { ListingLimitTreeItem } from "../models/listingLimitTreeItem";
+import { LoadMoreTreeItem, type PageableTreeItem } from "../models/loadMoreTreeItem";
 
 /** Union of all tree item types used in the B2 Buckets view. */
-export type B2TreeItem = BucketTreeItem | FolderTreeItem | FileTreeItem;
+export type ListedB2TreeItem = BucketTreeItem | FolderTreeItem | FileTreeItem;
+export type B2TreeItem = ListedB2TreeItem | LoadMoreTreeItem | ListingLimitTreeItem;
+
+interface ListingState {
+  readonly items: ListedB2TreeItem[];
+  nextFileName: string | undefined;
+}
 
 /**
  * Tree data provider for browsing B2 buckets and files.
@@ -29,6 +37,7 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
     this._onDidChangeTreeData.event;
 
   private client: B2Client | null = null;
+  private readonly listingStates = new Map<string, ListingState>();
 
   constructor(authService: AuthService) {
     // Refresh when auth state changes
@@ -38,11 +47,30 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
   /** Set or replace the B2 client (called after authentication). */
   setClient(client: B2Client | null): void {
     this.client = client;
+    this.listingStates.clear();
   }
 
   /** Refresh the entire tree. */
   refresh(): void {
+    this.listingStates.clear();
     this._onDidChangeTreeData.fire();
+  }
+
+  /** Load the next page for a bucket/folder that has more objects. */
+  async loadMore(item: LoadMoreTreeItem): Promise<void> {
+    const state = await this.getOrCreateListingState(item.bucket, item.prefix);
+    if (state.nextFileName === undefined || state.items.length >= TREE_LIST_HARD_CAP) {
+      return;
+    }
+
+    try {
+      await this.fetchNextPage(item.bucket, item.prefix, state);
+      this._onDidChangeTreeData.fire(item.parent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logError(`Tree: loadMore failed`, error);
+      vscode.window.showErrorMessage(`B2: ${message}`);
+    }
   }
 
   getTreeItem(element: B2TreeItem): vscode.TreeItem {
@@ -66,12 +94,16 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
 
       // Bucket → list top-level files/folders
       if (element instanceof BucketTreeItem) {
-        return this.listChildren(element.bucket, "");
+        return this.listChildren(element.bucket, "", element);
       }
 
       // Folder → list children at this prefix
       if (element instanceof FolderTreeItem) {
-        return this.listChildren(element.bucket, element.prefix);
+        return this.listChildren(element.bucket, element.prefix, element);
+      }
+
+      if (element instanceof LoadMoreTreeItem || element instanceof ListingLimitTreeItem) {
+        return [];
       }
 
       // File → no children
@@ -90,29 +122,78 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
    * B2 returns virtual folder entries (`action: "folder"`) alongside real files,
    * enabling tree-style browsing.
    */
-  private async listChildren(bucket: Bucket, prefix: string): Promise<B2TreeItem[]> {
-    const items: B2TreeItem[] = [];
-    let startFileName: string | undefined;
+  private async listChildren(
+    bucket: Bucket,
+    prefix: string,
+    parent: PageableTreeItem,
+  ): Promise<B2TreeItem[]> {
+    const state = await this.getOrCreateListingState(bucket, prefix);
+    return this.decoratePagedListing(bucket, prefix, parent, state);
+  }
 
-    do {
-      const page = await bucket.listFileNames({
-        delimiter: "/",
-        pageSize: MAX_FILE_COUNT,
-        ...(prefix ? { prefix } : {}),
-        ...(startFileName !== undefined ? { startFileName } : {}),
-      });
+  private async getOrCreateListingState(bucket: Bucket, prefix: string): Promise<ListingState> {
+    const key = this.listingKey(bucket, prefix);
+    const existing = this.listingStates.get(key);
+    if (existing) {
+      return existing;
+    }
 
-      for (const file of page.files) {
-        if (file.action === "folder") {
-          items.push(new FolderTreeItem(bucket, file.fileName));
-        } else {
-          items.push(new FileTreeItem(bucket, file));
-        }
+    const created: ListingState = { items: [], nextFileName: undefined };
+    this.listingStates.set(key, created);
+    await this.fetchNextPage(bucket, prefix, created);
+    return created;
+  }
+
+  private async fetchNextPage(bucket: Bucket, prefix: string, state: ListingState): Promise<void> {
+    const remaining = TREE_LIST_HARD_CAP - state.items.length;
+    if (remaining <= 0) {
+      return;
+    }
+
+    const startFileName = state.nextFileName;
+    const page = await bucket.listFileNames({
+      delimiter: "/",
+      pageSize: Math.min(TREE_LIST_PAGE_SIZE, remaining),
+      ...(prefix ? { prefix } : {}),
+      ...(startFileName !== undefined ? { startFileName } : {}),
+    });
+
+    for (const file of page.files.slice(0, remaining)) {
+      if (file.action === "folder") {
+        state.items.push(new FolderTreeItem(bucket, file.fileName));
+      } else {
+        state.items.push(new FileTreeItem(bucket, file));
       }
+    }
 
-      startFileName = page.nextFileName ?? undefined;
-    } while (startFileName !== undefined);
+    const nextFileName = page.nextFileName ?? undefined;
+    if (nextFileName !== undefined && nextFileName === startFileName) {
+      throw new Error("B2 returned an unchanged continuation token; listing stopped.");
+    }
+    state.nextFileName = nextFileName;
+  }
+
+  private decoratePagedListing(
+    bucket: Bucket,
+    prefix: string,
+    parent: PageableTreeItem,
+    state: ListingState,
+  ): B2TreeItem[] {
+    const items: B2TreeItem[] = [...state.items];
+    if (state.nextFileName === undefined) {
+      return items;
+    }
+
+    if (state.items.length >= TREE_LIST_HARD_CAP) {
+      items.push(new ListingLimitTreeItem(TREE_LIST_HARD_CAP));
+    } else {
+      items.push(new LoadMoreTreeItem(bucket, bucket.name, prefix, parent));
+    }
 
     return items;
+  }
+
+  private listingKey(bucket: Bucket, prefix: string): string {
+    return JSON.stringify([bucket.name, prefix]);
   }
 }

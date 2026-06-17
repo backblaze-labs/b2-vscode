@@ -100,10 +100,10 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
 
   async invoke(
     options: vscode.LanguageModelToolInvocationOptions<TParams>,
-    _token: vscode.CancellationToken,
+    token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelToolResult> {
     try {
-      const result = await this.operation.execute(options.input, this.extras);
+      const result = await this.operation.execute(options.input, this.extras, token);
       const message = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
     } catch (error) {

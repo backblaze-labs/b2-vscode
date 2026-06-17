@@ -1,0 +1,171 @@
+/**
+ * Tests for bounded B2 tree listings.
+ *
+ * @module test/suite/b2TreeProvider
+ */
+
+import * as assert from "assert";
+import * as vscode from "vscode";
+import {
+  SSE_NONE,
+  accountId,
+  bucketId,
+  fileId,
+  type B2Client,
+  type Bucket,
+  type FileVersion,
+} from "@backblaze-labs/b2-sdk";
+import { TREE_LIST_HARD_CAP, TREE_LIST_PAGE_SIZE } from "../../constants";
+import type { AuthService } from "../../services/authService";
+import { BucketTreeItem } from "../../models/bucketTreeItem";
+import { FolderTreeItem } from "../../models/folderTreeItem";
+import { ListingLimitTreeItem } from "../../models/listingLimitTreeItem";
+import { LoadMoreTreeItem } from "../../models/loadMoreTreeItem";
+import { B2TreeProvider } from "../../providers/b2TreeProvider";
+
+type ListFileNamesOptions = Parameters<Bucket["listFileNames"]>[0];
+type ListFileNamesPage = Awaited<ReturnType<Bucket["listFileNames"]>>;
+
+function file(fileName: string, action: "folder" | "upload" = "upload"): FileVersion {
+  return {
+    accountId: accountId("account-id"),
+    fileName,
+    action,
+    bucketId: bucketId("bucket-id"),
+    contentLength: action === "folder" ? 0 : 5,
+    contentMd5: null,
+    contentSha1: null,
+    contentType: action === "folder" ? "" : "text/plain",
+    fileId: fileId(`id-${fileName}`),
+    fileInfo: {},
+    fileRetention: { isClientAuthorizedToRead: true, value: null },
+    legalHold: { isClientAuthorizedToRead: true, value: null },
+    replicationStatus: null,
+    serverSideEncryption: SSE_NONE,
+    uploadTimestamp: 0,
+  };
+}
+
+function fakeAuthService(): AuthService {
+  return {
+    onAuthStateChanged() {
+      return { dispose() {} };
+    },
+  } as unknown as AuthService;
+}
+
+function makeBucket(pages: ListFileNamesPage[]): {
+  readonly bucket: Bucket;
+  readonly calls: ListFileNamesOptions[];
+} {
+  const calls: ListFileNamesOptions[] = [];
+  const remainingPages = [...pages];
+  const bucket = {
+    id: "bucket-id",
+    name: "bucket",
+    info: { bucketType: "allPrivate" },
+    async listFileNames(options?: ListFileNamesOptions): Promise<ListFileNamesPage> {
+      calls.push(options);
+      return remainingPages.shift() ?? { files: [], nextFileName: null };
+    },
+  } as unknown as Bucket;
+
+  return { bucket, calls };
+}
+
+function makeProvider(bucket: Bucket): B2TreeProvider {
+  const client = {
+    accountInfo: { getAccountId: () => "account-id" },
+    async listBuckets(): Promise<Bucket[]> {
+      return [bucket];
+    },
+  } as unknown as B2Client;
+  const provider = new B2TreeProvider(fakeAuthService());
+  provider.setClient(client);
+  return provider;
+}
+
+function label(item: vscode.TreeItem): string {
+  return typeof item.label === "string" ? item.label : (item.label?.label ?? "");
+}
+
+suite("B2 tree provider paging", () => {
+  test("returns an empty bucket without a load-more item", async () => {
+    const { bucket, calls } = makeBucket([{ files: [], nextFileName: null }]);
+    const provider = makeProvider(bucket);
+
+    const children = await provider.getChildren(new BucketTreeItem(bucket));
+
+    assert.deepStrictEqual(children, []);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0]?.delimiter, "/");
+    assert.strictEqual(calls[0]?.pageSize, TREE_LIST_PAGE_SIZE);
+  });
+
+  test("appends load-more and fetches the next page on command", async () => {
+    const { bucket, calls } = makeBucket([
+      { files: [file("sub/", "folder"), file("a.txt")], nextFileName: "b.txt" },
+      { files: [file("b.txt")], nextFileName: null },
+    ]);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+
+    const firstPage = await provider.getChildren(bucketItem);
+    assert.deepStrictEqual(firstPage.map(label), ["sub", "a.txt", "Load more"]);
+    assert.ok(firstPage[2] instanceof LoadMoreTreeItem);
+
+    await provider.loadMore(firstPage[2] as LoadMoreTreeItem);
+    const secondPage = await provider.getChildren(bucketItem);
+
+    assert.deepStrictEqual(secondPage.map(label), ["sub", "a.txt", "b.txt"]);
+    assert.deepStrictEqual(
+      calls.map((call) => call?.startFileName ?? null),
+      [null, "b.txt"],
+    );
+  });
+
+  test("preserves deep prefixes and special characters when listing folders", async () => {
+    const prefix = "deep prefix/üñîçødé & symbols/#/";
+    const { bucket, calls } = makeBucket([
+      { files: [file(`${prefix}file (1).txt`)], nextFileName: null },
+    ]);
+    const provider = makeProvider(bucket);
+
+    const children = await provider.getChildren(new FolderTreeItem(bucket, prefix));
+
+    assert.deepStrictEqual(children.map(label), ["file (1).txt"]);
+    assert.strictEqual(calls[0]?.prefix, prefix);
+    assert.strictEqual(calls[0]?.delimiter, "/");
+  });
+
+  test("stops loading and shows a cap notice at the tree hard cap", async () => {
+    const pages = Array.from({ length: 5 }, (_, pageIndex): ListFileNamesPage => {
+      const start = pageIndex * TREE_LIST_PAGE_SIZE;
+      return {
+        files: Array.from({ length: TREE_LIST_PAGE_SIZE }, (_, itemIndex) =>
+          file(`item-${start + itemIndex}.txt`),
+        ),
+        nextFileName: pageIndex === 4 ? "item-more.txt" : `item-${start + TREE_LIST_PAGE_SIZE}.txt`,
+      };
+    });
+    const { bucket, calls } = makeBucket(pages);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+
+    let children = await provider.getChildren(bucketItem);
+    for (let index = 0; index < 4; index++) {
+      const loadMore = children[children.length - 1];
+      assert.ok(loadMore instanceof LoadMoreTreeItem);
+      await provider.loadMore(loadMore);
+      children = await provider.getChildren(bucketItem);
+    }
+
+    assert.strictEqual(children.length, TREE_LIST_HARD_CAP + 1);
+    assert.ok(children[children.length - 1] instanceof ListingLimitTreeItem);
+    assert.strictEqual(calls.length, 5);
+    assert.strictEqual(
+      calls.every((call) => call?.pageSize === TREE_LIST_PAGE_SIZE),
+      true,
+    );
+  });
+});
