@@ -39,17 +39,22 @@ const allDefinitions = [
 /** Run prepareInvocation for a tool and return the confirmation message text. */
 async function confirmText(def: B2ToolDefinition, input: unknown): Promise<string> {
   const adapter = new B2ToolAdapter(def, noopOperation, extras);
-  const token = new vscode.CancellationTokenSource().token;
-  const prepared = await adapter.prepareInvocation(
-    { input } as unknown as vscode.LanguageModelToolInvocationPrepareOptions<unknown>,
-    token,
-  );
-  const cm = prepared.confirmationMessages;
-  assert.ok(cm, `${def.name} must require a confirmation`);
-  if (!cm) {
-    return "";
+  const tokenSource = new vscode.CancellationTokenSource();
+
+  try {
+    const prepared = await adapter.prepareInvocation(
+      { input } as unknown as vscode.LanguageModelToolInvocationPrepareOptions<unknown>,
+      tokenSource.token,
+    );
+    const cm = prepared.confirmationMessages;
+    assert.ok(cm, `${def.name} must require a confirmation`);
+    if (!cm) {
+      return "";
+    }
+    return typeof cm.message === "string" ? cm.message : cm.message.value;
+  } finally {
+    tokenSource.dispose();
   }
-  return typeof cm.message === "string" ? cm.message : cm.message.value;
 }
 
 suite("LM Tool Safety", () => {
@@ -76,6 +81,18 @@ suite("LM Tool Safety", () => {
       /``permanently delete b2:\/\/my-bucket\\n\*\*not the real effect\*\*\/data\/`x`\.csv``/,
     );
     assert.doesNotMatch(text, /\*\*permanently delete/);
+  });
+
+  test("JSON input previews use fences longer than input backtick runs", async () => {
+    const text = await confirmText(deleteFileTool, {
+      bucket: "my-bucket",
+      path: "data/```spoof.md",
+    });
+
+    assert.match(text, /^````json$/m);
+    assert.match(text, /^````$/m);
+    assert.doesNotMatch(text, /^```json$/m);
+    assert.doesNotMatch(text, /^```$/m);
   });
 
   test("presignUrl warns about a shareable link and names the target", async () => {

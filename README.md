@@ -62,7 +62,7 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `listBuckets` — list all accessible buckets
 - `listFiles` — list files in a bucket/folder
 - `getFileInfo` — get metadata for a specific file
-- `downloadFile` — download a file to a local temp directory
+- `downloadFile` — download a file to the workspace by default, or to `localPath`
 - `uploadFile` — upload a file to a bucket
 - `deleteFile` — delete a file by name
 - `presignUrl` — generate a time-limited download URL

@@ -9,14 +9,23 @@
 import * as vscode from "vscode";
 import type { B2ToolDefinition, B2ToolOperation, ToolExtras } from "./types";
 
+function backtickDelimiter(value: string, minimumLength: number): string {
+  const backtickRuns = value.match(/`+/g) ?? [];
+  const delimiterLength = Math.max(minimumLength, ...backtickRuns.map((run) => run.length + 1));
+  return "`".repeat(delimiterLength);
+}
+
 function formatInlineCode(value: string): string {
   const normalized = value.replace(/\r\n|\r|\n/g, "\\n");
-  const backtickRuns = normalized.match(/`+/g) ?? [];
-  const delimiterLength = Math.max(1, ...backtickRuns.map((run) => run.length + 1));
-  const delimiter = "`".repeat(delimiterLength);
+  const delimiter = backtickDelimiter(normalized, 1);
   const padded = normalized.startsWith("`") || normalized.endsWith("`");
   const content = padded ? ` ${normalized} ` : normalized;
   return `${delimiter}${content}${delimiter}`;
+}
+
+function formatFencedCode(language: string, value: string): string {
+  const delimiter = backtickDelimiter(value, 3);
+  return `${delimiter}${language}\n${value}\n${delimiter}`;
 }
 
 function assertNeverRisk(risk: never): never {
@@ -40,7 +49,7 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
   ): Promise<vscode.PreparedToolInvocation> {
     const input = (options.input ?? {}) as unknown as Record<string, unknown>;
     const effect = this.definition.describeEffect?.(input);
-    const inputJson = "```json\n" + JSON.stringify(input, null, 2) + "\n```";
+    const inputJson = formatFencedCode("json", JSON.stringify(input, null, 2));
 
     // Confirmation strength scales with the tool's risk. Every tool still
     // requires a confirmation, so an agent cannot run one silently; the
