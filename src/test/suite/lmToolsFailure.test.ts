@@ -103,6 +103,43 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("tool adapters preserve the original error cause", async () => {
+    const injected = classifyError(
+      { status: 429, code: "too_many_requests", message: "slow down" },
+      { retryAfter: 4 },
+    );
+    const operation: B2ToolOperation<unknown, unknown> = {
+      async execute() {
+        throw injected;
+      },
+    };
+    const adapter = new B2ToolAdapter(listBucketsTool, operation, noClientExtras);
+
+    try {
+      await adapter.invoke(
+        { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+        new vscode.CancellationTokenSource().token,
+      );
+      assert.fail("Expected adapter invocation to fail");
+    } catch (error) {
+      assert.ok(error instanceof Error);
+      assert.strictEqual(error.cause, injected);
+    }
+  });
+
+  test("tool adapters preserve expected extension guidance", async () => {
+    const adapter = new B2ToolAdapter(listBucketsTool, listBucketsOperation, noClientExtras);
+
+    await assert.rejects(
+      () =>
+        adapter.invoke(
+          { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+          new vscode.CancellationTokenSource().token,
+        ),
+      /B2: List Buckets failed: Not authenticated.*B2: Authenticate/i,
+    );
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(

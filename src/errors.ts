@@ -54,6 +54,14 @@ const SENSITIVE_TEXT_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(authorization token\s*[:=]\s*)\S+/gi, `$1${REDACTED}`],
 ];
 
+const SAFE_EXTENSION_MESSAGE_PREFIXES = [
+  "Not authenticated.",
+  "No workspace folder open.",
+  "B2 authentication canceled because",
+  "b2.apiUrl ",
+  "B2 CLI credentials could not be read.",
+];
+
 /**
  * Error used when a multi-step operation made progress but could not complete.
  */
@@ -115,6 +123,10 @@ function getErrorMessage(error: unknown): string {
     return error;
   }
   return String(error ?? "Unknown error");
+}
+
+function isSafeExtensionMessage(message: string): boolean {
+  return SAFE_EXTENSION_MESSAGE_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
 function getB2Code(error: unknown): string | undefined {
@@ -257,6 +269,15 @@ function missingCapabilitiesText(error: unknown): string {
   return missing.length === 0 ? "" : ` Missing capabilities: ${missing.join(", ")}.`;
 }
 
+function hasB2SdkFailure(error: unknown): boolean {
+  if (isB2ErrorLike(error)) {
+    return true;
+  }
+
+  const originalError = asRecord(error)?.originalError;
+  return originalError === undefined ? false : hasB2SdkFailure(originalError);
+}
+
 /**
  * Redact tokens, application keys, and secret-looking query parameters before
  * writing diagnostics to the output channel or console.
@@ -312,6 +333,10 @@ export function formatB2UserMessage(error: unknown): string {
   }
 
   const message = redactSensitiveText(getErrorMessage(error));
+  if (!isB2ErrorLike(error) && isSafeExtensionMessage(message)) {
+    return message;
+  }
+
   if (!isB2ErrorLike(error) && message) {
     return "Unexpected error. Check the Backblaze B2 output log for details.";
   }
@@ -390,7 +415,7 @@ function formatB2DiagnosticMessageInner(error: unknown, includeSdkNote: boolean)
     parts.push(`originalError=(${formatB2DiagnosticMessageInner(originalError, false)})`);
   }
 
-  if (includeSdkNote) {
+  if (includeSdkNote && hasB2SdkFailure(error)) {
     parts.push(SDK_RETRY_BACKOFF_NOTE);
   }
 

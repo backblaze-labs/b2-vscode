@@ -89,6 +89,14 @@ suite("B2 error handling", () => {
     assert.doesNotMatch(message, /Cannot read properties|secret/);
   });
 
+  test("preserves safe extension guidance for expected non-B2 errors", () => {
+    const message = formatB2UserMessage(
+      new Error("Not authenticated. Please run the B2: Authenticate command first."),
+    );
+
+    assert.equal(message, "Not authenticated. Please run the B2: Authenticate command first.");
+  });
+
   test("keeps partial operation failures visible", () => {
     const message = formatB2UserMessage(
       new B2PartialFailureError(
@@ -129,6 +137,12 @@ suite("B2 error handling", () => {
       diagnostic.match(/The B2 SDK retries retryable B2 errors with backoff/g)?.length,
       1,
     );
+  });
+
+  test("diagnostics omit the SDK retry note for non-B2 failures", () => {
+    const diagnostic = formatB2DiagnosticMessage(new TypeError("local fs failure"));
+
+    assert.doesNotMatch(diagnostic, /The B2 SDK retries retryable B2 errors with backoff/);
   });
 
   test("redacts secret-looking stack traces", () => {

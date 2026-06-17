@@ -114,7 +114,9 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
       }
       logError(`${this.definition.displayName} tool failed`, error);
       const errorMessage = formatB2UserMessage(error);
-      throw new Error(`${this.definition.displayName} failed: ${errorMessage}`);
+      throw new Error(`${this.definition.displayName} failed: ${errorMessage}`, {
+        cause: error,
+      });
     }
   }
 }
