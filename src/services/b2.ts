@@ -18,7 +18,7 @@ export const DEFAULT_B2_API_URL = "https://api.backblazeb2.com";
 
 const B2_CONFIGURATION_SECTION = "b2";
 const B2_API_URL_SETTING = "apiUrl";
-const CUSTOM_API_URL_CONFIRMATION = "Use Custom Endpoint";
+export const CONFIRM_CUSTOM_API_URL_LABEL = "Use Custom Endpoint";
 
 export interface B2ApiUrlConfig {
   readonly apiUrl: string;
@@ -34,6 +34,10 @@ export interface B2ApiUrlInspection {
 
 export interface CreateB2ClientOptions {
   readonly apiUrl?: string;
+}
+
+export function resolveB2ClientApiUrl(options: CreateB2ClientOptions = {}): B2ApiUrlConfig {
+  return normalizeB2ApiUrl(options.apiUrl);
 }
 
 function normalizeB2ApiUrl(value: unknown): B2ApiUrlConfig {
@@ -99,14 +103,39 @@ export function resolveB2ApiUrlFromInspection(
     );
   }
 
-  return normalizeB2ApiUrl(
-    inspection?.globalValue ?? inspection?.defaultValue ?? DEFAULT_B2_API_URL,
-  );
+  // Use an explicit undefined check, not `??`: null and other non-string user
+  // values must reach normalizeB2ApiUrl so they fail closed. defaultValue is
+  // extension-controlled, so `??` is safe there.
+  const configuredValue =
+    inspection?.globalValue !== undefined
+      ? inspection.globalValue
+      : (inspection?.defaultValue ?? DEFAULT_B2_API_URL);
+
+  return normalizeB2ApiUrl(configuredValue);
 }
 
 export function resolveB2ApiUrl(): B2ApiUrlConfig {
   const configuration = vscode.workspace.getConfiguration(B2_CONFIGURATION_SECTION);
   return resolveB2ApiUrlFromInspection(configuration.inspect(B2_API_URL_SETTING));
+}
+
+export function buildCustomApiUrlWarningMessage(apiUrl: string): string {
+  return `B2: Custom API URL configured (${sanitizeApiUrlForDisplay(apiUrl)}). Continue only if you trust this endpoint; your B2 application key will be sent there.`;
+}
+
+function sanitizeApiUrlForDisplay(apiUrl: string): string {
+  try {
+    const parsed = new URL(apiUrl);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${path}`;
+  } catch {
+    return "[invalid URL]";
+  }
 }
 
 /**
@@ -121,7 +150,7 @@ export function createB2Client(
   version: string,
   options: CreateB2ClientOptions = {},
 ): B2Client {
-  const apiUrl = normalizeB2ApiUrl(options.apiUrl);
+  const apiUrl = resolveB2ClientApiUrl(options);
   const clientOptions: B2ClientOptions = {
     applicationKeyId: credentials.keyId,
     applicationKey: credentials.appKey,
@@ -140,12 +169,12 @@ export async function createConfiguredB2Client(
 
   if (!apiUrl.isDefault) {
     const choice = await vscode.window.showWarningMessage(
-      `B2: Custom API URL configured (${apiUrl.apiUrl}). Continue only if you trust this endpoint; your B2 application key will be sent there.`,
+      buildCustomApiUrlWarningMessage(apiUrl.apiUrl),
       { modal: true },
-      CUSTOM_API_URL_CONFIRMATION,
+      CONFIRM_CUSTOM_API_URL_LABEL,
     );
 
-    if (choice !== CUSTOM_API_URL_CONFIRMATION) {
+    if (choice !== CONFIRM_CUSTOM_API_URL_LABEL) {
       throw new Error("B2 authentication canceled because the custom API URL was not confirmed.");
     }
 
