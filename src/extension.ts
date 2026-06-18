@@ -10,7 +10,7 @@
 import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
-import { AuthService, type B2Credentials } from "./services/authService";
+import { AuthService } from "./services/authService";
 import { TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
 import { B2StatusBar } from "./ui/statusBar";
@@ -22,48 +22,6 @@ import { formatB2UserMessage } from "./errors";
 
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
-
-type BundledCredentialSmokeResolver = (
-  dbPath: string,
-  sqlJsRuntimePath: string,
-  sqlWasmPath: string,
-) => Promise<B2Credentials | null>;
-
-function createEmptySecretStorage(): vscode.SecretStorage {
-  const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
-  return {
-    onDidChange: emitter.event,
-    async get() {
-      return undefined;
-    },
-    async store() {},
-    async delete() {},
-  };
-}
-
-async function resolveBundledSmokeCredentials(
-  dbPath: string,
-  sqlJsRuntimePath: string,
-  sqlWasmPath: string,
-): Promise<B2Credentials | null> {
-  const authService = new AuthService(createEmptySecretStorage(), {
-    environment: {},
-    b2CliDatabasePaths: [dbPath],
-    sqlJsRuntimePath,
-    sqlWasmPath,
-  });
-
-  try {
-    return await authService.resolveCredentials();
-  } finally {
-    authService.dispose();
-  }
-}
-
-export const __b2VsixSmokeResolveCredentials: BundledCredentialSmokeResolver | undefined =
-  process.env.B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE === "1"
-    ? resolveBundledSmokeCredentials
-    : undefined;
 
 /**
  * Activate the B2 extension.

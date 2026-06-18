@@ -9,33 +9,22 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import JSZip from "jszip";
-import sqlWasmAsset from "../../sql-wasm-asset.json";
+import {
+  SQL_WASM_ASSET,
+  resolveSqlJsRuntimeSourcePath,
+  resolveSqlWasmSourcePath,
+} from "../../sqlWasmAssets";
 
 interface VsixAssetAssertions {
-  assertVsixAssets(packagePath?: string): Promise<void>;
+  assertVsixAssets(
+    packagePath?: string,
+    options?: { skipSqlJsPackageProvenance?: boolean },
+  ): Promise<void>;
 }
 
-interface SqlWasmAssetConfig {
-  filename: string;
-  packagedDistDir: string;
-  runtimeFilename: string;
-  runtimeSourcePath: string;
-  sourcePath: string;
-}
-
-const SQL_WASM_ASSET: SqlWasmAssetConfig = sqlWasmAsset;
-const SQL_JS_RUNTIME_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.runtimeSourcePath);
-const SQL_WASM_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.sourcePath);
-const PACKAGED_SQL_RUNTIME_ENTRY = path.posix.join(
-  "extension",
-  SQL_WASM_ASSET.packagedDistDir,
-  SQL_WASM_ASSET.runtimeFilename,
-);
-const PACKAGED_SQL_WASM_ENTRY = path.posix.join(
-  "extension",
-  SQL_WASM_ASSET.packagedDistDir,
-  SQL_WASM_ASSET.filename,
-);
+const SQL_JS_RUNTIME_FIXTURE_PATH = resolveSqlJsRuntimeSourcePath(process.cwd());
+const SQL_WASM_FIXTURE_PATH = resolveSqlWasmSourcePath(process.cwd());
+const FIXTURE_ASSERT_OPTIONS = { skipSqlJsPackageProvenance: true };
 
 function loadVsixAssetAssertions(): VsixAssetAssertions {
   return require(path.join(process.cwd(), "scripts/assert-vsix-assets.js")) as VsixAssetAssertions;
@@ -66,10 +55,10 @@ function baseEntries(
   wasmContent: Buffer,
 ): Record<string, Buffer | string> {
   return {
-    "extension/package.json": "{}",
-    "extension/dist/extension.js": extensionSource,
-    [PACKAGED_SQL_RUNTIME_ENTRY]: runtimeContent,
-    [PACKAGED_SQL_WASM_ENTRY]: wasmContent,
+    [SQL_WASM_ASSET.packageJsonEntry]: "{}",
+    [SQL_WASM_ASSET.extensionBundleEntry]: extensionSource,
+    [SQL_WASM_ASSET.packagedRuntimeEntry]: runtimeContent,
+    [SQL_WASM_ASSET.packagedWasmEntry]: wasmContent,
   };
 }
 
@@ -92,7 +81,7 @@ suite("VSIX runtime asset assertions", () => {
         baseEntries("module.exports = {};", runtime, wasm),
       );
 
-      await assertions.assertVsixAssets(vsixPath);
+      await assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -112,7 +101,10 @@ suite("VSIX runtime asset assertions", () => {
         ),
       );
 
-      await assert.rejects(assertions.assertVsixAssets(vsixPath), /sql-wasm\.wasm/i);
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /sql-wasm\.wasm/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -132,7 +124,10 @@ suite("VSIX runtime asset assertions", () => {
         ),
       );
 
-      await assert.rejects(assertions.assertVsixAssets(vsixPath), /unexpected.*sql-wasm\.wasm/i);
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /unexpected.*sql-wasm\.wasm/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -152,7 +147,10 @@ suite("VSIX runtime asset assertions", () => {
         ),
       );
 
-      await assert.rejects(assertions.assertVsixAssets(vsixPath), /unexpected.*sql-wasm\.js/i);
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /unexpected.*sql-wasm\.js/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -169,7 +167,55 @@ suite("VSIX runtime asset assertions", () => {
         baseEntries('module.exports = require("sql.js");', runtime, wasm),
       );
 
-      await assert.rejects(assertions.assertVsixAssets(vsixPath), /unresolved sql\.js import/i);
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /unresolved sql\.js import/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a production extension bundle that contains the smoke env gate", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const vsixPath = await createFixtureVsix(
+        dir,
+        baseEntries(
+          "module.exports = process.env.B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE;",
+          runtime,
+          wasm,
+        ),
+      );
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /test-only credential smoke hook/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a VSIX containing the test-only bundled smoke artifact", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const entries = {
+        ...baseEntries("module.exports = {};", runtime, wasm),
+        "extension/dist/bundledCredentialSmoke.js": "module.exports = {};",
+      };
+      const vsixPath = await createFixtureVsix(dir, entries);
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /test-only bundled credential smoke artifact/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -191,7 +237,7 @@ suite("VSIX runtime asset assertions", () => {
         ),
       );
 
-      await assertions.assertVsixAssets(vsixPath);
+      await assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS);
 
       assert.strictEqual(fs.existsSync(sideEffectPath), false);
     } finally {

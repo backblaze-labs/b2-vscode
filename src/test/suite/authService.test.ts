@@ -8,45 +8,41 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as vscode from "vscode";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
-import sqlWasmAsset from "../../sql-wasm-asset.json";
-
-interface SqlWasmAssetConfig {
-  filename: string;
-  runtimeFilename: string;
-  runtimeSourcePath: string;
-  sourcePath: string;
-}
+import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
+import type { BundledCredentialSmokeResolver } from "../../testSupport/bundledCredentialSmoke";
+import {
+  SQL_WASM_ASSET,
+  resolveSqlJsRuntimeSourcePath,
+  resolveSqlWasmSourcePath,
+} from "../../sqlWasmAssets";
 
 interface BundledExtensionSmokeExports {
-  __b2VsixSmokeResolveCredentials?: (
-    dbPath: string,
-    sqlJsRuntimePath: string,
-    sqlWasmPath: string,
-  ) => Promise<{ keyId: string; appKey: string } | null>;
+  __b2VsixSmokeResolveCredentials?: unknown;
 }
 
-const SQL_WASM_ASSET: SqlWasmAssetConfig = sqlWasmAsset;
-const SQL_JS_RUNTIME_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.runtimeSourcePath);
-const SQL_WASM_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.sourcePath);
-const DIST_SQL_JS_RUNTIME_PATH = path.join(process.cwd(), "dist", SQL_WASM_ASSET.runtimeFilename);
-const DIST_SQL_WASM_PATH = path.join(process.cwd(), "dist", SQL_WASM_ASSET.filename);
+interface BundledCredentialSmokeExports {
+  resolveBundledCredentialSmoke: BundledCredentialSmokeResolver;
+}
+
+const SQL_JS_RUNTIME_FIXTURE_PATH = resolveSqlJsRuntimeSourcePath(process.cwd());
+const SQL_WASM_FIXTURE_PATH = resolveSqlWasmSourcePath(process.cwd());
 const DIST_EXTENSION_PATH = path.join(process.cwd(), "dist", "extension.js");
+const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
+  process.cwd(),
+  "dist",
+  "bundledCredentialSmoke.js",
+);
 const BUNDLED_CREDENTIAL_SMOKE_ENV = "B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
 }
 
-function loadBundledExtension(enableSmokeHelper: boolean): BundledExtensionSmokeExports {
+function loadBundledExtensionWithSmokeEnv(): BundledExtensionSmokeExports {
   const previousValue = process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
-  if (enableSmokeHelper) {
-    process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = "1";
-  } else {
-    delete process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
-  }
+  process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = "1";
 
   try {
     delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
@@ -60,16 +56,9 @@ function loadBundledExtension(enableSmokeHelper: boolean): BundledExtensionSmoke
   }
 }
 
-function fakeSecretStorage(): vscode.SecretStorage {
-  const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
-  return {
-    onDidChange: emitter.event,
-    async get() {
-      return undefined;
-    },
-    async store() {},
-    async delete() {},
-  };
+function loadBundledCredentialSmoke(): BundledCredentialSmokeExports {
+  delete require.cache[require.resolve(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH)];
+  return require(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH) as BundledCredentialSmokeExports;
 }
 
 function createFsError(code: string, filePath: string): NodeJS.ErrnoException {
@@ -86,6 +75,25 @@ function stubReadFileSyncForPath(filePath: string, error: NodeJS.ErrnoException)
   const originalReadFileSync = mutableFs.readFileSync;
   mutableFs.readFileSync = ((pathLike: fs.PathOrFileDescriptor, ...args: unknown[]) => {
     if (pathLike === filePath) {
+      throw error;
+    }
+
+    return (originalReadFileSync as (...readArgs: unknown[]) => unknown)(pathLike, ...args);
+  }) as typeof fs.readFileSync;
+
+  return () => {
+    mutableFs.readFileSync = originalReadFileSync;
+  };
+}
+
+function stubReadFileSyncForPathOnce(filePath: string, error: NodeJS.ErrnoException): () => void {
+  const mutableFs = require("fs") as { readFileSync: typeof fs.readFileSync };
+  const originalReadFileSync = mutableFs.readFileSync;
+  let hasFailed = false;
+
+  mutableFs.readFileSync = ((pathLike: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (pathLike === filePath && !hasFailed) {
+      hasFailed = true;
       throw error;
     }
 
@@ -143,7 +151,7 @@ suite("AuthService credential resolution failures", () => {
     const packagedRuntimeDir = path.join(dir, "dist");
     const dbPath = path.join(dir, "account_info");
     const packagedSqlJsRuntimePath = path.join(packagedRuntimeDir, SQL_WASM_ASSET.runtimeFilename);
-    const packagedWasmPath = path.join(packagedRuntimeDir, SQL_WASM_ASSET.filename);
+    const packagedWasmPath = path.join(packagedRuntimeDir, SQL_WASM_ASSET.wasmFilename);
 
     try {
       fs.mkdirSync(packagedRuntimeDir, { recursive: true });
@@ -156,7 +164,7 @@ suite("AuthService credential resolution failures", () => {
         "fixture-key",
       );
 
-      const service = new AuthService(fakeSecretStorage(), {
+      const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: packagedSqlJsRuntimePath,
@@ -181,7 +189,7 @@ suite("AuthService credential resolution failures", () => {
     fs.writeFileSync(dbPath, "not sqlite");
 
     try {
-      const service = new AuthService(fakeSecretStorage(), {
+      const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
@@ -204,11 +212,11 @@ suite("AuthService credential resolution failures", () => {
   test("records a warning for missing sql.js WASM during CLI credential lookup", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const missingWasmPath = path.join(dir, "missing", SQL_WASM_ASSET.filename);
+    const missingWasmPath = path.join(dir, "missing", SQL_WASM_ASSET.wasmFilename);
     fs.writeFileSync(dbPath, "");
 
     try {
-      const service = new AuthService(fakeSecretStorage(), {
+      const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
@@ -235,12 +243,12 @@ suite("AuthService credential resolution failures", () => {
   test("records a warning for a sql.js WASM digest mismatch", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const wasmPath = path.join(dir, SQL_WASM_ASSET.filename);
+    const wasmPath = path.join(dir, SQL_WASM_ASSET.wasmFilename);
     fs.writeFileSync(dbPath, "");
     fs.writeFileSync(wasmPath, "not the pinned sql.js wasm");
 
     try {
-      const service = new AuthService(fakeSecretStorage(), {
+      const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
@@ -266,7 +274,7 @@ suite("AuthService credential resolution failures", () => {
     try {
       await createB2CliCredentialDatabase(dbPath, SQL_WASM_FIXTURE_PATH, "fixture-key-id", "key");
       const wasmReadCounter = countReadFileSyncForPath(SQL_WASM_FIXTURE_PATH);
-      const service = new AuthService(fakeSecretStorage(), {
+      const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
@@ -291,16 +299,146 @@ suite("AuthService credential resolution failures", () => {
     }
   });
 
-  test("does not expose the bundled credential smoke helper by default", () => {
-    const bundledExtension = loadBundledExtension(false);
+  test("retries SQL.js initialization after a transient asset read failure", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      await createB2CliCredentialDatabase(
+        dbPath,
+        SQL_WASM_FIXTURE_PATH,
+        "retry-key-id",
+        "retry-key",
+      );
+      const restoreReadFileSync = stubReadFileSyncForPathOnce(
+        SQL_WASM_FIXTURE_PATH,
+        createFsError("EACCES", SQL_WASM_FIXTURE_PATH),
+      );
+      const service = new AuthService(createNoopSecretStorage(), {
+        environment: {},
+        b2CliDatabasePaths: [dbPath],
+        sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+        sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+      });
+
+      try {
+        assert.strictEqual(await service.resolveCredentials(), null);
+        assert.match(
+          service.getCredentialResolutionWarning() ?? "",
+          /credential auto-detection could not initialize/i,
+        );
+        assert.deepStrictEqual(await service.resolveCredentials(), {
+          keyId: "retry-key-id",
+          appKey: "retry-key",
+        });
+        assert.strictEqual(service.getCredentialResolutionWarning(), undefined);
+      } finally {
+        restoreReadFileSync();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("executes the verified SQL.js runtime bytes when the file changes after read", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+    const runtimePath = path.join(dir, SQL_WASM_ASSET.runtimeFilename);
+    const wasmPath = path.join(dir, SQL_WASM_ASSET.wasmFilename);
+    const sideEffectPath = path.join(dir, "swapped-runtime-executed");
+
+    try {
+      fs.copyFileSync(SQL_JS_RUNTIME_FIXTURE_PATH, runtimePath);
+      fs.copyFileSync(SQL_WASM_FIXTURE_PATH, wasmPath);
+      await createB2CliCredentialDatabase(dbPath, wasmPath, "verified-key-id", "verified-key");
+
+      const mutableFs = require("fs") as { readFileSync: typeof fs.readFileSync };
+      const originalReadFileSync = mutableFs.readFileSync;
+      let runtimeWasSwapped = false;
+      mutableFs.readFileSync = ((pathLike: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+        const result = (originalReadFileSync as (...readArgs: unknown[]) => unknown)(
+          pathLike,
+          ...args,
+        );
+        if (pathLike === runtimePath && !runtimeWasSwapped) {
+          runtimeWasSwapped = true;
+          fs.writeFileSync(
+            runtimePath,
+            `require("fs").writeFileSync(${JSON.stringify(sideEffectPath)}, "executed");
+module.exports = function swappedSqlJsRuntime() {
+  throw new Error("swapped SQL.js runtime executed");
+};`,
+          );
+        }
+
+        return result;
+      }) as typeof fs.readFileSync;
+
+      try {
+        const service = new AuthService(createNoopSecretStorage(), {
+          environment: {},
+          b2CliDatabasePaths: [dbPath],
+          sqlJsRuntimePath: runtimePath,
+          sqlWasmPath: wasmPath,
+        });
+
+        assert.deepStrictEqual(await service.resolveCredentials(), {
+          keyId: "verified-key-id",
+          appKey: "verified-key",
+        });
+        assert.strictEqual(runtimeWasSwapped, true);
+        assert.strictEqual(fs.existsSync(sideEffectPath), false);
+      } finally {
+        mutableFs.readFileSync = originalReadFileSync;
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reads CLI credentials from default SQL.js asset paths", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+    const compiledServiceDir = path.join(process.cwd(), "out", "src", "services");
+    const defaultRuntimePath = path.join(compiledServiceDir, SQL_WASM_ASSET.runtimeFilename);
+    const defaultWasmPath = path.join(compiledServiceDir, SQL_WASM_ASSET.wasmFilename);
+
+    try {
+      await createB2CliCredentialDatabase(
+        dbPath,
+        SQL_WASM_FIXTURE_PATH,
+        "default-path-key-id",
+        "default-path-key",
+      );
+      fs.copyFileSync(SQL_JS_RUNTIME_FIXTURE_PATH, defaultRuntimePath);
+      fs.copyFileSync(SQL_WASM_FIXTURE_PATH, defaultWasmPath);
+
+      const service = new AuthService(createNoopSecretStorage(), {
+        environment: {},
+        b2CliDatabasePaths: [dbPath],
+      });
+
+      assert.deepStrictEqual(await service.resolveCredentials(), {
+        keyId: "default-path-key-id",
+        appKey: "default-path-key",
+      });
+    } finally {
+      fs.rmSync(defaultRuntimePath, { force: true });
+      fs.rmSync(defaultWasmPath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not expose the bundled credential smoke helper from the production bundle", () => {
+    const bundledExtension = loadBundledExtensionWithSmokeEnv();
 
     assert.strictEqual(bundledExtension.__b2VsixSmokeResolveCredentials, undefined);
   });
 
-  test("resolves CLI credentials through the bundled extension runtime", async () => {
+  test("resolves CLI credentials through the bundled smoke artifact", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const bundledExtension = loadBundledExtension(true);
+    const bundledSmoke = loadBundledCredentialSmoke();
 
     try {
       await createB2CliCredentialDatabase(
@@ -310,15 +448,7 @@ suite("AuthService credential resolution failures", () => {
         "bundled-key",
       );
 
-      const resolveBundledCredentials = bundledExtension.__b2VsixSmokeResolveCredentials;
-      if (typeof resolveBundledCredentials !== "function") {
-        assert.fail("Bundled credential smoke helper was not exported.");
-      }
-      const credentials = await resolveBundledCredentials(
-        dbPath,
-        DIST_SQL_JS_RUNTIME_PATH,
-        DIST_SQL_WASM_PATH,
-      );
+      const credentials = await bundledSmoke.resolveBundledCredentialSmoke(dbPath);
 
       assert.deepStrictEqual(credentials, {
         keyId: "bundled-key-id",
@@ -337,7 +467,7 @@ suite("AuthService credential resolution failures", () => {
       const restoreReadFileSync = stubReadFileSyncForPath(dbPath, createFsError(errorCode, dbPath));
 
       try {
-        const service = new AuthService(fakeSecretStorage(), {
+        const service = new AuthService(createNoopSecretStorage(), {
           environment: {},
           b2CliDatabasePaths: [dbPath],
           sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,

@@ -6,6 +6,8 @@ out/**
 docs/**
 scripts/**
 resources/icons/**
+dist/bundledCredentialSmoke.js
+dist/bundledCredentialSmoke.js.map
 node_modules/**
 !node_modules/sql.js/dist/sql-wasm.wasm
 .gitignore

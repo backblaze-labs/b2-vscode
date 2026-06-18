@@ -7,15 +7,9 @@ const sqlWasmAsset = require("./src/sql-wasm-asset.json");
 /** @typedef {import('webpack').Configuration} WebpackConfig */
 
 /** @type WebpackConfig */
-const extensionConfig = {
+const baseConfig = {
   target: "node",
   mode: "none",
-  entry: "./src/extension.ts",
-  output: {
-    path: path.resolve(__dirname, "dist"),
-    filename: "extension.js",
-    libraryTarget: "commonjs2",
-  },
   externals: {
     vscode: "commonjs vscode",
   },
@@ -35,6 +29,25 @@ const extensionConfig = {
       },
     ],
   },
+  node: {
+    __dirname: false,
+    __filename: false,
+  },
+  devtool: "nosources-source-map",
+  infrastructureLogging: {
+    level: "log",
+  },
+};
+
+/** @type WebpackConfig */
+const extensionConfig = {
+  ...baseConfig,
+  entry: "./src/extension.ts",
+  output: {
+    path: path.resolve(__dirname, "dist"),
+    filename: "extension.js",
+    libraryTarget: "commonjs2",
+  },
   plugins: [
     new CopyPlugin({
       patterns: [
@@ -44,16 +57,23 @@ const extensionConfig = {
           info: { minimized: true },
         },
         {
-          from: sqlWasmAsset.sourcePath,
-          to: sqlWasmAsset.filename,
+          from: sqlWasmAsset.wasmSourcePath,
+          to: sqlWasmAsset.wasmFilename,
         },
       ],
     }),
   ],
-  devtool: "nosources-source-map",
-  infrastructureLogging: {
-    level: "log",
+};
+
+/** @type WebpackConfig */
+const bundledCredentialSmokeConfig = {
+  ...baseConfig,
+  entry: "./src/testSupport/bundledCredentialSmoke.ts",
+  output: {
+    path: path.resolve(__dirname, "dist"),
+    filename: "bundledCredentialSmoke.js",
+    libraryTarget: "commonjs2",
   },
 };
 
-module.exports = [extensionConfig];
+module.exports = [extensionConfig, bundledCredentialSmokeConfig];
