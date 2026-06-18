@@ -5,10 +5,13 @@
  */
 
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { streamToBuffer } from "../../services/b2";
+import {
+  createTransferProgressReporter,
+  downloadStreamToFile,
+  withCancellableTransferProgress,
+} from "../../services/b2";
 import { B2ResourceNotFoundError } from "../../errors";
 
 interface DownloadFileParams {
@@ -32,7 +35,11 @@ function workspacePath(relativePath: string, missingWorkspaceMessage: string): s
 }
 
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
-  async execute(params: DownloadFileParams, extras: ToolExtras): Promise<DownloadFileResult> {
+  async execute(
+    params: DownloadFileParams,
+    extras: ToolExtras,
+    token?: vscode.CancellationToken,
+  ): Promise<DownloadFileResult> {
     const client = extras.getClient();
     if (!client) {
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
@@ -57,19 +64,25 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
       savePath = workspacePath(fileName, "No workspace folder open. Please specify a localPath.");
     }
 
-    // Download and collect the streaming body
-    const { body } = await bucket.download(params.path);
-    const data = await streamToBuffer(body);
+    const size = await withCancellableTransferProgress(
+      { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
+      async ({ progress, signal }) => {
+        const { body, headers } = await bucket.download(params.path, {
+          signal,
+          onProgress: createTransferProgressReporter(progress),
+        });
 
-    // Ensure directory exists and write
-    const dir = path.dirname(savePath);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(savePath, data);
+        const writtenBytes = await downloadStreamToFile(body, savePath, {
+          signal,
+        });
+        return writtenBytes || headers.contentLength;
+      },
+    );
 
     return {
       localPath: savePath,
-      size: data.length,
-      message: `Downloaded ${params.path} from ${params.bucket} to ${savePath} (${data.length} bytes)`,
+      size,
+      message: `Downloaded ${params.path} from ${params.bucket} to ${savePath} (${size} bytes)`,
     };
   },
 };

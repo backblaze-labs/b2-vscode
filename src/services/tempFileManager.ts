@@ -12,6 +12,7 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
+import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./b2";
 
 /**
  * Manages a temp directory for caching B2 file downloads.
@@ -37,20 +38,21 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   /**
-   * Save downloaded file content to the temp directory and cache the path.
+   * Stream downloaded file content into the temp directory and cache the path.
    */
-  async saveFile(bucketName: string, fileName: string, content: Buffer): Promise<string> {
+  async saveStream(
+    bucketName: string,
+    fileName: string,
+    stream: ReadableStream<Uint8Array>,
+    options: DownloadStreamToFileOptions = {},
+  ): Promise<{ localPath: string; size: number }> {
     const localPath = path.join(this.tempRoot, bucketName, fileName);
-    const dir = path.dirname(localPath);
-
-    // Ensure parent directories exist
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(localPath, content);
+    const size = await downloadStreamToFile(stream, localPath, options);
 
     const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
 
-    return localPath;
+    return { localPath, size };
   }
 
   /**

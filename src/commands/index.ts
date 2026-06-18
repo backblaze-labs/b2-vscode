@@ -15,7 +15,11 @@ import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
 import { registerB2Tools } from "../tools/registration";
-import { createConfiguredB2Client, streamToBuffer } from "../services/b2";
+import {
+  createConfiguredB2Client,
+  createTransferProgressReporter,
+  withCancellableTransferProgress,
+} from "../services/b2";
 import { B2PartialFailureError, formatB2UserMessage } from "../errors";
 import { logError } from "../logger";
 import {
@@ -556,20 +560,18 @@ export function registerCommands(services: CommandServices): void {
       }
 
       try {
-        // Download and open
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Downloading ${item.file.fileName}...`,
-            cancellable: false,
-          },
-          async () => {
-            const { body } = await item.bucket.download(item.file.fileName);
-            const data = await streamToBuffer(body);
-            const localPath = await tempFileManager.saveFile(
+        await withCancellableTransferProgress(
+          { title: `Downloading ${item.file.fileName}...` },
+          async ({ progress, signal }) => {
+            const { body } = await item.bucket.download(item.file.fileName, {
+              signal,
+              onProgress: createTransferProgressReporter(progress, item.file.contentLength),
+            });
+            const { localPath } = await tempFileManager.saveStream(
               item.bucketName,
               item.file.fileName,
-              data,
+              body,
+              { signal },
             );
             await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(localPath));
           },

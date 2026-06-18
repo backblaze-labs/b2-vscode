@@ -5,15 +5,21 @@
  */
 
 import * as assert from "assert";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
+import type { Bucket, FileVersion } from "@backblaze-labs/b2-sdk";
 import {
   buildCustomApiUrlWarningMessage,
   CONFIRM_CUSTOM_API_URL_LABEL,
   createB2Client,
   createConfiguredB2Client,
   DEFAULT_B2_API_URL,
+  downloadStreamToFile,
   resolveB2ClientApiUrl,
   resolveB2ApiUrlFromInspection,
+  uploadFileFromDisk,
   type B2ApiUrlInspection,
 } from "../../services/b2";
 import type { B2Credentials } from "../../services/authService";
@@ -342,6 +348,83 @@ suite("B2 API URL configuration", () => {
     } finally {
       restoreWarningMessage();
       restoreConfiguration();
+    }
+  });
+});
+
+suite("B2 transfer helpers", () => {
+  test("streams downloads directly to the destination file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-"));
+    const destination = path.join(dir, "nested", "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3, 4, 5]));
+        controller.close();
+      },
+    });
+
+    try {
+      const size = await downloadStreamToFile(stream, destination);
+
+      assert.strictEqual(size, 5);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3, 4, 5]);
+      assert.deepStrictEqual(
+        fs.readdirSync(path.dirname(destination)).filter((name) => name.endsWith(".tmp")),
+        [],
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("streams non-empty uploads through the SDK write stream", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([9, 8, 7, 6]));
+
+    const uploaded: number[] = [];
+    const bucket = {
+      file(fileName: string) {
+        assert.strictEqual(fileName, "remote/file.bin");
+        let resolveDone: (value: FileVersion) => void = () => undefined;
+        const done = new Promise<FileVersion>((resolve) => {
+          resolveDone = resolve;
+        });
+
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write(chunk) {
+                  uploaded.push(...chunk);
+                },
+                close() {
+                  resolveDone({
+                    fileId: "uploaded-id",
+                    fileName,
+                    contentLength: uploaded.length,
+                  } as FileVersion);
+                },
+              }),
+              done,
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } as unknown as Bucket;
+
+    try {
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
+
+      assert.deepStrictEqual(uploaded, [9, 8, 7, 6]);
+      assert.strictEqual(result.fileId, "uploaded-id");
+      assert.strictEqual(result.contentLength, 4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

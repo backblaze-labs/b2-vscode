@@ -7,9 +7,13 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
+import {
+  createTransferProgressReporter,
+  uploadFileFromDisk,
+  withCancellableTransferProgress,
+} from "../../services/b2";
 
 interface UploadFileParams {
   localPath: string;
@@ -25,7 +29,11 @@ interface UploadFileResult {
 }
 
 export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileResult> = {
-  async execute(params: UploadFileParams, extras: ToolExtras): Promise<UploadFileResult> {
+  async execute(
+    params: UploadFileParams,
+    extras: ToolExtras,
+    token?: vscode.CancellationToken,
+  ): Promise<UploadFileResult> {
     const client = extras.getClient();
     if (!client) {
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
@@ -41,7 +49,11 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       localPath = path.join(workspaceFolder.uri.fsPath, localPath);
     }
 
-    fs.accessSync(localPath, fs.constants.R_OK);
+    await fs.promises.access(localPath, fs.constants.R_OK);
+    const stats = await fs.promises.stat(localPath);
+    if (!stats.isFile()) {
+      throw new Error(`Local path is not a file: ${localPath}`);
+    }
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
@@ -51,18 +63,23 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
     // Resolve remote path
     const remotePath = params.remotePath ?? path.basename(localPath);
 
-    // Read and upload
-    const data = await fs.promises.readFile(localPath);
-    const result = await bucket.upload({
-      fileName: remotePath,
-      source: new BufferSource(data),
-    });
+    const result = await withCancellableTransferProgress(
+      {
+        title: `Uploading ${path.basename(localPath)} to b2://${params.bucket}/${remotePath}...`,
+        token,
+      },
+      ({ progress, signal }) =>
+        uploadFileFromDisk(bucket, localPath, remotePath, {
+          signal,
+          onProgress: createTransferProgressReporter(progress, stats.size),
+        }),
+    );
 
     return {
       fileId: result.fileId,
       fileName: result.fileName,
       size: result.contentLength,
-      message: `Uploaded ${localPath} to b2://${params.bucket}/${remotePath} (${data.length} bytes, ID: ${result.fileId})`,
+      message: `Uploaded ${localPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
     };
   },
 };
