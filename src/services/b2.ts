@@ -99,6 +99,8 @@ export function resolveB2ApiUrlFromInspection(
     );
   }
 
+  // Use an explicit undefined check, not `??`: null and other non-string user
+  // values must reach normalizeB2ApiUrl so they fail closed.
   const configuredValue =
     inspection?.globalValue !== undefined
       ? inspection.globalValue
