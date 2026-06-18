@@ -8,6 +8,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { EventEmitter } from "events";
 import JSZip from "jszip";
 import {
   SQL_WASM_ASSET,
@@ -20,6 +21,12 @@ interface VsixAssetAssertions {
     packagePath?: string,
     options?: { skipSqlJsPackageProvenance?: boolean },
   ): Promise<void>;
+  fetchBuffer(url: string, redirectsRemaining?: number, timeoutMs?: number): Promise<Buffer>;
+}
+
+interface FakeRequest extends EventEmitter {
+  destroy(error: Error): FakeRequest;
+  setTimeout(timeoutMs: number, callback: () => void): FakeRequest;
 }
 
 const SQL_JS_RUNTIME_FIXTURE_PATH = resolveSqlJsRuntimeSourcePath(process.cwd());
@@ -200,6 +207,30 @@ suite("VSIX runtime asset assertions", () => {
     }
   });
 
+  test("rejects a production extension bundle that contains the smoke resolver symbol", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const vsixPath = await createFixtureVsix(
+        dir,
+        baseEntries(
+          "module.exports.resolveBundledCredentialSmoke = function () {};",
+          runtime,
+          wasm,
+        ),
+      );
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /test-only credential smoke hook/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a VSIX containing the test-only bundled smoke artifact", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();
@@ -242,6 +273,38 @@ suite("VSIX runtime asset assertions", () => {
       assert.strictEqual(fs.existsSync(sideEffectPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("times out stalled SQL.js tarball fetches", async () => {
+    const assertions = loadVsixAssetAssertions();
+    const httpsModule = require("https") as typeof import("https");
+    const originalGet = httpsModule.get;
+    const fakeRequest = new EventEmitter() as FakeRequest;
+    fakeRequest.setTimeout = (_timeoutMs, callback) => {
+      setImmediate(callback);
+      return fakeRequest;
+    };
+    fakeRequest.destroy = (error) => {
+      fakeRequest.emit("error", error);
+      return fakeRequest;
+    };
+
+    Object.defineProperty(httpsModule, "get", {
+      configurable: true,
+      value: (() => fakeRequest) as unknown as typeof httpsModule.get,
+    });
+
+    try {
+      await assert.rejects(
+        assertions.fetchBuffer("https://registry.npmjs.org/sql.js/-/sql.js-1.14.1.tgz", 3, 1),
+        /Timed out fetching/i,
+      );
+    } finally {
+      Object.defineProperty(httpsModule, "get", {
+        configurable: true,
+        value: originalGet,
+      });
     }
   });
 });

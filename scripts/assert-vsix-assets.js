@@ -38,9 +38,10 @@ const TARBALL_WASM_ENTRY = `package/${sqlWasmAsset.wasmSourcePath.replace(
 const TEST_ONLY_SMOKE_ENTRY_PATTERN = /^extension\/dist\/bundledCredentialSmoke\.js(?:\.map)?$/;
 const FORBIDDEN_EXTENSION_SMOKE_TOKENS = [
   "__b2VsixSmokeResolveCredentials",
-  "resolveBundledSmokeCredentials",
+  "resolveBundledCredentialSmoke",
   "B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE",
 ];
+const PACKAGE_FETCH_TIMEOUT_MS = 15000;
 
 const requiredEntries = [
   sqlWasmAsset.packageJsonEntry,
@@ -134,8 +135,16 @@ function assertIntegrity(buffer, expectedIntegrity, label) {
   }
 }
 
-function fetchBuffer(url, redirectsRemaining = 3) {
+function fetchBuffer(url, redirectsRemaining = 3, timeoutMs = PACKAGE_FETCH_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(value);
+    };
     const request = https.get(url, (response) => {
       const statusCode = response.statusCode ?? 0;
       const location = response.headers.location;
@@ -143,25 +152,28 @@ function fetchBuffer(url, redirectsRemaining = 3) {
       if (statusCode >= 300 && statusCode < 400 && location) {
         response.resume();
         if (redirectsRemaining <= 0) {
-          reject(new Error(`Too many redirects while fetching ${url}`));
+          finish(reject, new Error(`Too many redirects while fetching ${url}`));
           return;
         }
-        resolve(fetchBuffer(new URL(location, url).toString(), redirectsRemaining - 1));
+        finish(resolve, fetchBuffer(new URL(location, url).toString(), redirectsRemaining - 1));
         return;
       }
 
       if (statusCode < 200 || statusCode >= 300) {
         response.resume();
-        reject(new Error(`Unexpected HTTP ${statusCode} while fetching ${url}`));
+        finish(reject, new Error(`Unexpected HTTP ${statusCode} while fetching ${url}`));
         return;
       }
 
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => resolve(Buffer.concat(chunks)));
+      response.on("end", () => finish(resolve, Buffer.concat(chunks)));
     });
 
-    request.on("error", reject);
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Timed out fetching ${url} after ${timeoutMs}ms`));
+    });
+    request.on("error", (error) => finish(reject, error));
   });
 }
 
@@ -332,5 +344,6 @@ if (require.main === module) {
 module.exports = {
   assertSqlJsPackageProvenance,
   assertVsixAssets,
+  fetchBuffer,
   requiredEntries,
 };
