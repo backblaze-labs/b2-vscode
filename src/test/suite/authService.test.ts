@@ -71,6 +71,11 @@ suite("AuthService credential resolution failures", () => {
         service.getCredentialResolutionWarning() ?? "",
         /CLI credentials could not be read/i,
       );
+      assert.match(
+        service.getCredentialResolutionWarning() ?? "",
+        /ENOENT.*missing-sql-wasm\.wasm/i,
+      );
+      assert.doesNotMatch(service.getCredentialResolutionWarning() ?? "", /Unexpected error/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

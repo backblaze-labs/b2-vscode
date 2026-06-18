@@ -24,7 +24,7 @@ import {
 } from "../constants";
 import type { B2AuthState } from "../types";
 import { log, logError } from "../logger";
-import { formatB2UserMessage } from "../errors";
+import { formatB2ToolUserMessage } from "../errors";
 
 /**
  * Resolved B2 credentials.
@@ -168,7 +168,7 @@ export class AuthService implements vscode.Disposable {
       return result;
     } catch (err) {
       logError("CLI-AUTH: Error reading B2 CLI database", err);
-      this.credentialResolutionWarning = `B2 CLI credentials could not be read. ${formatB2UserMessage(err)}`;
+      this.credentialResolutionWarning = `B2 CLI credentials could not be read. ${formatB2ToolUserMessage(err)}`;
       return null;
     }
   }
