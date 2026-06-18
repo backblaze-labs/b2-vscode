@@ -68,25 +68,37 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
   /** Load the next page for a bucket/folder that has more objects. */
   async loadMore(item: LoadMoreTreeItem): Promise<void> {
     const key = this.listingKey(item.bucket, item.prefix);
+    const generation = this.listingStateGeneration;
     if (this.loadingListings.has(key)) {
       return;
     }
 
     this.loadingListings.add(key);
     try {
-      const state = await this.getOrCreateListingState(item.bucket, item.prefix);
+      const state = this.listingStates.get(key);
+      if (!state || this.listingStateGeneration !== generation) {
+        return;
+      }
       if (state.nextFileName === undefined || state.items.length >= TREE_LIST_HARD_CAP) {
         return;
       }
 
       await this.fetchNextPage(item.bucket, item.prefix, state);
+      if (this.listingStateGeneration !== generation) {
+        return;
+      }
       this._onDidChangeTreeData.fire(item.parent);
     } catch (error) {
+      if (this.listingStateGeneration !== generation) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       logError(`Tree: loadMore failed`, error);
       vscode.window.showErrorMessage(`B2: ${message}`);
     } finally {
-      this.loadingListings.delete(key);
+      if (this.listingStateGeneration === generation) {
+        this.loadingListings.delete(key);
+      }
     }
   }
 

@@ -157,6 +157,29 @@ suite("B2 tree provider paging", () => {
     assert.strictEqual(calls.length, 2);
   });
 
+  test("ignores stale load-more items after refresh clears state", async () => {
+    const { bucket, calls } = makeBucket([
+      { files: [file("a.txt")], nextFileName: "b.txt" },
+      { files: [file("fresh.txt")], nextFileName: null },
+    ]);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+    const firstPage = await provider.getChildren(bucketItem);
+    const loadMore = firstPage[firstPage.length - 1];
+    assert.ok(loadMore instanceof LoadMoreTreeItem);
+
+    provider.refresh();
+    await provider.loadMore(loadMore as LoadMoreTreeItem);
+
+    assert.strictEqual(calls.length, 1);
+
+    const refreshedChildren = await provider.getChildren(bucketItem);
+
+    assert.deepStrictEqual(refreshedChildren.map(label), ["fresh.txt"]);
+    assert.strictEqual(calls.length, 2);
+    assert.strictEqual(calls[1]?.startFileName, undefined);
+  });
+
   test("coalesces concurrent initial listings for the same prefix", async () => {
     let releasePage: (() => void) | undefined;
     const firstPageReady = new Promise<void>((resolve) => {
