@@ -2,22 +2,16 @@
 
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
+const sqlJsRuntimeAssets = require("./src/sql-js-runtime-assets.json");
 
 /** @typedef {import('webpack').Configuration} WebpackConfig */
 
 /** @type WebpackConfig */
-const extensionConfig = {
+const baseConfig = {
   target: "node",
   mode: "none",
-  entry: "./src/extension.ts",
-  output: {
-    path: path.resolve(__dirname, "dist"),
-    filename: "extension.js",
-    libraryTarget: "commonjs2",
-  },
   externals: {
     vscode: "commonjs vscode",
-    "sql.js": "commonjs sql.js",
   },
   resolve: {
     extensions: [".ts", ".js"],
@@ -35,20 +29,54 @@ const extensionConfig = {
       },
     ],
   },
-  plugins: [
-    new CopyPlugin({
-      patterns: [
-        {
-          from: "node_modules/sql.js/dist/sql-wasm.wasm",
-          to: "sql-wasm.wasm",
-        },
-      ],
-    }),
-  ],
+  node: {
+    __dirname: false,
+    __filename: false,
+  },
   devtool: "nosources-source-map",
   infrastructureLogging: {
     level: "log",
   },
 };
 
-module.exports = [extensionConfig];
+/** @type WebpackConfig */
+const extensionConfig = {
+  ...baseConfig,
+  entry: "./src/extension.ts",
+  output: {
+    path: path.resolve(__dirname, "dist"),
+    filename: "extension.js",
+    libraryTarget: "commonjs2",
+  },
+  plugins: [
+    new CopyPlugin({
+      patterns: [
+        {
+          from: sqlJsRuntimeAssets.runtimeSourcePath,
+          to: sqlJsRuntimeAssets.runtimeFilename,
+          info: { minimized: true },
+        },
+        {
+          from: sqlJsRuntimeAssets.wasmSourcePath,
+          to: sqlJsRuntimeAssets.wasmFilename,
+        },
+      ],
+    }),
+  ],
+};
+
+/** @type WebpackConfig */
+const bundledCredentialSmokeConfig = {
+  ...baseConfig,
+  entry: "./src/testSupport/bundledCredentialSmoke.ts",
+  output: {
+    path: path.resolve(__dirname, "dist"),
+    filename: "bundledCredentialSmoke.js",
+    libraryTarget: "commonjs2",
+  },
+};
+
+module.exports = (env = {}) =>
+  env.bundledCredentialSmoke === true || env.bundledCredentialSmoke === "true"
+    ? bundledCredentialSmokeConfig
+    : extensionConfig;

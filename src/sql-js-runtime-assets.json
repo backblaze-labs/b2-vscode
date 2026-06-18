@@ -1,0 +1,17 @@
+{
+  "extensionBundleEntry": "extension/dist/extension.js",
+  "packageJsonEntry": "extension/package.json",
+  "packagedDistDir": "dist",
+  "packagedRuntimeEntry": "extension/dist/sql-wasm.js",
+  "packagedWasmEntry": "extension/dist/sql-wasm.wasm",
+  "runtimeFilename": "sql-wasm.js",
+  "runtimeSha256": "77d6435bac506af0e3c59636dce9d22b1b14156348bc327f41a1577f3212360f",
+  "runtimeSourcePath": "node_modules/sql.js/dist/sql-wasm.js",
+  "sqlJsPackageIntegrity": "sha512-gcj8zBWU5cFsi9WUP+4bFNXAyF1iRpA3LLyS/DP5xlrNzGmPIizUeBggKa8DbDwdqaKwUcTEnChtd2grWo/x/A==",
+  "sqlJsPackageName": "sql.js",
+  "sqlJsTarballUrl": "https://registry.npmjs.org/sql.js/-/sql.js-1.14.1.tgz",
+  "sqlJsVersion": "1.14.1",
+  "wasmFilename": "sql-wasm.wasm",
+  "wasmSha256": "438c88f666dc054ce4e9395f80fe9db4218b1a3c379960454880f048a7898aed",
+  "wasmSourcePath": "node_modules/sql.js/dist/sql-wasm.wasm"
+}

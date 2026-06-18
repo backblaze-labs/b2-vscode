@@ -14,7 +14,6 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import initSqlJs from "sql.js";
 import {
   ENV_KEY_ID,
   ENV_APP_KEY,
@@ -24,7 +23,14 @@ import {
 } from "../constants";
 import type { B2AuthState } from "../types";
 import { log, logError } from "../logger";
-import { formatB2ToolUserMessage } from "../errors";
+import {
+  SqlJsRuntimeLoader,
+  SqlWasmInitializationError,
+  type SqlJsRuntimeLoaderOptions,
+} from "./sqlJsLoader";
+import { getErrorCode } from "./errorCode";
+
+const ABSOLUTE_FILESYSTEM_PATH_PATTERNS = [/[A-Za-z]:[\\/][^'",\r\n)]+/g, /\/[^'",\r\n)]+/g];
 
 /**
  * Resolved B2 credentials.
@@ -34,13 +40,11 @@ export interface B2Credentials {
   appKey: string;
 }
 
-export interface AuthServiceOptions {
+export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
   /** Override environment lookup for tests. Defaults to process.env. */
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
-  /** Override sql.js WASM path for tests. */
-  sqlWasmPath?: string;
 }
 
 /**
@@ -56,10 +60,17 @@ export class AuthService implements vscode.Disposable {
 
   private credentialResolutionWarning: string | undefined;
 
+  private readonly sqlJsRuntimeLoader: SqlJsRuntimeLoader;
+
   constructor(
     private readonly secrets: vscode.SecretStorage,
     private readonly options: AuthServiceOptions = {},
-  ) {}
+  ) {
+    this.sqlJsRuntimeLoader = new SqlJsRuntimeLoader({
+      sqlJsRuntimePath: options.sqlJsRuntimePath,
+      sqlWasmPath: options.sqlWasmPath,
+    });
+  }
 
   dispose(): void {
     this._onAuthStateChanged.dispose();
@@ -161,23 +172,68 @@ export class AuthService implements vscode.Disposable {
       return null;
     }
 
-    log(`CLI-AUTH: Found database at: ${dbPath}`);
+    log("CLI-AUTH: Found B2 CLI database.");
     try {
       const result = await this.queryB2Database(dbPath);
       log(`CLI-AUTH: Query result: ${result ? "credentials found" : "no credentials"}`);
       return result;
     } catch (err) {
-      logError("CLI-AUTH: Error reading B2 CLI database", err);
-      this.credentialResolutionWarning = `B2 CLI credentials could not be read. ${formatB2ToolUserMessage(err)}`;
+      logError(
+        `CLI-AUTH: Error reading B2 CLI database (${this.formatCredentialErrorForLog(err)}).`,
+      );
+      this.credentialResolutionWarning = this.buildB2CliCredentialWarning(err);
       return null;
     }
+  }
+
+  private buildB2CliCredentialWarning(error: unknown): string {
+    if (error instanceof SqlWasmInitializationError) {
+      return "B2 CLI credential auto-detection could not initialize. The bundled SQL.js runtime asset is missing, unreadable, or invalid. Check the Backblaze B2 output log for details.";
+    }
+
+    return "B2 CLI credentials could not be read. Check file permissions, review the Backblaze B2 output log for details, or run B2: Authenticate to store credentials in VS Code.";
+  }
+
+  private formatCredentialErrorForLog(error: unknown): string {
+    if (error instanceof SqlWasmInitializationError) {
+      const originalCode = getErrorCode(error.originalError);
+      if (originalCode) {
+        return `sql.js runtime initialization failed, code=${originalCode}`;
+      }
+
+      const originalDetail =
+        error.originalError instanceof Error
+          ? `${error.originalError.name}: ${this.sanitizeFilesystemPaths(
+              error.originalError.message,
+            )}`
+          : undefined;
+      return originalDetail
+        ? `sql.js runtime initialization failed (${originalDetail})`
+        : "sql.js runtime initialization failed";
+    }
+
+    const errorCode = getErrorCode(error);
+    if (errorCode) {
+      return `code=${errorCode}`;
+    }
+
+    return error instanceof Error
+      ? `${error.name}: ${this.sanitizeFilesystemPaths(error.message)}`
+      : typeof error;
+  }
+
+  private sanitizeFilesystemPaths(message: string): string {
+    return ABSOLUTE_FILESYSTEM_PATH_PATTERNS.reduce(
+      (sanitizedMessage, pattern) => sanitizedMessage.replace(pattern, "<path>"),
+      message,
+    );
   }
 
   private findB2CliDatabase(): string | null {
     if (this.options.b2CliDatabasePaths) {
       for (const candidate of this.options.b2CliDatabasePaths) {
         const candidateExists = fs.existsSync(candidate);
-        log(`CLI-AUTH: Checking configured path: ${candidate} -> exists=${candidateExists}`);
+        log(`CLI-AUTH: Checking configured B2 CLI database path -> exists=${candidateExists}`);
         if (candidateExists) {
           return candidate;
         }
@@ -187,11 +243,11 @@ export class AuthService implements vscode.Disposable {
     }
 
     const home = os.homedir();
-    log(`CLI-AUTH: Home directory: ${home}`);
+    log("CLI-AUTH: Checking default B2 CLI database locations.");
 
     const legacyPath = path.join(home, ".b2_account_info");
     const legacyPathExists = fs.existsSync(legacyPath);
-    log(`CLI-AUTH: Checking legacy path: ${legacyPath} -> exists=${legacyPathExists}`);
+    log(`CLI-AUTH: Checking legacy B2 CLI database path -> exists=${legacyPathExists}`);
     if (legacyPathExists) {
       return legacyPath;
     }
@@ -200,7 +256,7 @@ export class AuthService implements vscode.Disposable {
     const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
     const xdgPathExists = fs.existsSync(xdgPath);
-    log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${xdgPathExists}`);
+    log(`CLI-AUTH: Checking XDG B2 CLI database path -> exists=${xdgPathExists}`);
     if (xdgPathExists) {
       return xdgPath;
     }
@@ -213,19 +269,7 @@ export class AuthService implements vscode.Disposable {
     const fileBuffer = fs.readFileSync(dbPath);
     log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
 
-    // Load WASM binary directly to avoid all path resolution issues
-    const extensionRoot = path.join(__dirname, "..");
-    const wasmPath =
-      this.options.sqlWasmPath ??
-      path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
-    log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
-
-    const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;
-    log(`CLI-AUTH: WASM binary size: ${wasmBinary.byteLength} bytes`);
-
-    const SQL = await initSqlJs({ wasmBinary });
-    log("CLI-AUTH: sql.js initialized successfully");
-
+    const SQL = await this.sqlJsRuntimeLoader.getRuntime();
     const db = new SQL.Database(fileBuffer);
     log("CLI-AUTH: Database opened successfully");
 
