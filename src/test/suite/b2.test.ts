@@ -18,11 +18,24 @@ import {
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
 const ATTACKER_API_URL = "https://attacker.example.com";
+const TEST_CREDENTIALS = { keyId: "key-id", appKey: "app-key" };
+const TEST_VERSION = "0.0.1";
+
+interface WarningMessageCall {
+  readonly message: string;
+  readonly options: vscode.MessageOptions | undefined;
+  readonly items: readonly string[];
+}
 
 // `realmUrl` is an internal B2Client field; these tests assert on it to confirm
 // the realm option was threaded through. Update if the SDK renames it.
 function getClientRealmUrl(client: ReturnType<typeof createB2Client>): string {
-  return (client as unknown as { realmUrl: string }).realmUrl;
+  const realmUrl = (client as unknown as { realmUrl?: unknown }).realmUrl;
+  if (typeof realmUrl !== "string") {
+    assert.fail("Expected the B2Client internal realmUrl field to be a string.");
+  }
+
+  return realmUrl;
 }
 
 function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
@@ -55,14 +68,31 @@ function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
   };
 }
 
-function stubWarningMessage(choice: string | undefined): () => void {
+function stubWarningMessage(
+  choice: string | undefined,
+  onCall?: (call: WarningMessageCall) => void,
+): () => void {
   const mutableWindow = vscode.window as unknown as {
     showWarningMessage: typeof vscode.window.showWarningMessage;
   };
   const originalShowWarningMessage = mutableWindow.showWarningMessage;
 
-  mutableWindow.showWarningMessage = (async () =>
-    choice) as typeof vscode.window.showWarningMessage;
+  mutableWindow.showWarningMessage = ((
+    message: string,
+    optionsOrFirstItem?: vscode.MessageOptions | string,
+    ...restItems: string[]
+  ) => {
+    const hasOptions = typeof optionsOrFirstItem === "object" && optionsOrFirstItem !== null;
+    const options = hasOptions ? optionsOrFirstItem : undefined;
+    const items =
+      !hasOptions && optionsOrFirstItem !== undefined
+        ? [optionsOrFirstItem, ...restItems]
+        : restItems;
+
+    onCall?.({ message, options, items });
+
+    return Promise.resolve(choice);
+  }) as typeof vscode.window.showWarningMessage;
 
   return () => {
     mutableWindow.showWarningMessage = originalShowWarningMessage;
@@ -83,6 +113,18 @@ suite("B2 API URL configuration", () => {
 
   test("falls back to the built-in default when configuration is absent", () => {
     const resolved = resolveB2ApiUrlFromInspection(undefined);
+
+    assert.deepStrictEqual(resolved, {
+      apiUrl: DEFAULT_B2_API_URL,
+      isDefault: true,
+    });
+  });
+
+  test("falls back to the built-in default when inspection has no values", () => {
+    const resolved = resolveB2ApiUrlFromInspection({
+      defaultValue: undefined,
+      globalValue: undefined,
+    });
 
     assert.deepStrictEqual(resolved, {
       apiUrl: DEFAULT_B2_API_URL,
@@ -147,13 +189,13 @@ suite("B2 API URL configuration", () => {
   });
 
   test("configures the SDK client for the default B2 API URL", () => {
-    const client = createB2Client({ keyId: "key-id", appKey: "app-key" }, "0.0.1");
+    const client = createB2Client(TEST_CREDENTIALS, TEST_VERSION);
 
     assert.strictEqual(getClientRealmUrl(client), DEFAULT_B2_API_URL);
   });
 
   test("configures the SDK client for a trusted custom API URL", () => {
-    const client = createB2Client({ keyId: "key-id", appKey: "app-key" }, "0.0.1", {
+    const client = createB2Client(TEST_CREDENTIALS, TEST_VERSION, {
       apiUrl: `${CUSTOM_API_URL}/`,
     });
 
@@ -163,7 +205,7 @@ suite("B2 API URL configuration", () => {
   test("rejects an invalid custom API URL at client construction", () => {
     assert.throws(
       () =>
-        createB2Client({ keyId: "key-id", appKey: "app-key" }, "0.0.1", {
+        createB2Client(TEST_CREDENTIALS, TEST_VERSION, {
           apiUrl: "http://b2-compatible.example.com",
         }),
       /HTTPS/,
@@ -186,7 +228,7 @@ suite("B2 API URL configuration", () => {
 
     try {
       await assert.rejects(
-        () => createConfiguredB2Client({ keyId: "key-id", appKey: "app-key" }, "0.0.1"),
+        () => createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION),
         /authentication canceled/,
       );
     } finally {
@@ -195,16 +237,38 @@ suite("B2 API URL configuration", () => {
     }
   });
 
-  test("creates a client when the custom API URL warning is confirmed", async () => {
-    const restoreConfiguration = stubB2ApiUrlConfiguration(CUSTOM_API_URL);
-    const restoreWarningMessage = stubWarningMessage(CONFIRM_CUSTOM_API_URL_LABEL);
+  test("creates a default client without showing a custom API URL warning", async () => {
+    const restoreConfiguration = stubB2ApiUrlConfiguration(undefined);
+    let warningWasShown = false;
+    const restoreWarningMessage = stubWarningMessage(undefined, () => {
+      warningWasShown = true;
+    });
 
     try {
-      const client = await createConfiguredB2Client(
-        { keyId: "key-id", appKey: "app-key" },
-        "0.0.1",
-      );
+      const client = await createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION);
 
+      assert.strictEqual(warningWasShown, false);
+      assert.strictEqual(getClientRealmUrl(client), DEFAULT_B2_API_URL);
+    } finally {
+      restoreWarningMessage();
+      restoreConfiguration();
+    }
+  });
+
+  test("creates a client after showing a modal custom API URL warning", async () => {
+    const restoreConfiguration = stubB2ApiUrlConfiguration(CUSTOM_API_URL);
+    let warningCall: WarningMessageCall | undefined;
+    const restoreWarningMessage = stubWarningMessage(CONFIRM_CUSTOM_API_URL_LABEL, (call) => {
+      warningCall = call;
+    });
+
+    try {
+      const client = await createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION);
+
+      assert.ok(warningCall);
+      assert.strictEqual(warningCall.options?.modal, true);
+      assert.deepStrictEqual(warningCall.items, [CONFIRM_CUSTOM_API_URL_LABEL]);
+      assert.match(warningCall.message, /Custom API URL configured/);
       assert.strictEqual(getClientRealmUrl(client), CUSTOM_API_URL);
     } finally {
       restoreWarningMessage();
