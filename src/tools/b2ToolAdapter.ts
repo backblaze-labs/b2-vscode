@@ -107,6 +107,9 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
       const message = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
     } catch (error) {
+      if (error instanceof vscode.CancellationError) {
+        throw error;
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`${this.definition.displayName} failed: ${errorMessage}`);
     }

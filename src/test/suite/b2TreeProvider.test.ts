@@ -157,6 +157,30 @@ suite("B2 tree provider paging", () => {
     assert.strictEqual(calls.length, 2);
   });
 
+  test("coalesces concurrent initial listings for the same prefix", async () => {
+    let releasePage: (() => void) | undefined;
+    const firstPageReady = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+    const { bucket, calls } = makeBucket([
+      async () => {
+        await firstPageReady;
+        return { files: [file("a.txt")], nextFileName: null };
+      },
+    ]);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+
+    const firstLoad = provider.getChildren(bucketItem);
+    const secondLoad = provider.getChildren(bucketItem);
+    releasePage?.();
+    const [firstChildren, secondChildren] = await Promise.all([firstLoad, secondLoad]);
+
+    assert.deepStrictEqual(firstChildren.map(label), ["a.txt"]);
+    assert.deepStrictEqual(secondChildren.map(label), ["a.txt"]);
+    assert.strictEqual(calls.length, 1);
+  });
+
   test("preserves deep prefixes and special characters when listing folders", async () => {
     const prefix = "deep prefix/üñîçødé & symbols/#/";
     const { bucket, calls } = makeBucket([

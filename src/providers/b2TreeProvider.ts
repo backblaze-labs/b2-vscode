@@ -38,7 +38,9 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
 
   private client: B2Client | null = null;
   private readonly listingStates = new Map<string, ListingState>();
+  private readonly listingStateLoads = new Map<string, Promise<ListingState>>();
   private readonly loadingListings = new Set<string>();
+  private listingStateGeneration = 0;
 
   constructor(authService: AuthService) {
     // Refresh when auth state changes
@@ -48,13 +50,17 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
   /** Set or replace the B2 client (called after authentication). */
   setClient(client: B2Client | null): void {
     this.client = client;
+    this.listingStateGeneration++;
     this.listingStates.clear();
+    this.listingStateLoads.clear();
     this.loadingListings.clear();
   }
 
   /** Refresh the entire tree. */
   refresh(): void {
+    this.listingStateGeneration++;
     this.listingStates.clear();
+    this.listingStateLoads.clear();
     this.loadingListings.clear();
     this._onDidChangeTreeData.fire();
   }
@@ -149,10 +155,36 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       return existing;
     }
 
+    const pending = this.listingStateLoads.get(key);
+    if (pending) {
+      return pending;
+    }
+
     const created: ListingState = { items: [], nextFileName: undefined };
-    this.listingStates.set(key, created);
-    await this.fetchNextPage(bucket, prefix, created);
-    return created;
+    const generation = this.listingStateGeneration;
+    const load = this.createListingState(bucket, prefix, key, created, generation);
+    this.listingStateLoads.set(key, load);
+    try {
+      return await load;
+    } finally {
+      if (this.listingStateGeneration === generation) {
+        this.listingStateLoads.delete(key);
+      }
+    }
+  }
+
+  private async createListingState(
+    bucket: Bucket,
+    prefix: string,
+    key: string,
+    state: ListingState,
+    generation: number,
+  ): Promise<ListingState> {
+    await this.fetchNextPage(bucket, prefix, state);
+    if (this.listingStateGeneration === generation) {
+      this.listingStates.set(key, state);
+    }
+    return state;
   }
 
   private async fetchNextPage(bucket: Bucket, prefix: string, state: ListingState): Promise<void> {
@@ -169,6 +201,7 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       ...(startFileName !== undefined ? { startFileName } : {}),
     });
 
+    // pageSize should already bound page.files; keep slice as a defensive cap.
     const visibleFiles = page.files.slice(0, remaining);
     for (const file of visibleFiles) {
       if (file.action === "folder") {
@@ -178,6 +211,7 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       }
     }
 
+    // If an oversized page is sliced, continue after the last exposed item.
     const nextFileName =
       page.files.length > visibleFiles.length
         ? visibleFiles[visibleFiles.length - 1]?.fileName

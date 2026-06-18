@@ -100,6 +100,7 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
       });
       pageCount++;
 
+      // pageSize should already bound page.files; keep slice as a defensive cap.
       const visibleFiles = page.files.slice(0, remaining);
       for (const f of visibleFiles) {
         throwIfCancellationRequested(token);
@@ -111,6 +112,7 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
         });
       }
 
+      // If an oversized page is sliced, continue after the last exposed item.
       nextContinuationToken =
         page.files.length > visibleFiles.length
           ? visibleFiles[visibleFiles.length - 1]?.fileName
