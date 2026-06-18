@@ -176,10 +176,9 @@ export class AuthService implements vscode.Disposable {
   private findB2CliDatabase(): string | null {
     if (this.options.b2CliDatabasePaths) {
       for (const candidate of this.options.b2CliDatabasePaths) {
-        log(
-          `CLI-AUTH: Checking configured path: ${candidate} -> exists=${fs.existsSync(candidate)}`,
-        );
-        if (fs.existsSync(candidate)) {
+        const candidateExists = fs.existsSync(candidate);
+        log(`CLI-AUTH: Checking configured path: ${candidate} -> exists=${candidateExists}`);
+        if (candidateExists) {
           return candidate;
         }
       }
@@ -191,16 +190,18 @@ export class AuthService implements vscode.Disposable {
     log(`CLI-AUTH: Home directory: ${home}`);
 
     const legacyPath = path.join(home, ".b2_account_info");
-    log(`CLI-AUTH: Checking legacy path: ${legacyPath} -> exists=${fs.existsSync(legacyPath)}`);
-    if (fs.existsSync(legacyPath)) {
+    const legacyPathExists = fs.existsSync(legacyPath);
+    log(`CLI-AUTH: Checking legacy path: ${legacyPath} -> exists=${legacyPathExists}`);
+    if (legacyPathExists) {
       return legacyPath;
     }
 
     const environment = this.options.environment ?? process.env;
     const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
-    log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${fs.existsSync(xdgPath)}`);
-    if (fs.existsSync(xdgPath)) {
+    const xdgPathExists = fs.existsSync(xdgPath);
+    log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${xdgPathExists}`);
+    if (xdgPathExists) {
       return xdgPath;
     }
 
