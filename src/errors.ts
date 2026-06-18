@@ -64,8 +64,6 @@ const SAFE_EXTENSION_MESSAGE_PREFIXES = [
   "No workspace folder open.",
   "B2 authentication canceled because",
   "b2.apiUrl ",
-  "B2 CLI credentials could not be read.",
-  "B2 CLI credential auto-detection could not initialize.",
 ];
 
 const SAFE_LOCAL_ERROR_CODES = new Set([

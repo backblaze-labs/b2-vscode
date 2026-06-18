@@ -24,7 +24,8 @@ import {
 } from "../constants";
 import type { B2AuthState } from "../types";
 import { log, logError } from "../logger";
-import { formatB2ToolUserMessage } from "../errors";
+
+type SqlJsRuntime = Awaited<ReturnType<typeof initSqlJs>>;
 
 /**
  * Resolved B2 credentials.
@@ -34,14 +35,28 @@ export interface B2Credentials {
   appKey: string;
 }
 
+// Keep in sync with SQL_WASM_FILENAME in webpack.config.js and
+// PACKAGED_SQL_WASM_ENTRY in scripts/assert-vsix-assets.js.
+const DEFAULT_SQL_WASM_FILENAME = "sql-wasm.wasm";
+
+const SQL_WASM_ASSET_READ_ERROR_CODES = new Set(["EACCES", "ENOENT", "ENOTDIR"]);
+
+class SqlWasmInitializationError extends Error {
+  readonly originalError: unknown;
+
+  constructor(originalError: unknown) {
+    super("Bundled SQL.js runtime asset could not be initialized.");
+    this.name = "SqlWasmInitializationError";
+    this.originalError = originalError;
+  }
+}
+
 export interface AuthServiceOptions {
   /** Override environment lookup for tests. Defaults to process.env. */
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
-  /** Override bundled extension runtime directory for tests. Defaults to __dirname. */
-  extensionRuntimeDirectory?: string;
-  /** Override sql.js WASM path for tests. */
+  /** Override the bundled sql.js WASM path for tests. Defaults to __dirname/sql-wasm.wasm. */
   sqlWasmPath?: string;
 }
 
@@ -176,24 +191,38 @@ export class AuthService implements vscode.Disposable {
   }
 
   private buildB2CliCredentialWarning(error: unknown): string {
-    const message = formatB2ToolUserMessage(error);
     if (this.isSqlWasmInitializationError(error)) {
-      return `B2 CLI credential auto-detection could not initialize. The bundled SQL.js runtime asset is missing or unreadable. ${message}`;
+      return "B2 CLI credential auto-detection could not initialize. The bundled SQL.js runtime asset is missing, unreadable, or invalid. Check the Backblaze B2 output log for details.";
     }
 
-    return `B2 CLI credentials could not be read. ${message}`;
+    return "B2 CLI credentials could not be read. Check file permissions or run B2: Authenticate to store credentials in VS Code.";
   }
 
   private isSqlWasmInitializationError(error: unknown): boolean {
-    if (this.options.sqlWasmPath !== undefined) {
-      return false;
-    }
+    return error instanceof SqlWasmInitializationError;
+  }
 
+  private isSqlWasmAssetReadError(error: unknown): boolean {
     const errorCode =
       typeof error === "object" && error !== null && "code" in error
         ? (error as { code?: unknown }).code
         : undefined;
-    return typeof errorCode === "string" && ["EACCES", "ENOENT", "ENOTDIR"].includes(errorCode);
+    return typeof errorCode === "string" && SQL_WASM_ASSET_READ_ERROR_CODES.has(errorCode);
+  }
+
+  private resolveSqlWasmPath(): string {
+    return this.options.sqlWasmPath ?? path.join(__dirname, DEFAULT_SQL_WASM_FILENAME);
+  }
+
+  private readSqlWasmFile(wasmPath: string): Buffer {
+    try {
+      return fs.readFileSync(wasmPath);
+    } catch (error) {
+      if (this.isSqlWasmAssetReadError(error)) {
+        throw new SqlWasmInitializationError(error);
+      }
+      throw error;
+    }
   }
 
   private findB2CliDatabase(): string | null {
@@ -237,14 +266,18 @@ export class AuthService implements vscode.Disposable {
     log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
 
     // Load the WASM file copied next to dist/extension.js in packaged VSIX builds.
-    const runtimeDirectory = this.options.extensionRuntimeDirectory ?? __dirname;
-    const wasmPath = this.options.sqlWasmPath ?? path.join(runtimeDirectory, "sql-wasm.wasm");
+    const wasmPath = this.resolveSqlWasmPath();
     log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
 
-    const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;
+    const wasmBinary = new Uint8Array(this.readSqlWasmFile(wasmPath)).buffer as ArrayBuffer;
     log(`CLI-AUTH: WASM binary size: ${wasmBinary.byteLength} bytes`);
 
-    const SQL = await initSqlJs({ wasmBinary });
+    let SQL: SqlJsRuntime;
+    try {
+      SQL = await initSqlJs({ wasmBinary });
+    } catch (error) {
+      throw new SqlWasmInitializationError(error);
+    }
     log("CLI-AUTH: sql.js initialized successfully");
 
     const db = new SQL.Database(fileBuffer);

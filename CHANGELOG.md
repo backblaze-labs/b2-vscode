@@ -12,6 +12,13 @@
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
 
+### Fixed
+
+- Packaged CLI credential auto-detection now bundles the SQL.js runtime module
+  and loads the WASM asset from the extension runtime directory
+  (`dist/sql-wasm.wasm`). VSIX packaging now verifies the runtime bundle and
+  WASM asset before release.
+
 ### Security
 
 - Copilot (Language Model) tools now show explicit, effect-naming confirmations

@@ -12,6 +12,8 @@ import * as vscode from "vscode";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
 
+const SQL_WASM_FIXTURE_PATH = path.join(process.cwd(), "node_modules/sql.js/dist/sql-wasm.wasm");
+
 function fakeSecretStorage(): vscode.SecretStorage {
   const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
   return {
@@ -26,6 +28,35 @@ function fakeSecretStorage(): vscode.SecretStorage {
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
+}
+
+function defaultCompiledSqlWasmPath(): string {
+  return path.join(__dirname, "..", "..", "services", "sql-wasm.wasm");
+}
+
+function createFsError(code: string, filePath: string): NodeJS.ErrnoException {
+  const error = new Error(
+    `${code}: simulated failure, open '${filePath}'`,
+  ) as NodeJS.ErrnoException;
+  error.code = code;
+  error.path = filePath;
+  return error;
+}
+
+function stubReadFileSyncForPath(filePath: string, error: NodeJS.ErrnoException): () => void {
+  const mutableFs = require("fs") as { readFileSync: typeof fs.readFileSync };
+  const originalReadFileSync = mutableFs.readFileSync;
+  mutableFs.readFileSync = ((pathLike: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (pathLike === filePath) {
+      throw error;
+    }
+
+    return (originalReadFileSync as (...readArgs: unknown[]) => unknown)(pathLike, ...args);
+  }) as typeof fs.readFileSync;
+
+  return () => {
+    mutableFs.readFileSync = originalReadFileSync;
+  };
 }
 
 async function createB2CliCredentialDatabase(
@@ -56,10 +87,7 @@ suite("AuthService credential resolution failures", () => {
 
     try {
       fs.mkdirSync(packagedRuntimeDir, { recursive: true });
-      fs.copyFileSync(
-        path.join(process.cwd(), "node_modules/sql.js/dist/sql-wasm.wasm"),
-        packagedWasmPath,
-      );
+      fs.copyFileSync(SQL_WASM_FIXTURE_PATH, packagedWasmPath);
       await createB2CliCredentialDatabase(
         dbPath,
         packagedWasmPath,
@@ -70,7 +98,7 @@ suite("AuthService credential resolution failures", () => {
       const service = new AuthService(fakeSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
-        extensionRuntimeDirectory: packagedRuntimeDir,
+        sqlWasmPath: packagedWasmPath,
       });
 
       const credentials = await service.resolveCredentials();
@@ -94,7 +122,7 @@ suite("AuthService credential resolution failures", () => {
       const service = new AuthService(fakeSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
-        sqlWasmPath: path.join(process.cwd(), "node_modules/sql.js/dist/sql-wasm.wasm"),
+        sqlWasmPath: SQL_WASM_FIXTURE_PATH,
       });
 
       const credentials = await service.resolveCredentials();
@@ -113,14 +141,16 @@ suite("AuthService credential resolution failures", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
     fs.writeFileSync(dbPath, "");
-    const runtimeDir = path.join(dir, "runtime");
+    const defaultWasmPath = defaultCompiledSqlWasmPath();
+    const originalDefaultWasm = fs.existsSync(defaultWasmPath)
+      ? fs.readFileSync(defaultWasmPath)
+      : undefined;
 
     try {
-      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.rmSync(defaultWasmPath, { force: true });
       const service = new AuthService(fakeSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
-        extensionRuntimeDirectory: runtimeDir,
       });
 
       const credentials = await service.resolveCredentials();
@@ -130,10 +160,44 @@ suite("AuthService credential resolution failures", () => {
         service.getCredentialResolutionWarning() ?? "",
         /CLI credential auto-detection could not initialize/i,
       );
-      assert.match(service.getCredentialResolutionWarning() ?? "", /ENOENT.*sql-wasm\.wasm/i);
-      assert.doesNotMatch(service.getCredentialResolutionWarning() ?? "", /Unexpected error/i);
+      assert.doesNotMatch(service.getCredentialResolutionWarning() ?? "", /ENOENT/i);
+      assert.strictEqual(
+        (service.getCredentialResolutionWarning() ?? "").includes(defaultWasmPath),
+        false,
+      );
     } finally {
+      if (originalDefaultWasm) {
+        fs.writeFileSync(defaultWasmPath, originalDefaultWasm);
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  for (const errorCode of ["EACCES", "ENOENT", "ENOTDIR"]) {
+    test(`records a generic warning when the CLI database read fails with ${errorCode}`, async () => {
+      const dir = tempDir();
+      const dbPath = path.join(dir, "account_info");
+      fs.writeFileSync(dbPath, "");
+      const restoreReadFileSync = stubReadFileSyncForPath(dbPath, createFsError(errorCode, dbPath));
+
+      try {
+        const service = new AuthService(fakeSecretStorage(), {
+          environment: {},
+          b2CliDatabasePaths: [dbPath],
+          sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+        });
+
+        const credentials = await service.resolveCredentials();
+        const warning = service.getCredentialResolutionWarning() ?? "";
+
+        assert.strictEqual(credentials, null);
+        assert.match(warning, /CLI credentials could not be read/i);
+        assert.doesNotMatch(warning, /auto-detection could not initialize/i);
+        assert.strictEqual(warning.includes(dbPath), false);
+      } finally {
+        restoreReadFileSync();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });
