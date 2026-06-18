@@ -22,7 +22,7 @@ import {
   CTX_AUTHENTICATED,
 } from "../constants";
 import type { B2AuthState } from "../types";
-import { log } from "../logger";
+import { log, logError } from "../logger";
 import {
   SqlJsRuntimeLoader,
   SqlWasmInitializationError,
@@ -178,7 +178,9 @@ export class AuthService implements vscode.Disposable {
       log(`CLI-AUTH: Query result: ${result ? "credentials found" : "no credentials"}`);
       return result;
     } catch (err) {
-      log(`CLI-AUTH: Error reading B2 CLI database (${this.formatCredentialErrorForLog(err)}).`);
+      logError(
+        `CLI-AUTH: Error reading B2 CLI database (${this.formatCredentialErrorForLog(err)}).`,
+      );
       this.credentialResolutionWarning = this.buildB2CliCredentialWarning(err);
       return null;
     }
