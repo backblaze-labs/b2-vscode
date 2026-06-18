@@ -23,6 +23,12 @@ import { formatB2UserMessage } from "./errors";
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
 
+type BundledCredentialSmokeResolver = (
+  dbPath: string,
+  sqlJsRuntimePath: string,
+  sqlWasmPath: string,
+) => Promise<B2Credentials | null>;
+
 function createEmptySecretStorage(): vscode.SecretStorage {
   const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
   return {
@@ -35,7 +41,7 @@ function createEmptySecretStorage(): vscode.SecretStorage {
   };
 }
 
-export async function __b2VsixSmokeResolveCredentials(
+async function resolveBundledSmokeCredentials(
   dbPath: string,
   sqlJsRuntimePath: string,
   sqlWasmPath: string,
@@ -53,6 +59,11 @@ export async function __b2VsixSmokeResolveCredentials(
     authService.dispose();
   }
 }
+
+export const __b2VsixSmokeResolveCredentials: BundledCredentialSmokeResolver | undefined =
+  process.env.B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE === "1"
+    ? resolveBundledSmokeCredentials
+    : undefined;
 
 /**
  * Activate the B2 extension.

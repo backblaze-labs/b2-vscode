@@ -33,9 +33,31 @@ const SQL_JS_RUNTIME_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.runt
 const SQL_WASM_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.sourcePath);
 const DIST_SQL_JS_RUNTIME_PATH = path.join(process.cwd(), "dist", SQL_WASM_ASSET.runtimeFilename);
 const DIST_SQL_WASM_PATH = path.join(process.cwd(), "dist", SQL_WASM_ASSET.filename);
+const DIST_EXTENSION_PATH = path.join(process.cwd(), "dist", "extension.js");
+const BUNDLED_CREDENTIAL_SMOKE_ENV = "B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
+}
+
+function loadBundledExtension(enableSmokeHelper: boolean): BundledExtensionSmokeExports {
+  const previousValue = process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
+  if (enableSmokeHelper) {
+    process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = "1";
+  } else {
+    delete process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
+  }
+
+  try {
+    delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
+    return require(DIST_EXTENSION_PATH) as BundledExtensionSmokeExports;
+  } finally {
+    if (previousValue === undefined) {
+      delete process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
+    } else {
+      process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = previousValue;
+    }
+  }
 }
 
 function fakeSecretStorage(): vscode.SecretStorage {
@@ -269,12 +291,16 @@ suite("AuthService credential resolution failures", () => {
     }
   });
 
+  test("does not expose the bundled credential smoke helper by default", () => {
+    const bundledExtension = loadBundledExtension(false);
+
+    assert.strictEqual(bundledExtension.__b2VsixSmokeResolveCredentials, undefined);
+  });
+
   test("resolves CLI credentials through the bundled extension runtime", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const bundledExtension = require(
-      path.join(process.cwd(), "dist", "extension.js"),
-    ) as BundledExtensionSmokeExports;
+    const bundledExtension = loadBundledExtension(true);
 
     try {
       await createB2CliCredentialDatabase(

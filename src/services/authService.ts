@@ -232,7 +232,7 @@ export class AuthService implements vscode.Disposable {
       return `code=${errorCode}`;
     }
 
-    return error instanceof Error ? error.name : typeof error;
+    return error instanceof Error ? `${error.name}: ${error.message}` : typeof error;
   }
 
   private getErrorCode(error: unknown): string | undefined {
