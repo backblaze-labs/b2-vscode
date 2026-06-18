@@ -162,6 +162,34 @@ suite("B2 LM tool failure handling", () => {
     );
   });
 
+  test("upload tool surfaces missing local file path feedback", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-missing-"));
+    const missingFile = path.join(dir, "missing.txt");
+    const client = {
+      async getBucket() {
+        assert.fail("Expected local path validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+    const adapter = new B2ToolAdapter(uploadFileTool, uploadFileOperation, {
+      getClient: () => client,
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          adapter.invoke(
+            {
+              input: { bucket: "b", localPath: missingFile },
+            } as vscode.LanguageModelToolInvocationOptions<{ bucket: string; localPath: string }>,
+            new vscode.CancellationTokenSource().token,
+          ),
+        /B2: Upload File failed: ENOENT.*missing\.txt/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(

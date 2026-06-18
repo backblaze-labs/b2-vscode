@@ -41,9 +41,7 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       localPath = path.join(workspaceFolder.uri.fsPath, localPath);
     }
 
-    if (!fs.existsSync(localPath)) {
-      throw new Error(`Local file not found: ${localPath}`);
-    }
+    fs.accessSync(localPath, fs.constants.R_OK);
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
