@@ -48,7 +48,7 @@ suite("B2 error handling", () => {
       },
       {
         error: b2Error(429, "too_many_requests", "slow down", 7),
-        expected: /rate limit.*7 second/i,
+        expected: /rate limit.*7 seconds/i,
       },
       {
         error: new NetworkError("fetch failed"),
@@ -69,7 +69,18 @@ suite("B2 error handling", () => {
     const message = formatB2UserMessage(b2Error(503, "service_unavailable", "try later", 3));
 
     assert.match(message, /SDK retries transient failures with backoff/i);
-    assert.match(message, /3 second/i);
+    assert.match(message, /3 seconds/i);
+  });
+
+  test("pluralizes retry-after seconds in user messages", () => {
+    assert.match(
+      formatB2UserMessage(b2Error(429, "too_many_requests", "slow down", 1)),
+      /1 second/i,
+    );
+    assert.match(
+      formatB2UserMessage(b2Error(429, "too_many_requests", "slow down", 2)),
+      /2 seconds/i,
+    );
   });
 
   test("classifies typed 5xx errors before broad network text matches", () => {

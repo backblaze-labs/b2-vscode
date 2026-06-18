@@ -98,7 +98,7 @@ suite("B2 LM tool failure handling", () => {
             { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
             new vscode.CancellationTokenSource().token,
           ),
-        new RegExp(`${definition.displayName} failed: .*rate limit.*4 second`, "i"),
+        new RegExp(`${definition.displayName} failed: .*rate limit.*4 seconds`, "i"),
       );
     }
   });

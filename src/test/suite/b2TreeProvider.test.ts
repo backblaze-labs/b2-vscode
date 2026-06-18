@@ -328,6 +328,6 @@ suite("B2 tree provider error handling", () => {
     assert.deepStrictEqual(result, []);
     assert.strictEqual(messages.length, 1);
     assert.match(messages[0], /rate limit/i);
-    assert.match(messages[0], /11 second/i);
+    assert.match(messages[0], /11 seconds/i);
   });
 });

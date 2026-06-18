@@ -281,7 +281,12 @@ function isTransientServiceFailure(error: unknown): boolean {
 
 function retryAfterText(error: unknown): string {
   const retryAfter = getRetryAfter(error);
-  return retryAfter === undefined ? "" : ` Wait at least ${retryAfter} second(s) before retrying.`;
+  if (retryAfter === undefined) {
+    return "";
+  }
+
+  const unit = retryAfter === 1 ? "second" : "seconds";
+  return ` Wait at least ${retryAfter} ${unit} before retrying.`;
 }
 
 function missingCapabilitiesText(error: unknown): string {
