@@ -496,15 +496,17 @@ export function registerCommands(services: CommandServices): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "b2.copyPath",
-      async (item: BucketTreeItem | FolderTreeItem | FileTreeItem) => {
+      async (item?: BucketTreeItem | FolderTreeItem | FileTreeItem) => {
         let b2Path: string;
 
         if (item instanceof BucketTreeItem) {
           b2Path = `b2://${item.bucketName}`;
         } else if (item instanceof FolderTreeItem) {
           b2Path = `b2://${item.bucketName}/${item.prefix}`;
-        } else {
+        } else if (item instanceof FileTreeItem) {
           b2Path = `b2://${item.bucketName}/${item.file.fileName}`;
+        } else {
+          return;
         }
 
         await vscode.env.clipboard.writeText(b2Path);

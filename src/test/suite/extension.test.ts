@@ -7,6 +7,11 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 
+interface MenuContribution {
+  command: string;
+  when?: string;
+}
+
 suite("B2 Extension Test Suite", () => {
   test("Extension activates", async () => {
     const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
@@ -46,6 +51,21 @@ suite("B2 Extension Test Suite", () => {
 
     for (const command of expectedCommands) {
       assert.ok(commands.includes(command), `${command} should be registered`);
+    }
+  });
+
+  test("Copy path menus are scoped to pathable tree items", async () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const viewItemMenus = extension.packageJSON.contributes.menus[
+      "view/item/context"
+    ] as MenuContribution[];
+    const copyPathMenus = viewItemMenus.filter((entry) => entry.command === "b2.copyPath");
+
+    assert.strictEqual(copyPathMenus.length, 2);
+    for (const entry of copyPathMenus) {
+      assert.strictEqual(entry.when, "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/");
     }
   });
 });

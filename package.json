@@ -235,7 +235,7 @@
       "view/item/context": [
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
           "group": "inline@1"
         },
         {
@@ -295,7 +295,7 @@
         },
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
           "group": "1_copy@1"
         },
         {
