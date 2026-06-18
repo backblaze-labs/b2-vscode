@@ -11,7 +11,9 @@ import {
   AccessDeniedError,
   B2Error,
   B2InsufficientCapabilityError,
+  B2SsrfError,
   BadAuthTokenError,
+  CapExceededError,
   ExpiredAuthTokenError,
   FileNotPresentError,
   NetworkError,
@@ -193,6 +195,18 @@ function isExpiredAuth(error: unknown): boolean {
   );
 }
 
+function isCapExceeded(error: unknown): boolean {
+  const code = getB2Code(error);
+  return (
+    error instanceof CapExceededError ||
+    matchesErrorName(error, "CapExceededError") ||
+    code === "cap_exceeded" ||
+    code === "storage_cap_exceeded" ||
+    code === "transaction_cap_exceeded" ||
+    code === "download_cap_exceeded"
+  );
+}
+
 function isMissingCapability(error: unknown): boolean {
   const status = getB2Status(error);
   const code = getB2Code(error);
@@ -230,6 +244,10 @@ function isRateLimit(error: unknown): boolean {
     matchesErrorName(error, "TooManyRequestsError") ||
     status === 429
   );
+}
+
+function isB2SsrfFailure(error: unknown): boolean {
+  return error instanceof B2SsrfError || matchesErrorName(error, "B2SsrfError");
 }
 
 function isNetworkFailure(error: unknown): boolean {
@@ -340,6 +358,10 @@ export function formatB2UserMessage(error: unknown): string {
     return "B2 rejected the application key ID or application key. Run B2: Authenticate and enter valid credentials.";
   }
 
+  if (isCapExceeded(error)) {
+    return "A Backblaze B2 account cap was reached for storage, transactions, or downloads. Check your caps and usage in the Backblaze account dashboard.";
+  }
+
   if (isMissingCapability(error)) {
     return `The B2 application key is missing permission for this bucket or operation. Use a key with the required bucket access and capabilities.${missingCapabilitiesText(error)}`;
   }
@@ -362,6 +384,10 @@ export function formatB2UserMessage(error: unknown): string {
 
   if (isNetworkFailure(error)) {
     return "Network connection to B2 failed. Check your internet connection, proxy, VPN, or custom B2 endpoint, then retry.";
+  }
+
+  if (isB2SsrfFailure(error)) {
+    return "B2 rejected a request URL outside the authorized B2 realm. Check your custom B2 endpoint or retry with the default Backblaze B2 endpoint.";
   }
 
   const message = redactSensitiveText(getErrorMessage(error));

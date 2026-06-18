@@ -5,7 +5,12 @@
  */
 
 import * as assert from "assert";
-import { B2InsufficientCapabilityError, NetworkError, classifyError } from "@backblaze-labs/b2-sdk";
+import {
+  B2InsufficientCapabilityError,
+  B2SsrfError,
+  NetworkError,
+  classifyError,
+} from "@backblaze-labs/b2-sdk";
 import {
   B2PartialFailureError,
   B2ResourceNotFoundError,
@@ -43,6 +48,10 @@ suite("B2 error handling", () => {
         expected: /missing permission.*listFiles, readFiles/i,
       },
       {
+        error: b2Error(403, "cap_exceeded", "account cap reached"),
+        expected: /account cap.*caps and usage/i,
+      },
+      {
         error: b2Error(404, "no_such_file", "file missing"),
         expected: /bucket or object was not found/i,
       },
@@ -62,6 +71,23 @@ suite("B2 error handling", () => {
 
     for (const testCase of cases) {
       assert.match(formatB2UserMessage(testCase.error), testCase.expected);
+    }
+  });
+
+  test("classifies all cap-exceeded variants before generic 403 permissions", () => {
+    const capCodes = [
+      "cap_exceeded",
+      "storage_cap_exceeded",
+      "transaction_cap_exceeded",
+      "download_cap_exceeded",
+    ];
+
+    for (const code of capCodes) {
+      const message = formatB2UserMessage(b2Error(403, code, "cap reached"));
+
+      assert.match(message, /account cap/i);
+      assert.match(message, /caps and usage/i);
+      assert.doesNotMatch(message, /application key|missing permission/i);
     }
   });
 
@@ -99,6 +125,19 @@ suite("B2 error handling", () => {
 
     assert.match(message, /Unexpected error/i);
     assert.doesNotMatch(message, /Cannot read properties|secret/);
+  });
+
+  test("surfaces safe guidance for SDK SSRF guard failures", () => {
+    const message = formatB2UserMessage(
+      new B2SsrfError(
+        "host outside allowed B2 realm: 169.254.169.254",
+        "https://169.254.169.254/latest?authorizationToken=secret",
+      ),
+    );
+
+    assert.match(message, /outside the authorized B2 realm/i);
+    assert.match(message, /custom B2 endpoint/i);
+    assert.doesNotMatch(message, /169\.254|authorizationToken|secret/);
   });
 
   test("does not label empty-message non-B2 errors as B2 errors", () => {
