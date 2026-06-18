@@ -21,9 +21,11 @@
   "activationEvents": [],
   "scripts": {
     "build:icons": "node scripts/build-icons.js",
-    "compile": "npm run build:icons && webpack",
+    "clean:dist": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "compile": "npm run build:icons && npm run clean:dist && webpack",
+    "compile:bundled-smoke": "webpack --env bundledCredentialSmoke",
     "watch": "webpack --watch",
-    "package": "npm run build:icons && webpack --mode production --devtool hidden-source-map",
+    "package": "npm run build:icons && npm run clean:dist && webpack --mode production --devtool hidden-source-map",
     "compile-tests": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && tsc -p tsconfig.test.json",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
@@ -32,15 +34,16 @@
     "check": "npm run format:check && npm run lint && npm run type-check",
     "check:fix": "npm run format && npm run lint:fix && npm run type-check",
     "type-check": "tsc --noEmit",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "npm run compile-tests && npm run compile && npm run compile:bundled-smoke && npm run lint",
     "test": "vscode-test",
     "clean": "rm -rf dist out *.vsix",
     "clean:vsix": "rm -rf *.vsix",
     "assert:vsix-assets": "node scripts/assert-vsix-assets.js",
+    "assert:dist-assets": "node scripts/assert-vsix-assets.js --dist",
     "docs": "typedoc",
     "vsix": "npm run clean:vsix && npm run package && npx @vscode/vsce package --no-yarn --no-dependencies && npm run assert:vsix-assets",
     "vsix:install": "code --install-extension ./b2-vscode-*.vsix --force",
-    "vscode:prepublish": "npm run build:icons && npm run package"
+    "vscode:prepublish": "npm run build:icons && npm run package && npm run assert:dist-assets"
   },
   "prettier": {
     "singleQuote": false,

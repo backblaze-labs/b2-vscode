@@ -2,7 +2,7 @@
 
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
-const sqlWasmAsset = require("./src/sql-wasm-asset.json");
+const sqlJsRuntimeAssets = require("./src/sql-js-runtime-assets.json");
 
 /** @typedef {import('webpack').Configuration} WebpackConfig */
 
@@ -52,13 +52,13 @@ const extensionConfig = {
     new CopyPlugin({
       patterns: [
         {
-          from: sqlWasmAsset.runtimeSourcePath,
-          to: sqlWasmAsset.runtimeFilename,
+          from: sqlJsRuntimeAssets.runtimeSourcePath,
+          to: sqlJsRuntimeAssets.runtimeFilename,
           info: { minimized: true },
         },
         {
-          from: sqlWasmAsset.wasmSourcePath,
-          to: sqlWasmAsset.wasmFilename,
+          from: sqlJsRuntimeAssets.wasmSourcePath,
+          to: sqlJsRuntimeAssets.wasmFilename,
         },
       ],
     }),
@@ -76,4 +76,7 @@ const bundledCredentialSmokeConfig = {
   },
 };
 
-module.exports = [extensionConfig, bundledCredentialSmokeConfig];
+module.exports = (env = {}) =>
+  env.bundledCredentialSmoke === true || env.bundledCredentialSmoke === "true"
+    ? bundledCredentialSmokeConfig
+    : extensionConfig;

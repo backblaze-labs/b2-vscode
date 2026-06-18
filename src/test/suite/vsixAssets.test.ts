@@ -11,15 +11,23 @@ import * as path from "path";
 import { EventEmitter } from "events";
 import JSZip from "jszip";
 import {
-  SQL_WASM_ASSET,
+  SQL_JS_RUNTIME_ASSETS,
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
-} from "../../sqlWasmAssets";
+} from "../../sqlJsRuntimeAssets";
 
 interface VsixAssetAssertions {
+  assertDistAssets(
+    distDir?: string,
+    options?: { skipSqlJsPackageProvenance?: boolean; retryDelaysMs?: number[] },
+  ): Promise<void>;
+  assertSqlJsPackageProvenance(
+    fetchPackage?: (url: string) => Promise<Buffer>,
+    options?: { retryDelaysMs?: number[]; allowLocalFallback?: boolean },
+  ): Promise<void>;
   assertVsixAssets(
     packagePath?: string,
-    options?: { skipSqlJsPackageProvenance?: boolean },
+    options?: { skipSqlJsPackageProvenance?: boolean; retryDelaysMs?: number[] },
   ): Promise<void>;
   fetchBuffer(url: string, redirectsRemaining?: number, timeoutMs?: number): Promise<Buffer>;
 }
@@ -56,16 +64,38 @@ async function createFixtureVsix(
   return vsixPath;
 }
 
+function createFixtureDist(dir: string, entries: Record<string, Buffer | string>): string {
+  const distDir = path.join(dir, "dist");
+  fs.mkdirSync(distDir, { recursive: true });
+  for (const [entryName, content] of Object.entries(entries)) {
+    fs.writeFileSync(path.join(distDir, entryName), content);
+  }
+
+  return distDir;
+}
+
 function baseEntries(
   extensionSource: string,
   runtimeContent: Buffer,
   wasmContent: Buffer,
 ): Record<string, Buffer | string> {
   return {
-    [SQL_WASM_ASSET.packageJsonEntry]: "{}",
-    [SQL_WASM_ASSET.extensionBundleEntry]: extensionSource,
-    [SQL_WASM_ASSET.packagedRuntimeEntry]: runtimeContent,
-    [SQL_WASM_ASSET.packagedWasmEntry]: wasmContent,
+    [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: "{}",
+    [SQL_JS_RUNTIME_ASSETS.extensionBundleEntry]: extensionSource,
+    [SQL_JS_RUNTIME_ASSETS.packagedRuntimeEntry]: runtimeContent,
+    [SQL_JS_RUNTIME_ASSETS.packagedWasmEntry]: wasmContent,
+  };
+}
+
+function baseDistEntries(
+  extensionSource: string,
+  runtimeContent: Buffer,
+  wasmContent: Buffer,
+): Record<string, Buffer | string> {
+  return {
+    [path.basename(SQL_JS_RUNTIME_ASSETS.extensionBundleEntry)]: extensionSource,
+    [SQL_JS_RUNTIME_ASSETS.runtimeFilename]: runtimeContent,
+    [SQL_JS_RUNTIME_ASSETS.wasmFilename]: wasmContent,
   };
 }
 
@@ -92,6 +122,31 @@ suite("VSIX runtime asset assertions", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("accepts packaged dist assets for the publish preflight gate", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const distDir = createFixtureDist(
+        dir,
+        baseDistEntries("module.exports = {};", runtime, wasm),
+      );
+
+      await assertions.assertDistAssets(distDir, FIXTURE_ASSERT_OPTIONS);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runs the packaged dist asset gate during vscode prepublish", () => {
+    const packageMetadata = require(path.join(process.cwd(), "package.json")) as {
+      scripts: Record<string, string>;
+    };
+
+    assert.match(packageMetadata.scripts["vscode:prepublish"], /assert:dist-assets/);
   });
 
   test("rejects an empty packaged sql.js WASM asset", async () => {
@@ -252,6 +307,26 @@ suite("VSIX runtime asset assertions", () => {
     }
   });
 
+  test("rejects packaged dist output containing the test-only smoke artifact", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const distDir = createFixtureDist(dir, {
+        ...baseDistEntries("module.exports = {};", runtime, wasm),
+        "bundledCredentialSmoke.js": "module.exports = {};",
+      });
+
+      await assert.rejects(
+        assertions.assertDistAssets(distDir, FIXTURE_ASSERT_OPTIONS),
+        /test-only bundled credential smoke artifact/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("does not execute packaged extension JavaScript while verifying assets", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();
@@ -306,5 +381,31 @@ suite("VSIX runtime asset assertions", () => {
         value: originalGet,
       });
     }
+  });
+
+  test("falls back to local pinned SQL.js assets when tarball fetch is offline", async () => {
+    const assertions = loadVsixAssetAssertions();
+    const offlineError = new Error("registry unavailable") as NodeJS.ErrnoException;
+    offlineError.code = "ENOTFOUND";
+
+    await assert.doesNotReject(
+      assertions.assertSqlJsPackageProvenance(
+        async () => {
+          throw offlineError;
+        },
+        { retryDelaysMs: [] },
+      ),
+    );
+  });
+
+  test("still fails on SQL.js tarball integrity mismatches", async () => {
+    const assertions = loadVsixAssetAssertions();
+
+    await assert.rejects(
+      assertions.assertSqlJsPackageProvenance(async () => Buffer.from("not the sql.js tarball"), {
+        retryDelaysMs: [],
+      }),
+      /Unexpected sha512 integrity/i,
+    );
   });
 });

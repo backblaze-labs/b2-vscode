@@ -18,7 +18,12 @@
   from the extension runtime directory (`dist/sql-wasm.js` and
   `dist/sql-wasm.wasm`). VSIX packaging now verifies pinned SQL.js runtime and
   WASM SHA-256 values and statically checks that the bundle does not require
-  repository `node_modules`.
+  repository `node_modules`. The publish preflight runs the same dist asset
+  checks, SQL.js tarball provenance fetches retry transient failures and fall
+  back to locally pinned assets when the registry is unavailable, and offline
+  runners can set `B2_VSCODE_SKIP_SQLJS_PROVENANCE_FETCH=1` or pass
+  `--skip-sqljs-provenance-fetch` to avoid the network fetch while retaining
+  local SHA-256 verification.
 
 ### Security
 

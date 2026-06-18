@@ -1,5 +1,5 @@
 /**
- * Tests for credential resolution failure handling.
+ * Tests for AuthService credential resolution and packaged SQL.js loading.
  *
  * @module test/suite/authService
  */
@@ -11,12 +11,15 @@ import * as path from "path";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
 import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
-import type { BundledCredentialSmokeResolver } from "../../testSupport/bundledCredentialSmoke";
 import {
-  SQL_WASM_ASSET,
+  BUNDLED_CREDENTIAL_SMOKE_ENV,
+  type BundledCredentialSmokeResolver,
+} from "../../testSupport/bundledCredentialSmoke";
+import {
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
-} from "../../sqlWasmAssets";
+  SQL_JS_RUNTIME_ASSETS,
+} from "../../sqlJsRuntimeAssets";
 
 interface BundledExtensionSmokeExports {
   __b2VsixSmokeResolveCredentials?: unknown;
@@ -34,19 +37,34 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
   "dist",
   "bundledCredentialSmoke.js",
 );
-const BUNDLED_CREDENTIAL_SMOKE_ENV = "B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
 }
 
-function loadBundledExtensionWithSmokeEnv(): BundledExtensionSmokeExports {
+function loadBundledExtension(): BundledExtensionSmokeExports {
+  delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
+  return require(DIST_EXTENSION_PATH) as BundledExtensionSmokeExports;
+}
+
+function loadBundledCredentialSmoke(): BundledCredentialSmokeExports {
+  delete require.cache[require.resolve(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH)];
+  return require(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH) as BundledCredentialSmokeExports;
+}
+
+async function withBundledCredentialSmokeEnv<T>(
+  value: string | undefined,
+  action: () => Promise<T>,
+) {
   const previousValue = process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
-  process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = "1";
+  if (value === undefined) {
+    delete process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
+  } else {
+    process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = value;
+  }
 
   try {
-    delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
-    return require(DIST_EXTENSION_PATH) as BundledExtensionSmokeExports;
+    return await action();
   } finally {
     if (previousValue === undefined) {
       delete process.env[BUNDLED_CREDENTIAL_SMOKE_ENV];
@@ -54,11 +72,6 @@ function loadBundledExtensionWithSmokeEnv(): BundledExtensionSmokeExports {
       process.env[BUNDLED_CREDENTIAL_SMOKE_ENV] = previousValue;
     }
   }
-}
-
-function loadBundledCredentialSmoke(): BundledCredentialSmokeExports {
-  delete require.cache[require.resolve(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH)];
-  return require(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH) as BundledCredentialSmokeExports;
 }
 
 function createFsError(code: string, filePath: string): NodeJS.ErrnoException {
@@ -70,7 +83,11 @@ function createFsError(code: string, filePath: string): NodeJS.ErrnoException {
   return error;
 }
 
-function stubReadFileSyncForPath(filePath: string, error: NodeJS.ErrnoException): () => void {
+function createCodelessPathError(filePath: string): Error {
+  return new Error(`codeless database read failed at ${filePath}`);
+}
+
+function stubReadFileSyncForPath(filePath: string, error: Error): () => void {
   const mutableFs = require("fs") as { readFileSync: typeof fs.readFileSync };
   const originalReadFileSync = mutableFs.readFileSync;
   mutableFs.readFileSync = ((pathLike: fs.PathOrFileDescriptor, ...args: unknown[]) => {
@@ -86,7 +103,7 @@ function stubReadFileSyncForPath(filePath: string, error: NodeJS.ErrnoException)
   };
 }
 
-function stubReadFileSyncForPathOnce(filePath: string, error: NodeJS.ErrnoException): () => void {
+function stubReadFileSyncForPathOnce(filePath: string, error: Error): () => void {
   const mutableFs = require("fs") as { readFileSync: typeof fs.readFileSync };
   const originalReadFileSync = mutableFs.readFileSync;
   let hasFailed = false;
@@ -145,13 +162,16 @@ async function createB2CliCredentialDatabase(
   }
 }
 
-suite("AuthService credential resolution failures", () => {
+suite("AuthService credential resolution and SQL.js loading", () => {
   test("reads CLI credentials from a packaged SQL.js WASM layout", async () => {
     const dir = tempDir();
     const packagedRuntimeDir = path.join(dir, "dist");
     const dbPath = path.join(dir, "account_info");
-    const packagedSqlJsRuntimePath = path.join(packagedRuntimeDir, SQL_WASM_ASSET.runtimeFilename);
-    const packagedWasmPath = path.join(packagedRuntimeDir, SQL_WASM_ASSET.wasmFilename);
+    const packagedSqlJsRuntimePath = path.join(
+      packagedRuntimeDir,
+      SQL_JS_RUNTIME_ASSETS.runtimeFilename,
+    );
+    const packagedWasmPath = path.join(packagedRuntimeDir, SQL_JS_RUNTIME_ASSETS.wasmFilename);
 
     try {
       fs.mkdirSync(packagedRuntimeDir, { recursive: true });
@@ -209,10 +229,29 @@ suite("AuthService credential resolution failures", () => {
     }
   });
 
+  test("sanitizes codeless filesystem paths in CLI credential error logs", () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      const service = new AuthService(createNoopSecretStorage(), {
+        environment: {},
+      });
+      const formattedError = (
+        service as unknown as { formatCredentialErrorForLog(error: unknown): string }
+      ).formatCredentialErrorForLog(createCodelessPathError(dbPath));
+
+      assert.match(formattedError, /Error: codeless database read failed at <path>/i);
+      assert.strictEqual(formattedError.includes(dbPath), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("records a warning for missing sql.js WASM during CLI credential lookup", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const missingWasmPath = path.join(dir, "missing", SQL_WASM_ASSET.wasmFilename);
+    const missingWasmPath = path.join(dir, "missing", SQL_JS_RUNTIME_ASSETS.wasmFilename);
     fs.writeFileSync(dbPath, "");
 
     try {
@@ -275,11 +314,12 @@ suite("AuthService credential resolution failures", () => {
   test("records a warning for a sql.js WASM digest mismatch", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const wasmPath = path.join(dir, SQL_WASM_ASSET.wasmFilename);
+    const wasmPath = path.join(dir, SQL_JS_RUNTIME_ASSETS.wasmFilename);
     fs.writeFileSync(dbPath, "");
     fs.writeFileSync(wasmPath, "not the pinned sql.js wasm");
 
     try {
+      const wasmReadCounter = countReadFileSyncForPath(wasmPath);
       const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
         b2CliDatabasePaths: [dbPath],
@@ -287,13 +327,20 @@ suite("AuthService credential resolution failures", () => {
         sqlWasmPath: wasmPath,
       });
 
-      const credentials = await service.resolveCredentials();
-      const warning = service.getCredentialResolutionWarning() ?? "";
+      try {
+        const credentials = await service.resolveCredentials();
+        const warning = service.getCredentialResolutionWarning() ?? "";
 
-      assert.strictEqual(credentials, null);
-      assert.match(warning, /CLI credential auto-detection could not initialize/i);
-      assert.doesNotMatch(warning, /SHA-256/i);
-      assert.strictEqual(warning.includes(wasmPath), false);
+        assert.strictEqual(credentials, null);
+        assert.match(warning, /CLI credential auto-detection could not initialize/i);
+        assert.doesNotMatch(warning, /SHA-256/i);
+        assert.strictEqual(warning.includes(wasmPath), false);
+
+        assert.strictEqual(await service.resolveCredentials(), null);
+        assert.strictEqual(wasmReadCounter.count(), 1);
+      } finally {
+        wasmReadCounter.restore();
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -375,8 +422,8 @@ suite("AuthService credential resolution failures", () => {
   test("executes the verified SQL.js runtime bytes when the file changes after read", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
-    const runtimePath = path.join(dir, SQL_WASM_ASSET.runtimeFilename);
-    const wasmPath = path.join(dir, SQL_WASM_ASSET.wasmFilename);
+    const runtimePath = path.join(dir, SQL_JS_RUNTIME_ASSETS.runtimeFilename);
+    const wasmPath = path.join(dir, SQL_JS_RUNTIME_ASSETS.wasmFilename);
     const sideEffectPath = path.join(dir, "swapped-runtime-executed");
 
     try {
@@ -432,8 +479,8 @@ module.exports = function swappedSqlJsRuntime() {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");
     const compiledServiceDir = path.join(process.cwd(), "out", "src", "services");
-    const defaultRuntimePath = path.join(compiledServiceDir, SQL_WASM_ASSET.runtimeFilename);
-    const defaultWasmPath = path.join(compiledServiceDir, SQL_WASM_ASSET.wasmFilename);
+    const defaultRuntimePath = path.join(compiledServiceDir, SQL_JS_RUNTIME_ASSETS.runtimeFilename);
+    const defaultWasmPath = path.join(compiledServiceDir, SQL_JS_RUNTIME_ASSETS.wasmFilename);
 
     try {
       await createB2CliCredentialDatabase(
@@ -462,9 +509,39 @@ module.exports = function swappedSqlJsRuntime() {
   });
 
   test("does not expose the bundled credential smoke helper from the production bundle", () => {
-    const bundledExtension = loadBundledExtensionWithSmokeEnv();
+    const bundledExtension = loadBundledExtension();
 
+    // Legacy smoke hooks are intentionally absent from the production entrypoint.
     assert.strictEqual(bundledExtension.__b2VsixSmokeResolveCredentials, undefined);
+  });
+
+  test("keeps the bundled smoke artifact inert without the smoke env flag", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+    const bundledSmoke = loadBundledCredentialSmoke();
+
+    try {
+      await createB2CliCredentialDatabase(
+        dbPath,
+        SQL_WASM_FIXTURE_PATH,
+        "bundled-key-id",
+        "bundled-key",
+      );
+      const readCounter = countReadFileSyncForPath(dbPath);
+
+      try {
+        const credentials = await withBundledCredentialSmokeEnv(undefined, () =>
+          bundledSmoke.resolveBundledCredentialSmoke(dbPath),
+        );
+
+        assert.strictEqual(credentials, null);
+        assert.strictEqual(readCounter.count(), 0);
+      } finally {
+        readCounter.restore();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("resolves CLI credentials through the bundled smoke artifact", async () => {
@@ -480,7 +557,9 @@ module.exports = function swappedSqlJsRuntime() {
         "bundled-key",
       );
 
-      const credentials = await bundledSmoke.resolveBundledCredentialSmoke(dbPath);
+      const credentials = await withBundledCredentialSmokeEnv("1", () =>
+        bundledSmoke.resolveBundledCredentialSmoke(dbPath),
+      );
 
       assert.deepStrictEqual(credentials, {
         keyId: "bundled-key-id",

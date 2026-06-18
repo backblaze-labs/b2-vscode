@@ -28,6 +28,9 @@ import {
   SqlWasmInitializationError,
   type SqlJsRuntimeLoaderOptions,
 } from "./sqlJsLoader";
+import { getErrorCode } from "./errorCode";
+
+const ABSOLUTE_FILESYSTEM_PATH_PATTERN = /(?:[A-Za-z]:[\\/][^\s'",)]+|\/[^\s'",)]+)/g;
 
 /**
  * Resolved B2 credentials.
@@ -191,34 +194,34 @@ export class AuthService implements vscode.Disposable {
 
   private formatCredentialErrorForLog(error: unknown): string {
     if (error instanceof SqlWasmInitializationError) {
-      const originalCode = this.getErrorCode(error.originalError);
+      const originalCode = getErrorCode(error.originalError);
       if (originalCode) {
         return `sql.js runtime initialization failed, code=${originalCode}`;
       }
 
       const originalDetail =
         error.originalError instanceof Error
-          ? `${error.originalError.name}: ${error.originalError.message}`
+          ? `${error.originalError.name}: ${this.sanitizeFilesystemPaths(
+              error.originalError.message,
+            )}`
           : undefined;
       return originalDetail
         ? `sql.js runtime initialization failed (${originalDetail})`
         : "sql.js runtime initialization failed";
     }
 
-    const errorCode = this.getErrorCode(error);
+    const errorCode = getErrorCode(error);
     if (errorCode) {
       return `code=${errorCode}`;
     }
 
-    return error instanceof Error ? `${error.name}: ${error.message}` : typeof error;
+    return error instanceof Error
+      ? `${error.name}: ${this.sanitizeFilesystemPaths(error.message)}`
+      : typeof error;
   }
 
-  private getErrorCode(error: unknown): string | undefined {
-    const errorCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    return typeof errorCode === "string" ? errorCode : undefined;
+  private sanitizeFilesystemPaths(message: string): string {
+    return message.replace(ABSOLUTE_FILESYSTEM_PATH_PATTERN, "<path>");
   }
 
   private findB2CliDatabase(): string | null {

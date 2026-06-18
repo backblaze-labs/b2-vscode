@@ -6,7 +6,7 @@
  * changes fail before release.
  *
  * SQL.js runtime/WASM pins are re-derived from the npm-published tarball URL
- * and package integrity recorded in src/sql-wasm-asset.json, not trusted from
+ * and package integrity recorded in src/sql-js-runtime-assets.json, not trusted from
  * the local node_modules copy alone.
  */
 
@@ -20,18 +20,17 @@ const JSZip = require("jszip");
 const repoRoot = path.join(__dirname, "..");
 const packageJson = require(path.join(repoRoot, "package.json"));
 const packageLock = require(path.join(repoRoot, "package-lock.json"));
-const sqlWasmAsset = require(path.join(repoRoot, "src", "sql-wasm-asset.json"));
-const vsixPath =
-  process.argv[2] ?? path.join(repoRoot, `${packageJson.name}-${packageJson.version}.vsix`);
+const sqlJsRuntimeAssets = require(path.join(repoRoot, "src", "sql-js-runtime-assets.json"));
+const defaultVsixPath = path.join(repoRoot, `${packageJson.name}-${packageJson.version}.vsix`);
 
-const EXPECTED_SQL_WASM_PATH = path.join(repoRoot, sqlWasmAsset.wasmSourcePath);
-const EXPECTED_SQL_RUNTIME_PATH = path.join(repoRoot, sqlWasmAsset.runtimeSourcePath);
-const SQL_JS_PACKAGE_PATH = `node_modules/${sqlWasmAsset.sqlJsPackageName}`;
-const TARBALL_RUNTIME_ENTRY = `package/${sqlWasmAsset.runtimeSourcePath.replace(
+const EXPECTED_SQL_WASM_PATH = path.join(repoRoot, sqlJsRuntimeAssets.wasmSourcePath);
+const EXPECTED_SQL_RUNTIME_PATH = path.join(repoRoot, sqlJsRuntimeAssets.runtimeSourcePath);
+const SQL_JS_PACKAGE_PATH = `node_modules/${sqlJsRuntimeAssets.sqlJsPackageName}`;
+const TARBALL_RUNTIME_ENTRY = `package/${sqlJsRuntimeAssets.runtimeSourcePath.replace(
   `${SQL_JS_PACKAGE_PATH}/`,
   "",
 )}`;
-const TARBALL_WASM_ENTRY = `package/${sqlWasmAsset.wasmSourcePath.replace(
+const TARBALL_WASM_ENTRY = `package/${sqlJsRuntimeAssets.wasmSourcePath.replace(
   `${SQL_JS_PACKAGE_PATH}/`,
   "",
 )}`;
@@ -42,12 +41,20 @@ const FORBIDDEN_EXTENSION_SMOKE_TOKENS = [
   "B2_VSCODE_ENABLE_BUNDLED_CREDENTIAL_SMOKE",
 ];
 const PACKAGE_FETCH_TIMEOUT_MS = 15000;
+const PACKAGE_FETCH_RETRY_DELAYS_MS = [250, 1000];
+const SKIP_SQL_JS_PROVENANCE_ENV = "B2_VSCODE_SKIP_SQLJS_PROVENANCE_FETCH";
 
 const requiredEntries = [
-  sqlWasmAsset.packageJsonEntry,
-  sqlWasmAsset.extensionBundleEntry,
-  sqlWasmAsset.packagedRuntimeEntry,
-  sqlWasmAsset.packagedWasmEntry,
+  sqlJsRuntimeAssets.packageJsonEntry,
+  sqlJsRuntimeAssets.extensionBundleEntry,
+  sqlJsRuntimeAssets.packagedRuntimeEntry,
+  sqlJsRuntimeAssets.packagedWasmEntry,
+];
+
+const requiredDistFiles = [
+  sqlJsRuntimeAssets.runtimeFilename,
+  sqlJsRuntimeAssets.wasmFilename,
+  path.basename(sqlJsRuntimeAssets.extensionBundleEntry),
 ];
 
 function sha256(buffer) {
@@ -55,10 +62,10 @@ function sha256(buffer) {
 }
 
 function assertSqlJsDependencyPinned() {
-  const declaredVersion = packageJson.dependencies?.[sqlWasmAsset.sqlJsPackageName];
-  if (declaredVersion !== sqlWasmAsset.sqlJsVersion) {
+  const declaredVersion = packageJson.dependencies?.[sqlJsRuntimeAssets.sqlJsPackageName];
+  if (declaredVersion !== sqlJsRuntimeAssets.sqlJsVersion) {
     throw new Error(
-      `sql.js dependency must be pinned to ${sqlWasmAsset.sqlJsVersion}; found ${declaredVersion ?? "missing"}`,
+      `sql.js dependency must be pinned to ${sqlJsRuntimeAssets.sqlJsVersion}; found ${declaredVersion ?? "missing"}`,
     );
   }
 
@@ -66,19 +73,19 @@ function assertSqlJsDependencyPinned() {
   if (!lockedPackage) {
     throw new Error(`package-lock.json is missing ${SQL_JS_PACKAGE_PATH}`);
   }
-  if (lockedPackage.version !== sqlWasmAsset.sqlJsVersion) {
+  if (lockedPackage.version !== sqlJsRuntimeAssets.sqlJsVersion) {
     throw new Error(
-      `package-lock.json must pin ${sqlWasmAsset.sqlJsPackageName} to ${sqlWasmAsset.sqlJsVersion}; found ${lockedPackage.version}`,
+      `package-lock.json must pin ${sqlJsRuntimeAssets.sqlJsPackageName} to ${sqlJsRuntimeAssets.sqlJsVersion}; found ${lockedPackage.version}`,
     );
   }
-  if (lockedPackage.integrity !== sqlWasmAsset.sqlJsPackageIntegrity) {
+  if (lockedPackage.integrity !== sqlJsRuntimeAssets.sqlJsPackageIntegrity) {
     throw new Error(
-      `${sqlWasmAsset.sqlJsPackageName} package-lock integrity does not match src/sql-wasm-asset.json`,
+      `${sqlJsRuntimeAssets.sqlJsPackageName} package-lock integrity does not match src/sql-js-runtime-assets.json`,
     );
   }
-  if (lockedPackage.resolved !== sqlWasmAsset.sqlJsTarballUrl) {
+  if (lockedPackage.resolved !== sqlJsRuntimeAssets.sqlJsTarballUrl) {
     throw new Error(
-      `${sqlWasmAsset.sqlJsPackageName} package-lock tarball URL does not match src/sql-wasm-asset.json`,
+      `${sqlJsRuntimeAssets.sqlJsPackageName} package-lock tarball URL does not match src/sql-js-runtime-assets.json`,
     );
   }
 }
@@ -135,6 +142,46 @@ function assertIntegrity(buffer, expectedIntegrity, label) {
   }
 }
 
+function httpFetchError(url, statusCode) {
+  const error = new Error(`Unexpected HTTP ${statusCode} while fetching ${url}`);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function timeoutFetchError(url, timeoutMs) {
+  const error = new Error(`Timed out fetching ${url} after ${timeoutMs}ms`);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+
+function isRetryableFetchError(error) {
+  const statusCode =
+    typeof error === "object" && error !== null && typeof error.statusCode === "number"
+      ? error.statusCode
+      : undefined;
+  if (statusCode !== undefined) {
+    return statusCode === 408 || statusCode === 429 || statusCode >= 500;
+  }
+
+  const errorCode =
+    typeof error === "object" && error !== null && typeof error.code === "string"
+      ? error.code
+      : undefined;
+  return (
+    errorCode === "EAI_AGAIN" ||
+    errorCode === "ECONNRESET" ||
+    errorCode === "ECONNREFUSED" ||
+    errorCode === "EHOSTUNREACH" ||
+    errorCode === "ENETUNREACH" ||
+    errorCode === "ENOTFOUND" ||
+    errorCode === "ETIMEDOUT"
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function fetchBuffer(url, redirectsRemaining = 3, timeoutMs = PACKAGE_FETCH_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -161,7 +208,7 @@ function fetchBuffer(url, redirectsRemaining = 3, timeoutMs = PACKAGE_FETCH_TIME
 
       if (statusCode < 200 || statusCode >= 300) {
         response.resume();
-        finish(reject, new Error(`Unexpected HTTP ${statusCode} while fetching ${url}`));
+        finish(reject, httpFetchError(url, statusCode));
         return;
       }
 
@@ -171,10 +218,32 @@ function fetchBuffer(url, redirectsRemaining = 3, timeoutMs = PACKAGE_FETCH_TIME
     });
 
     request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error(`Timed out fetching ${url} after ${timeoutMs}ms`));
+      request.destroy(timeoutFetchError(url, timeoutMs));
     });
     request.on("error", (error) => finish(reject, error));
   });
+}
+
+async function fetchBufferWithRetries(
+  url,
+  fetchPackage = fetchBuffer,
+  retryDelaysMs = PACKAGE_FETCH_RETRY_DELAYS_MS,
+) {
+  let lastError;
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    try {
+      return await fetchPackage(url);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableFetchError(error) || attempt === retryDelaysMs.length) {
+        throw error;
+      }
+
+      await sleep(retryDelaysMs[attempt]);
+    }
+  }
+
+  throw lastError;
 }
 
 function readTarString(buffer, start, length) {
@@ -221,24 +290,62 @@ function extractTarEntries(tarball, entryNames) {
   return foundEntries;
 }
 
-async function assertSqlJsPackageProvenance(fetchPackage = fetchBuffer) {
-  const tarball = await fetchPackage(sqlWasmAsset.sqlJsTarballUrl);
+function assertLocalSqlJsAssetPins() {
+  if (!fs.existsSync(EXPECTED_SQL_WASM_PATH)) {
+    throw new Error(`Expected SQL.js WASM asset not found: ${EXPECTED_SQL_WASM_PATH}`);
+  }
+  if (!fs.existsSync(EXPECTED_SQL_RUNTIME_PATH)) {
+    throw new Error(`Expected SQL.js runtime asset not found: ${EXPECTED_SQL_RUNTIME_PATH}`);
+  }
+
+  const expectedRuntime = fs.readFileSync(EXPECTED_SQL_RUNTIME_PATH);
+  assertSha256(
+    expectedRuntime,
+    sqlJsRuntimeAssets.runtimeSha256,
+    "node_modules SQL.js runtime asset",
+  );
+
+  const expectedWasm = fs.readFileSync(EXPECTED_SQL_WASM_PATH);
+  assertSha256(expectedWasm, sqlJsRuntimeAssets.wasmSha256, "node_modules SQL.js WASM asset");
+}
+
+async function assertSqlJsPackageProvenance(fetchPackage = fetchBuffer, options = {}) {
+  let tarball;
+  try {
+    tarball = await fetchBufferWithRetries(
+      sqlJsRuntimeAssets.sqlJsTarballUrl,
+      fetchPackage,
+      options.retryDelaysMs,
+    );
+  } catch (error) {
+    if (!isRetryableFetchError(error) || options.allowLocalFallback === false) {
+      throw error;
+    }
+
+    assertLocalSqlJsAssetPins();
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `SQL.js npm provenance fetch unavailable (${detail}); verified local pinned assets instead.`,
+    );
+    return;
+  }
+
   assertIntegrity(
     tarball,
-    sqlWasmAsset.sqlJsPackageIntegrity,
-    `${sqlWasmAsset.sqlJsPackageName}@${sqlWasmAsset.sqlJsVersion} tarball`,
+    sqlJsRuntimeAssets.sqlJsPackageIntegrity,
+    `${sqlJsRuntimeAssets.sqlJsPackageName}@${sqlJsRuntimeAssets.sqlJsVersion} tarball`,
   );
 
   const tarballEntries = extractTarEntries(tarball, [TARBALL_RUNTIME_ENTRY, TARBALL_WASM_ENTRY]);
   assertSha256(
     tarballEntries.get(TARBALL_RUNTIME_ENTRY),
-    sqlWasmAsset.runtimeSha256,
-    `${sqlWasmAsset.sqlJsPackageName} npm tarball runtime asset`,
+    sqlJsRuntimeAssets.runtimeSha256,
+    `${sqlJsRuntimeAssets.sqlJsPackageName} npm tarball runtime asset`,
   );
   assertSha256(
     tarballEntries.get(TARBALL_WASM_ENTRY),
-    sqlWasmAsset.wasmSha256,
-    `${sqlWasmAsset.sqlJsPackageName} npm tarball WASM asset`,
+    sqlJsRuntimeAssets.wasmSha256,
+    `${sqlJsRuntimeAssets.sqlJsPackageName} npm tarball WASM asset`,
   );
 }
 
@@ -256,13 +363,15 @@ async function readRequiredEntry(zip, entryName) {
   return content;
 }
 
+function assertNoTestOnlySmokeArtifactEntry(entryName) {
+  if (TEST_ONLY_SMOKE_ENTRY_PATTERN.test(entryName)) {
+    throw new Error(`Package contains test-only bundled credential smoke artifact: ${entryName}`);
+  }
+}
+
 async function assertNoTestOnlySmokeArtifacts(zip) {
   for (const entryName of Object.keys(zip.files)) {
-    if (TEST_ONLY_SMOKE_ENTRY_PATTERN.test(entryName)) {
-      throw new Error(
-        `VSIX package contains test-only bundled credential smoke artifact: ${entryName}`,
-      );
-    }
+    assertNoTestOnlySmokeArtifactEntry(entryName);
 
     if (entryName.endsWith(".js") || entryName.endsWith(".js.map")) {
       const entry = zip.file(entryName);
@@ -273,20 +382,53 @@ async function assertNoTestOnlySmokeArtifacts(zip) {
   }
 }
 
-async function assertVsixAssets(packagePath = vsixPath, options = {}) {
+function readRequiredDistFile(distDir, filename) {
+  const filePath = path.join(distDir, filename);
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Packaged dist is missing required runtime asset: ${filePath}`);
+  }
+
+  const content = fs.readFileSync(filePath);
+  if (content.length === 0) {
+    throw new Error(`Packaged dist asset is empty: ${filePath}`);
+  }
+
+  return content;
+}
+
+function assertNoTestOnlySmokeArtifactsInDist(distDir) {
+  if (!fs.existsSync(distDir)) {
+    throw new Error(`Packaged dist directory not found: ${distDir}`);
+  }
+
+  for (const entryName of fs.readdirSync(distDir)) {
+    const packagedEntryName = `extension/${sqlJsRuntimeAssets.packagedDistDir}/${entryName}`;
+    assertNoTestOnlySmokeArtifactEntry(packagedEntryName);
+
+    if (entryName.endsWith(".js") || entryName.endsWith(".js.map")) {
+      assertNoForbiddenSmokeHooks(
+        packagedEntryName,
+        fs.readFileSync(path.join(distDir, entryName)),
+      );
+    }
+  }
+}
+
+async function assertPackageProvenance(options = {}) {
+  assertSqlJsDependencyPinned();
+  if (!options.skipSqlJsPackageProvenance) {
+    await assertSqlJsPackageProvenance(options.fetchSqlJsPackage, {
+      retryDelaysMs: options.retryDelaysMs,
+    });
+  }
+  assertLocalSqlJsAssetPins();
+}
+
+async function assertVsixAssets(packagePath = defaultVsixPath, options = {}) {
   if (!fs.existsSync(packagePath)) {
     throw new Error(`VSIX not found: ${packagePath}`);
   }
-  assertSqlJsDependencyPinned();
-  if (!options.skipSqlJsPackageProvenance) {
-    await assertSqlJsPackageProvenance(options.fetchSqlJsPackage);
-  }
-  if (!fs.existsSync(EXPECTED_SQL_WASM_PATH)) {
-    throw new Error(`Expected SQL.js WASM asset not found: ${EXPECTED_SQL_WASM_PATH}`);
-  }
-  if (!fs.existsSync(EXPECTED_SQL_RUNTIME_PATH)) {
-    throw new Error(`Expected SQL.js runtime asset not found: ${EXPECTED_SQL_RUNTIME_PATH}`);
-  }
+  await assertPackageProvenance(options);
 
   const zip = await JSZip.loadAsync(fs.readFileSync(packagePath));
   const packagedEntries = await Promise.all(
@@ -295,46 +437,106 @@ async function assertVsixAssets(packagePath = vsixPath, options = {}) {
   const packagedContent = new Map(packagedEntries);
   await assertNoTestOnlySmokeArtifacts(zip);
 
-  const expectedRuntime = fs.readFileSync(EXPECTED_SQL_RUNTIME_PATH);
-  assertSha256(expectedRuntime, sqlWasmAsset.runtimeSha256, "node_modules SQL.js runtime asset");
-  const packagedRuntime = packagedContent.get(sqlWasmAsset.packagedRuntimeEntry);
+  const packagedRuntime = packagedContent.get(sqlJsRuntimeAssets.packagedRuntimeEntry);
   if (!packagedRuntime) {
     throw new Error(
-      `VSIX package is missing required runtime asset: ${sqlWasmAsset.packagedRuntimeEntry}`,
+      `VSIX package is missing required runtime asset: ${sqlJsRuntimeAssets.packagedRuntimeEntry}`,
     );
   }
-  assertSha256(packagedRuntime, sqlWasmAsset.runtimeSha256, sqlWasmAsset.packagedRuntimeEntry);
+  assertSha256(
+    packagedRuntime,
+    sqlJsRuntimeAssets.runtimeSha256,
+    sqlJsRuntimeAssets.packagedRuntimeEntry,
+  );
 
-  const expectedWasm = fs.readFileSync(EXPECTED_SQL_WASM_PATH);
-  assertSha256(expectedWasm, sqlWasmAsset.wasmSha256, "node_modules SQL.js WASM asset");
-  const packagedWasm = packagedContent.get(sqlWasmAsset.packagedWasmEntry);
+  const packagedWasm = packagedContent.get(sqlJsRuntimeAssets.packagedWasmEntry);
   if (!packagedWasm) {
     throw new Error(
-      `VSIX package is missing required runtime asset: ${sqlWasmAsset.packagedWasmEntry}`,
+      `VSIX package is missing required runtime asset: ${sqlJsRuntimeAssets.packagedWasmEntry}`,
     );
   }
-  assertSha256(packagedWasm, sqlWasmAsset.wasmSha256, sqlWasmAsset.packagedWasmEntry);
+  assertSha256(packagedWasm, sqlJsRuntimeAssets.wasmSha256, sqlJsRuntimeAssets.packagedWasmEntry);
 
-  const extensionSource = packagedContent.get(sqlWasmAsset.extensionBundleEntry);
+  const extensionSource = packagedContent.get(sqlJsRuntimeAssets.extensionBundleEntry);
   if (!extensionSource) {
     throw new Error(
-      `VSIX package is missing required runtime asset: ${sqlWasmAsset.extensionBundleEntry}`,
+      `VSIX package is missing required runtime asset: ${sqlJsRuntimeAssets.extensionBundleEntry}`,
     );
   }
   assertNoExternalSqlJsImport(extensionSource);
-  assertNoForbiddenSmokeHooks(sqlWasmAsset.extensionBundleEntry, extensionSource);
+  assertNoForbiddenSmokeHooks(sqlJsRuntimeAssets.extensionBundleEntry, extensionSource);
 }
 
-async function main() {
+async function assertDistAssets(
+  distDir = path.join(repoRoot, sqlJsRuntimeAssets.packagedDistDir),
+  options = {},
+) {
+  await assertPackageProvenance(options);
+  assertNoTestOnlySmokeArtifactsInDist(distDir);
+
+  const extensionSource = readRequiredDistFile(
+    distDir,
+    path.basename(sqlJsRuntimeAssets.extensionBundleEntry),
+  );
+  assertNoExternalSqlJsImport(extensionSource);
+  assertNoForbiddenSmokeHooks(sqlJsRuntimeAssets.extensionBundleEntry, extensionSource);
+
+  const runtime = readRequiredDistFile(distDir, sqlJsRuntimeAssets.runtimeFilename);
+  assertSha256(runtime, sqlJsRuntimeAssets.runtimeSha256, sqlJsRuntimeAssets.runtimeFilename);
+
+  const wasm = readRequiredDistFile(distDir, sqlJsRuntimeAssets.wasmFilename);
+  assertSha256(wasm, sqlJsRuntimeAssets.wasmSha256, sqlJsRuntimeAssets.wasmFilename);
+}
+
+function parseCliArgs(args) {
+  const parsed = {
+    mode: "vsix",
+    path: undefined,
+    skipSqlJsPackageProvenance: process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1",
+  };
+
+  for (const arg of args) {
+    if (arg === "--dist") {
+      parsed.mode = "dist";
+      continue;
+    }
+    if (arg === "--skip-sqljs-provenance-fetch") {
+      parsed.skipSqlJsPackageProvenance = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+    if (parsed.path !== undefined) {
+      throw new Error(`Unexpected extra path argument: ${arg}`);
+    }
+    parsed.path = arg;
+  }
+
+  return parsed;
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const cliOptions = parseCliArgs(argv);
+  const assertionOptions = {
+    skipSqlJsPackageProvenance: cliOptions.skipSqlJsPackageProvenance,
+  };
+
   try {
-    await assertVsixAssets();
+    if (cliOptions.mode === "dist") {
+      await assertDistAssets(cliOptions.path, assertionOptions);
+    } else {
+      await assertVsixAssets(cliOptions.path ?? defaultVsixPath, assertionOptions);
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(`Could not verify VSIX runtime assets: ${detail}`);
+    console.error(`Could not verify packaged runtime assets: ${detail}`);
     process.exit(1);
   }
 
-  console.log(`VSIX runtime assets verified: ${requiredEntries.join(", ")}`);
+  const verifiedEntries =
+    cliOptions.mode === "dist" ? requiredDistFiles.join(", ") : requiredEntries.join(", ");
+  console.log(`Packaged runtime assets verified: ${verifiedEntries}`);
 }
 
 if (require.main === module) {
@@ -342,8 +544,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertDistAssets,
   assertSqlJsPackageProvenance,
   assertVsixAssets,
   fetchBuffer,
+  parseCliArgs,
   requiredEntries,
 };

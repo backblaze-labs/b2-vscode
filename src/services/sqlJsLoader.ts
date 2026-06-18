@@ -3,7 +3,8 @@ import * as fs from "fs";
 import Module from "module";
 import * as path from "path";
 import { log } from "../logger";
-import { SQL_WASM_ASSET } from "../sqlWasmAssets";
+import { SQL_JS_RUNTIME_ASSETS } from "../sqlJsRuntimeAssets";
+import { getErrorCode } from "./errorCode";
 
 type InitSqlJs = typeof import("sql.js").default;
 export type SqlJsRuntime = Awaited<ReturnType<InitSqlJs>>;
@@ -24,7 +25,13 @@ export interface SqlJsRuntimeLoaderOptions {
   sqlJsRuntimePath?: string;
 }
 
-const SQL_WASM_ASSET_READ_ERROR_CODES = new Set(["EACCES", "EISDIR", "ENOENT", "ENOTDIR", "EPERM"]);
+const SQL_JS_RUNTIME_ASSETS_READ_ERROR_CODES = new Set([
+  "EACCES",
+  "EISDIR",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+]);
 const NodeModule = Module as unknown as NodeModuleConstructor;
 
 export class SqlWasmInitializationError extends Error {
@@ -45,7 +52,9 @@ export class SqlJsRuntimeLoader {
   getRuntime(): Promise<SqlJsRuntime> {
     if (!this.sqlRuntimePromise) {
       this.sqlRuntimePromise = this.initializeSqlRuntime().catch((error: unknown) => {
-        this.sqlRuntimePromise = undefined;
+        if (this.shouldRetryInitialization(error)) {
+          this.sqlRuntimePromise = undefined;
+        }
         throw error;
       });
     }
@@ -54,24 +63,23 @@ export class SqlJsRuntimeLoader {
   }
 
   private resolveSqlWasmPath(): string {
-    return this.options.sqlWasmPath ?? path.join(__dirname, SQL_WASM_ASSET.wasmFilename);
+    return this.options.sqlWasmPath ?? path.join(__dirname, SQL_JS_RUNTIME_ASSETS.wasmFilename);
   }
 
   private resolveSqlJsRuntimePath(): string {
-    return this.options.sqlJsRuntimePath ?? path.join(__dirname, SQL_WASM_ASSET.runtimeFilename);
+    return (
+      this.options.sqlJsRuntimePath ?? path.join(__dirname, SQL_JS_RUNTIME_ASSETS.runtimeFilename)
+    );
   }
 
-  private getErrorCode(error: unknown): string | undefined {
-    const errorCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    return typeof errorCode === "string" ? errorCode : undefined;
+  private isSqlJsAssetReadError(error: unknown): boolean {
+    const errorCode = getErrorCode(error);
+    return typeof errorCode === "string" && SQL_JS_RUNTIME_ASSETS_READ_ERROR_CODES.has(errorCode);
   }
 
-  private isSqlWasmAssetReadError(error: unknown): boolean {
-    const errorCode = this.getErrorCode(error);
-    return typeof errorCode === "string" && SQL_WASM_ASSET_READ_ERROR_CODES.has(errorCode);
+  private shouldRetryInitialization(error: unknown): boolean {
+    const originalError = error instanceof SqlWasmInitializationError ? error.originalError : error;
+    return this.isSqlJsAssetReadError(originalError);
   }
 
   private readVerifiedSqlAssetFile(
@@ -80,6 +88,8 @@ export class SqlJsRuntimeLoader {
     label: string,
   ): Buffer {
     try {
+      // These bundled files are small (~46 KB JS and ~660 KB WASM) and are read once
+      // during CLI credential detection; deterministic failures are cached below.
       const assetFile = fs.readFileSync(assetPath);
       const actualSha256 = crypto.createHash("sha256").update(assetFile).digest("hex");
       if (actualSha256 !== expectedSha256) {
@@ -95,7 +105,7 @@ export class SqlJsRuntimeLoader {
       if (error instanceof SqlWasmInitializationError) {
         throw error;
       }
-      if (this.isSqlWasmAssetReadError(error)) {
+      if (this.isSqlJsAssetReadError(error)) {
         throw new SqlWasmInitializationError(error);
       }
       throw error;
@@ -103,7 +113,7 @@ export class SqlJsRuntimeLoader {
   }
 
   private readSqlWasmFile(wasmPath: string): Buffer {
-    return this.readVerifiedSqlAssetFile(wasmPath, SQL_WASM_ASSET.wasmSha256, "WASM");
+    return this.readVerifiedSqlAssetFile(wasmPath, SQL_JS_RUNTIME_ASSETS.wasmSha256, "WASM");
   }
 
   private loadSqlJsInitializer(): InitSqlJs {
@@ -111,7 +121,7 @@ export class SqlJsRuntimeLoader {
     log(`CLI-AUTH: Bundled SQL.js runtime exists=${fs.existsSync(runtimePath)}`);
     const runtimeSource = this.readVerifiedSqlAssetFile(
       runtimePath,
-      SQL_WASM_ASSET.runtimeSha256,
+      SQL_JS_RUNTIME_ASSETS.runtimeSha256,
       "runtime",
     );
 
@@ -136,7 +146,9 @@ export class SqlJsRuntimeLoader {
     const runtimeModule = new NodeModule(runtimePath);
     runtimeModule.filename = runtimePath;
     runtimeModule.paths = NodeModule._nodeModulePaths(path.dirname(runtimePath));
-    // Compile the verified bytes directly so the executable JS is not re-read after hashing.
+    // VS Code 1.101+ runs the extension host on Node 22. Re-validate these private
+    // Module APIs on Node/sql.js upgrades; standard require() would re-read bytes
+    // after hashing and reopen the runtime integrity TOCTOU gap.
     runtimeModule._compile(runtimeSource.toString("utf8"), runtimePath);
     return runtimeModule.exports as InitSqlJs | { default?: InitSqlJs };
   }
