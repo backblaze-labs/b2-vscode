@@ -102,6 +102,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "b2.loadMore",
+        "title": "Load More",
+        "category": "B2",
+        "icon": "$(more)"
+      },
+      {
         "command": "b2.copyPath",
         "title": "Copy B2 Path",
         "category": "B2",
@@ -176,6 +182,10 @@
           "when": "false"
         },
         {
+          "command": "b2.loadMore",
+          "when": "false"
+        },
+        {
           "command": "b2.changeBucketVisibility",
           "when": "false"
         },
@@ -225,7 +235,7 @@
       "view/item/context": [
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
           "group": "inline@1"
         },
         {
@@ -285,7 +295,7 @@
         },
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
           "group": "1_copy@1"
         },
         {
@@ -333,7 +343,7 @@
           "list"
         ],
         "toolReferenceName": "listFiles",
-        "modelDescription": "Lists files in a Backblaze B2 bucket. Optionally filter by prefix (folder path). Use recursive=true to list all files, or omit for just the immediate level.",
+        "modelDescription": "Lists a bounded page of files in a Backblaze B2 bucket. Optionally filter by prefix (folder path). Use recursive=true to list recursively with a smaller default and hard cap. Use nextContinuationToken from the response to request the next page.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -349,6 +359,16 @@
             "recursive": {
               "type": "boolean",
               "description": "If true, list all files recursively. If false (default), list only the immediate level."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "description": "Maximum number of entries to return. Defaults to 200, or 100 when recursive=true. Hard-capped at 1000, or 500 when recursive=true."
+            },
+            "continuationToken": {
+              "type": "string",
+              "description": "Continuation token from a previous response's nextContinuationToken. Omit for the first page."
             }
           },
           "required": [

@@ -64,6 +64,41 @@ suite("LM Tool Safety", () => {
     }
   });
 
+  test("listFiles limit schema matches integer validation", () => {
+    const limit = listFilesTool.parameters.properties.limit as Record<string, unknown>;
+
+    assert.strictEqual(limit.type, "integer");
+    assert.strictEqual(limit.minimum, 1);
+    assert.strictEqual(limit.maximum, 1000);
+  });
+
+  test("cancellation is passed through without a failure wrapper", async () => {
+    const cancellationOperation: B2ToolOperation<unknown, unknown> = {
+      async execute() {
+        throw new vscode.CancellationError();
+      },
+    };
+    const adapter = new B2ToolAdapter(listFilesTool, cancellationOperation, extras);
+    const tokenSource = new vscode.CancellationTokenSource();
+
+    try {
+      await assert.rejects(
+        () =>
+          adapter.invoke(
+            { input: {} } as unknown as vscode.LanguageModelToolInvocationOptions<unknown>,
+            tokenSource.token,
+          ),
+        (error) => {
+          assert.ok(error instanceof vscode.CancellationError);
+          assert.doesNotMatch(error instanceof Error ? error.message : "", /failed/i);
+          return true;
+        },
+      );
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
   test("destructive deleteFile warns it is irreversible and names the target", async () => {
     const text = await confirmText(deleteFileTool, { bucket: "my-bucket", path: "data/x.csv" });
     assert.match(text, /cannot be undone/i);

@@ -11,7 +11,7 @@ export const listFilesTool: B2ToolDefinition = {
   name: "b2_listFiles",
   displayName: "B2: List Files",
   description:
-    "Lists files in a Backblaze B2 bucket. Optionally filter by prefix (folder path). Use recursive=true to list all files, or omit for just the immediate level.",
+    "Lists a bounded page of files in a Backblaze B2 bucket. Optionally filter by prefix (folder path). Use recursive=true to list recursively with a smaller default and hard cap. Use nextContinuationToken from the response to request the next page.",
   parameters: {
     type: "object",
     properties: {
@@ -27,6 +27,18 @@ export const listFilesTool: B2ToolDefinition = {
         type: "boolean",
         description:
           "If true, list all files recursively. If false (default), list only the immediate level.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1000,
+        description:
+          "Maximum number of entries to return. Defaults to 200, or 100 when recursive=true. Hard-capped at 1000, or 500 when recursive=true.",
+      },
+      continuationToken: {
+        type: "string",
+        description:
+          "Continuation token from a previous response's nextContinuationToken. Omit for the first page.",
       },
     },
     required: ["bucket"],

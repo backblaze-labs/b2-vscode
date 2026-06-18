@@ -4,6 +4,8 @@
  * @module tools/types
  */
 
+import type { CancellationToken } from "vscode";
+
 /**
  * Risk class for a tool, controlling how strongly the user is prompted before
  * it runs.
@@ -47,7 +49,7 @@ export interface B2ToolDefinition {
  */
 export interface B2ToolOperation<TParams, TResult> {
   /** Execute the operation with validated parameters. */
-  execute(params: TParams, extras: ToolExtras): Promise<TResult>;
+  execute(params: TParams, extras: ToolExtras, token?: CancellationToken): Promise<TResult>;
 }
 
 /**
