@@ -34,7 +34,7 @@ If you have the B2 CLI installed and have run `b2 account authorize`, the extens
 
 The `b2.apiUrl` setting defaults to `https://api.backblazeb2.com`. Custom B2-compatible endpoints are supported only from VS Code user settings, not workspace settings, so a cloned repository cannot redirect your credentials through `.vscode/settings.json`.
 
-Custom values must be HTTPS URLs without embedded credentials, query strings, or fragments. When the value is not the default Backblaze endpoint, the extension shows a confirmation warning before sending any B2 application key material to that endpoint.
+Custom values must be HTTPS URLs without embedded credentials, query strings, or fragments. The threat model is credential redirection: a malicious workspace should not be able to point the extension at an attacker-controlled endpoint and receive your B2 application key. When the value is not the default Backblaze endpoint, the extension shows a confirmation warning before sending any B2 application key material to that endpoint.
 
 ### Public Bucket Visibility
 
