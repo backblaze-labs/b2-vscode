@@ -77,6 +77,18 @@ const operations: Array<{
 
 const noClientExtras: ToolExtras = { getClient: () => null };
 
+async function withCancellationToken<T>(
+  run: (token: vscode.CancellationToken) => Promise<T>,
+): Promise<T> {
+  const tokenSource = new vscode.CancellationTokenSource();
+
+  try {
+    return await run(tokenSource.token);
+  } finally {
+    tokenSource.dispose();
+  }
+}
+
 suite("B2 LM tool failure handling", () => {
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
@@ -92,13 +104,15 @@ suite("B2 LM tool failure handling", () => {
       };
       const adapter = new B2ToolAdapter(definition, operation, noClientExtras);
 
-      await assert.rejects(
-        () =>
-          adapter.invoke(
-            { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
-            new vscode.CancellationTokenSource().token,
-          ),
-        new RegExp(`${definition.displayName} failed: .*rate limit.*4 seconds`, "i"),
+      await withCancellationToken((token) =>
+        assert.rejects(
+          () =>
+            adapter.invoke(
+              { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+              token,
+            ),
+          new RegExp(`${definition.displayName} failed: .*rate limit.*4 seconds`, "i"),
+        ),
       );
     }
   });
@@ -116,9 +130,8 @@ suite("B2 LM tool failure handling", () => {
     const adapter = new B2ToolAdapter(listBucketsTool, operation, noClientExtras);
 
     try {
-      await adapter.invoke(
-        { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
-        new vscode.CancellationTokenSource().token,
+      await withCancellationToken((token) =>
+        adapter.invoke({ input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>, token),
       );
       assert.fail("Expected adapter invocation to fail");
     } catch (error) {
@@ -130,13 +143,15 @@ suite("B2 LM tool failure handling", () => {
   test("tool adapters preserve expected extension guidance", async () => {
     const adapter = new B2ToolAdapter(listBucketsTool, listBucketsOperation, noClientExtras);
 
-    await assert.rejects(
-      () =>
-        adapter.invoke(
-          { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
-          new vscode.CancellationTokenSource().token,
-        ),
-      /B2: List Buckets failed: Not authenticated.*B2: Authenticate/i,
+    await withCancellationToken((token) =>
+      assert.rejects(
+        () =>
+          adapter.invoke(
+            { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+            token,
+          ),
+        /B2: List Buckets failed: Not authenticated.*B2: Authenticate/i,
+      ),
     );
   });
 
@@ -152,13 +167,15 @@ suite("B2 LM tool failure handling", () => {
     };
     const adapter = new B2ToolAdapter(uploadFileTool, operation, noClientExtras);
 
-    await assert.rejects(
-      () =>
-        adapter.invoke(
-          { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
-          new vscode.CancellationTokenSource().token,
-        ),
-      /B2: Upload File failed: ENOENT.*missing\.txt/i,
+    await withCancellationToken((token) =>
+      assert.rejects(
+        () =>
+          adapter.invoke(
+            { input: {} } as vscode.LanguageModelToolInvocationOptions<unknown>,
+            token,
+          ),
+        /B2: Upload File failed: ENOENT.*missing\.txt/i,
+      ),
     );
   });
 
@@ -175,15 +192,17 @@ suite("B2 LM tool failure handling", () => {
     });
 
     try {
-      await assert.rejects(
-        () =>
-          adapter.invoke(
-            {
-              input: { bucket: "b", localPath: missingFile },
-            } as vscode.LanguageModelToolInvocationOptions<{ bucket: string; localPath: string }>,
-            new vscode.CancellationTokenSource().token,
-          ),
-        /B2: Upload File failed: ENOENT.*missing\.txt/i,
+      await withCancellationToken((token) =>
+        assert.rejects(
+          () =>
+            adapter.invoke(
+              {
+                input: { bucket: "b", localPath: missingFile },
+              } as vscode.LanguageModelToolInvocationOptions<{ bucket: string; localPath: string }>,
+              token,
+            ),
+          /B2: Upload File failed: ENOENT.*missing\.txt/i,
+        ),
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
