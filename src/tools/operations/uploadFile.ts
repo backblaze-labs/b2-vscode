@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { B2ResourceNotFoundError } from "../../errors";
 
 interface UploadFileParams {
   localPath: string;
@@ -40,13 +41,11 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       localPath = path.join(workspaceFolder.uri.fsPath, localPath);
     }
 
-    if (!fs.existsSync(localPath)) {
-      throw new Error(`Local file not found: ${localPath}`);
-    }
+    fs.accessSync(localPath, fs.constants.R_OK);
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
-      throw new Error(`Bucket "${params.bucket}" not found.`);
+      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
     // Resolve remote path

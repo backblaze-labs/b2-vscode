@@ -13,6 +13,7 @@ import type { B2Client, Bucket } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import { log, logError } from "../logger";
 import { TREE_LIST_HARD_CAP, TREE_LIST_PAGE_SIZE } from "../constants";
+import { formatB2UserMessage } from "../errors";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
@@ -26,6 +27,10 @@ export type B2TreeItem = ListedB2TreeItem | LoadMoreTreeItem | ListingLimitTreeI
 interface ListingState {
   readonly items: ListedB2TreeItem[];
   nextFileName: string | undefined;
+}
+
+export function buildTreeErrorMessage(error: unknown): string {
+  return `B2: Could not load bucket contents. ${formatB2UserMessage(error)}`;
 }
 
 /**
@@ -92,9 +97,8 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       if (this.listingStateGeneration !== generation) {
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
       logError(`Tree: loadMore failed`, error);
-      vscode.window.showErrorMessage(`B2: ${message}`);
+      vscode.window.showErrorMessage(buildTreeErrorMessage(error));
     } finally {
       if (this.listingStateGeneration === generation) {
         this.loadingListings.delete(key);
@@ -138,9 +142,8 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       // File → no children
       return [];
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       logError(`Tree: getChildren failed`, error);
-      vscode.window.showErrorMessage(`B2: ${message}`);
+      vscode.window.showErrorMessage(buildTreeErrorMessage(error));
       return [];
     }
   }
