@@ -231,18 +231,27 @@ suite("AuthService credential resolution and SQL.js loading", () => {
 
   test("sanitizes codeless filesystem paths in CLI credential error logs", () => {
     const dir = tempDir();
-    const dbPath = path.join(dir, "account_info");
+    const dbPath = path.join(dir, "Jane Doe", "account_info");
+    const windowsDbPath = "C:\\Users\\Jane Doe\\AppData\\Roaming\\b2\\account_info";
 
     try {
       const service = new AuthService(createNoopSecretStorage(), {
         environment: {},
       });
-      const formattedError = (
+      const formatCredentialError = (
         service as unknown as { formatCredentialErrorForLog(error: unknown): string }
-      ).formatCredentialErrorForLog(createCodelessPathError(dbPath));
+      ).formatCredentialErrorForLog.bind(service);
+      const formattedError = formatCredentialError(createCodelessPathError(dbPath));
+      const formattedWindowsError = formatCredentialError(
+        new Error(`codeless database read failed at '${windowsDbPath}'`),
+      );
 
       assert.match(formattedError, /Error: codeless database read failed at <path>/i);
       assert.strictEqual(formattedError.includes(dbPath), false);
+      assert.strictEqual(formattedError.includes("Jane Doe"), false);
+      assert.match(formattedWindowsError, /Error: codeless database read failed at '<path>'/i);
+      assert.strictEqual(formattedWindowsError.includes(windowsDbPath), false);
+      assert.strictEqual(formattedWindowsError.includes("Jane Doe"), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

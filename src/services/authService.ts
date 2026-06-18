@@ -30,7 +30,7 @@ import {
 } from "./sqlJsLoader";
 import { getErrorCode } from "./errorCode";
 
-const ABSOLUTE_FILESYSTEM_PATH_PATTERN = /(?:[A-Za-z]:[\\/][^\s'",)]+|\/[^\s'",)]+)/g;
+const ABSOLUTE_FILESYSTEM_PATH_PATTERNS = [/[A-Za-z]:[\\/][^'",\r\n)]+/g, /\/[^'",\r\n)]+/g];
 
 /**
  * Resolved B2 credentials.
@@ -221,7 +221,10 @@ export class AuthService implements vscode.Disposable {
   }
 
   private sanitizeFilesystemPaths(message: string): string {
-    return message.replace(ABSOLUTE_FILESYSTEM_PATH_PATTERN, "<path>");
+    return ABSOLUTE_FILESYSTEM_PATH_PATTERNS.reduce(
+      (sanitizedMessage, pattern) => sanitizedMessage.replace(pattern, "<path>"),
+      message,
+    );
   }
 
   private findB2CliDatabase(): string | null {
