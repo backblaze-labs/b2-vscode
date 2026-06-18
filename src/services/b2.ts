@@ -36,6 +36,10 @@ export interface CreateB2ClientOptions {
   readonly apiUrl?: string;
 }
 
+export function resolveB2ClientApiUrl(options: CreateB2ClientOptions = {}): B2ApiUrlConfig {
+  return normalizeB2ApiUrl(options.apiUrl);
+}
+
 function normalizeB2ApiUrl(value: unknown): B2ApiUrlConfig {
   if (value === undefined) {
     return { apiUrl: DEFAULT_B2_API_URL, isDefault: true };
@@ -116,7 +120,22 @@ export function resolveB2ApiUrl(): B2ApiUrlConfig {
 }
 
 export function buildCustomApiUrlWarningMessage(apiUrl: string): string {
-  return `B2: Custom API URL configured (${apiUrl}). Continue only if you trust this endpoint; your B2 application key will be sent there.`;
+  return `B2: Custom API URL configured (${sanitizeApiUrlForDisplay(apiUrl)}). Continue only if you trust this endpoint; your B2 application key will be sent there.`;
+}
+
+function sanitizeApiUrlForDisplay(apiUrl: string): string {
+  try {
+    const parsed = new URL(apiUrl);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${path}`;
+  } catch {
+    return "[invalid URL]";
+  }
 }
 
 /**
@@ -131,7 +150,7 @@ export function createB2Client(
   version: string,
   options: CreateB2ClientOptions = {},
 ): B2Client {
-  const apiUrl = normalizeB2ApiUrl(options.apiUrl);
+  const apiUrl = resolveB2ClientApiUrl(options);
   const clientOptions: B2ClientOptions = {
     applicationKeyId: credentials.keyId,
     applicationKey: credentials.appKey,

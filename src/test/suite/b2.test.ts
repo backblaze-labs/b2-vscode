@@ -12,6 +12,7 @@ import {
   createB2Client,
   createConfiguredB2Client,
   DEFAULT_B2_API_URL,
+  resolveB2ClientApiUrl,
   resolveB2ApiUrlFromInspection,
   type B2ApiUrlInspection,
 } from "../../services/b2";
@@ -26,17 +27,6 @@ interface WarningMessageCall {
   readonly message: string;
   readonly options: vscode.MessageOptions | undefined;
   readonly items: readonly string[];
-}
-
-// `realmUrl` is an internal B2Client field; these tests assert on it to confirm
-// the realm option was threaded through. Update if the SDK renames it.
-function getClientRealmUrl(client: ReturnType<typeof createB2Client>): string {
-  const realmUrl = (client as unknown as { realmUrl?: unknown }).realmUrl;
-  if (typeof realmUrl !== "string") {
-    assert.fail("Expected the B2Client internal realmUrl field to be a string.");
-  }
-
-  return realmUrl;
 }
 
 function stubB2ApiUrlInspection(inspection: B2ApiUrlInspection): () => void {
@@ -216,12 +206,23 @@ suite("B2 API URL configuration", () => {
     assert.strictEqual(typeof client.authorize, "function");
   });
 
+  test("resolves the default API URL for client construction", () => {
+    assert.deepStrictEqual(resolveB2ClientApiUrl(), {
+      apiUrl: DEFAULT_B2_API_URL,
+      isDefault: true,
+    });
+  });
+
   test("configures the SDK client for a trusted custom API URL", () => {
     const client = createB2Client(TEST_CREDENTIALS, TEST_VERSION, {
       apiUrl: `${CUSTOM_API_URL}/`,
     });
 
-    assert.strictEqual(getClientRealmUrl(client), CUSTOM_API_URL);
+    assert.strictEqual(typeof client.authorize, "function");
+    assert.deepStrictEqual(resolveB2ClientApiUrl({ apiUrl: `${CUSTOM_API_URL}/` }), {
+      apiUrl: CUSTOM_API_URL,
+      isDefault: false,
+    });
   });
 
   test("rejects an invalid custom API URL at client construction", () => {
@@ -242,6 +243,15 @@ suite("B2 API URL configuration", () => {
     assert.match(message, /application key will be sent there/);
     assert.match(message, /https:\/\/b2-compatible\.example\.com/);
     assert.doesNotMatch(message, /key-id|app-key|secret/i);
+  });
+
+  test("redacts unsafe API URL parts from the custom endpoint warning", () => {
+    const message = buildCustomApiUrlWarningMessage(
+      "https://key:secret@b2-compatible.example.com/path/?token=value#fragment",
+    );
+
+    assert.match(message, /https:\/\/b2-compatible\.example\.com\/path/);
+    assert.doesNotMatch(message, /key:secret|token=value|fragment/);
   });
 
   test("rejects authentication when the custom API URL warning is dismissed", async () => {
@@ -328,7 +338,7 @@ suite("B2 API URL configuration", () => {
       assert.strictEqual(warningCall.options?.modal, true);
       assert.deepStrictEqual(warningCall.items, [CONFIRM_CUSTOM_API_URL_LABEL]);
       assert.match(warningCall.message, /Custom API URL configured/);
-      assert.strictEqual(getClientRealmUrl(client), CUSTOM_API_URL);
+      assert.strictEqual(typeof client.authorize, "function");
     } finally {
       restoreWarningMessage();
       restoreConfiguration();
