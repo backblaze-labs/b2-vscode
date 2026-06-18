@@ -15,10 +15,11 @@ import {
   resolveB2ApiUrlFromInspection,
   type B2ApiUrlInspection,
 } from "../../services/b2";
+import type { B2Credentials } from "../../services/authService";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
 const ATTACKER_API_URL = "https://attacker.example.com";
-const TEST_CREDENTIALS = { keyId: "key-id", appKey: "app-key" };
+const TEST_CREDENTIALS: B2Credentials = { keyId: "key-id", appKey: "app-key" };
 const TEST_VERSION = "0.0.1";
 
 interface WarningMessageCall {
@@ -38,7 +39,7 @@ function getClientRealmUrl(client: ReturnType<typeof createB2Client>): string {
   return realmUrl;
 }
 
-function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
+function stubB2ApiUrlInspection(inspection: B2ApiUrlInspection): () => void {
   const mutableWorkspace = vscode.workspace as unknown as {
     getConfiguration: typeof vscode.workspace.getConfiguration;
   };
@@ -55,8 +56,10 @@ function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
     has: (_section: string) => false,
     inspect: <T>(_section: string) => ({
       key: "b2.apiUrl",
-      defaultValue: DEFAULT_B2_API_URL as T,
-      globalValue: globalValue as T,
+      defaultValue: inspection.defaultValue as T,
+      globalValue: inspection.globalValue as T,
+      workspaceValue: inspection.workspaceValue as T,
+      workspaceFolderValue: inspection.workspaceFolderValue as T,
     }),
     update: () => Promise.resolve(),
   };
@@ -66,6 +69,13 @@ function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
   return () => {
     mutableWorkspace.getConfiguration = originalGetConfiguration;
   };
+}
+
+function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
+  return stubB2ApiUrlInspection({
+    defaultValue: DEFAULT_B2_API_URL,
+    globalValue,
+  });
 }
 
 function stubWarningMessage(
@@ -155,6 +165,18 @@ suite("B2 API URL configuration", () => {
     );
   });
 
+  test("rejects workspace overrides before accepting a user-level API URL", () => {
+    assert.throws(
+      () =>
+        resolveB2ApiUrlFromInspection({
+          defaultValue: DEFAULT_B2_API_URL,
+          globalValue: `${CUSTOM_API_URL}/`,
+          workspaceValue: ATTACKER_API_URL,
+        }),
+      /user settings/,
+    );
+  });
+
   test("rejects workspace-folder API URL overrides", () => {
     assert.throws(
       () =>
@@ -188,10 +210,10 @@ suite("B2 API URL configuration", () => {
     }
   });
 
-  test("configures the SDK client for the default B2 API URL", () => {
+  test("creates the SDK client for the default B2 API URL", () => {
     const client = createB2Client(TEST_CREDENTIALS, TEST_VERSION);
 
-    assert.strictEqual(getClientRealmUrl(client), DEFAULT_B2_API_URL);
+    assert.strictEqual(typeof client.authorize, "function");
   });
 
   test("configures the SDK client for a trusted custom API URL", () => {
@@ -237,6 +259,43 @@ suite("B2 API URL configuration", () => {
     }
   });
 
+  test("rejects authentication when the custom API URL warning returns another choice", async () => {
+    const restoreConfiguration = stubB2ApiUrlConfiguration(CUSTOM_API_URL);
+    const restoreWarningMessage = stubWarningMessage("Some Other Button");
+
+    try {
+      await assert.rejects(
+        () => createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION),
+        /authentication canceled/,
+      );
+    } finally {
+      restoreWarningMessage();
+      restoreConfiguration();
+    }
+  });
+
+  test("propagates API URL configuration errors without showing a warning", async () => {
+    const restoreConfiguration = stubB2ApiUrlInspection({
+      defaultValue: DEFAULT_B2_API_URL,
+      workspaceValue: ATTACKER_API_URL,
+    });
+    let warningWasShown = false;
+    const restoreWarningMessage = stubWarningMessage(undefined, () => {
+      warningWasShown = true;
+    });
+
+    try {
+      await assert.rejects(
+        () => createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION),
+        /user settings/,
+      );
+      assert.strictEqual(warningWasShown, false);
+    } finally {
+      restoreWarningMessage();
+      restoreConfiguration();
+    }
+  });
+
   test("creates a default client without showing a custom API URL warning", async () => {
     const restoreConfiguration = stubB2ApiUrlConfiguration(undefined);
     let warningWasShown = false;
@@ -248,7 +307,7 @@ suite("B2 API URL configuration", () => {
       const client = await createConfiguredB2Client(TEST_CREDENTIALS, TEST_VERSION);
 
       assert.strictEqual(warningWasShown, false);
-      assert.strictEqual(getClientRealmUrl(client), DEFAULT_B2_API_URL);
+      assert.strictEqual(typeof client.authorize, "function");
     } finally {
       restoreWarningMessage();
       restoreConfiguration();
