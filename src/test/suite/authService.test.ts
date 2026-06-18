@@ -240,6 +240,38 @@ suite("AuthService credential resolution failures", () => {
     }
   });
 
+  for (const errorCode of ["EACCES", "EISDIR", "ENOTDIR", "EPERM"]) {
+    test(`records an initialization warning when the SQL.js WASM read fails with ${errorCode}`, async () => {
+      const dir = tempDir();
+      const dbPath = path.join(dir, "account_info");
+      fs.writeFileSync(dbPath, "");
+      const restoreReadFileSync = stubReadFileSyncForPath(
+        SQL_WASM_FIXTURE_PATH,
+        createFsError(errorCode, SQL_WASM_FIXTURE_PATH),
+      );
+
+      try {
+        const service = new AuthService(createNoopSecretStorage(), {
+          environment: {},
+          b2CliDatabasePaths: [dbPath],
+          sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+          sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+        });
+
+        const credentials = await service.resolveCredentials();
+        const warning = service.getCredentialResolutionWarning() ?? "";
+
+        assert.strictEqual(credentials, null);
+        assert.match(warning, /CLI credential auto-detection could not initialize/i);
+        assert.doesNotMatch(warning, new RegExp(errorCode, "i"));
+        assert.strictEqual(warning.includes(SQL_WASM_FIXTURE_PATH), false);
+      } finally {
+        restoreReadFileSync();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
   test("records a warning for a sql.js WASM digest mismatch", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "account_info");

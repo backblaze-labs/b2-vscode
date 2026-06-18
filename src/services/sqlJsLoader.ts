@@ -24,7 +24,7 @@ export interface SqlJsRuntimeLoaderOptions {
   sqlJsRuntimePath?: string;
 }
 
-const SQL_WASM_ASSET_READ_ERROR_CODES = new Set(["EACCES", "ENOENT", "ENOTDIR"]);
+const SQL_WASM_ASSET_READ_ERROR_CODES = new Set(["EACCES", "EISDIR", "ENOENT", "ENOTDIR", "EPERM"]);
 const NodeModule = Module as unknown as NodeModuleConstructor;
 
 export class SqlWasmInitializationError extends Error {
