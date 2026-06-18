@@ -52,7 +52,7 @@ const SENSITIVE_TEXT_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
   ...SENSITIVE_QUERY_KEYS.flatMap(sensitiveKeyReplacements),
   [/\b(B2_APPLICATION_KEY(?:_ID)?=)\S+/gi, `$1${REDACTED}`],
   [
-    /\b((?:applicationKey|appKey|authorizationToken|token|secret|password)\s*=\s*)\S+/gi,
+    /\b((?:authorization|applicationKey|application_key|appKey|authorizationToken|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?\S+/gi,
     `$1${REDACTED}`,
   ],
   [/\b(application key(?: id)?\s*[:=]\s*)\S+/gi, `$1${REDACTED}`],

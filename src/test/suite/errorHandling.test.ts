@@ -236,10 +236,20 @@ suite("B2 error handling", () => {
 
   test("redacts secret-looking free text", () => {
     const text = redactSensitiveText(
-      'B2_APPLICATION_KEY=abc123 {"authorizationToken":"tok123"} https://x.test?token=tok&X-Amz-Signature=sig&X-Amz-Credential=cred&X-Amz-Security-Token=session',
+      [
+        'B2_APPLICATION_KEY=abc123 {"authorizationToken":"tok123"}',
+        "https://x.test?token=tok&X-Amz-Signature=sig&X-Amz-Credential=cred&X-Amz-Security-Token=session",
+        "Authorization: Bearer eyJ_secret",
+        "token: 4_abc_secret",
+        "secret: hunter2value",
+        "authorization=plain-auth-secret",
+      ].join(" "),
     );
 
-    assert.doesNotMatch(text, /abc123|tok123|token=tok|sig|cred|session/);
+    assert.doesNotMatch(
+      text,
+      /abc123|tok123|token=tok|sig|cred|session|eyJ_secret|4_abc_secret|hunter2value|plain-auth-secret/,
+    );
     assert.match(text, /<redacted>/);
   });
 });
