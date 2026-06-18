@@ -155,6 +155,17 @@ suite("B2 error handling", () => {
     assert.equal(message, "Not authenticated. Please run the B2: Authenticate command first.");
   });
 
+  test("preserves CLI auto-detection initialization guidance", () => {
+    const message = formatB2UserMessage(
+      new Error("B2 CLI credential auto-detection could not initialize. Missing SQL.js runtime."),
+    );
+
+    assert.equal(
+      message,
+      "B2 CLI credential auto-detection could not initialize. Missing SQL.js runtime.",
+    );
+  });
+
   test("preserves extension-originated not-found details", () => {
     const message = formatB2UserMessage(new B2ResourceNotFoundError('Bucket "b" not found.'));
 

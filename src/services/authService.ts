@@ -39,6 +39,8 @@ export interface AuthServiceOptions {
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
+  /** Override bundled extension runtime directory for tests. Defaults to __dirname. */
+  extensionRuntimeDirectory?: string;
   /** Override sql.js WASM path for tests. */
   sqlWasmPath?: string;
 }
@@ -168,9 +170,30 @@ export class AuthService implements vscode.Disposable {
       return result;
     } catch (err) {
       logError("CLI-AUTH: Error reading B2 CLI database", err);
-      this.credentialResolutionWarning = `B2 CLI credentials could not be read. ${formatB2ToolUserMessage(err)}`;
+      this.credentialResolutionWarning = this.buildB2CliCredentialWarning(err);
       return null;
     }
+  }
+
+  private buildB2CliCredentialWarning(error: unknown): string {
+    const message = formatB2ToolUserMessage(error);
+    if (this.isSqlWasmInitializationError(error)) {
+      return `B2 CLI credential auto-detection could not initialize. The bundled SQL.js runtime asset is missing or unreadable. ${message}`;
+    }
+
+    return `B2 CLI credentials could not be read. ${message}`;
+  }
+
+  private isSqlWasmInitializationError(error: unknown): boolean {
+    if (this.options.sqlWasmPath !== undefined) {
+      return false;
+    }
+
+    const errorCode =
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    return typeof errorCode === "string" && ["EACCES", "ENOENT", "ENOTDIR"].includes(errorCode);
   }
 
   private findB2CliDatabase(): string | null {
@@ -213,11 +236,9 @@ export class AuthService implements vscode.Disposable {
     const fileBuffer = fs.readFileSync(dbPath);
     log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
 
-    // Load WASM binary directly to avoid all path resolution issues
-    const extensionRoot = path.join(__dirname, "..");
-    const wasmPath =
-      this.options.sqlWasmPath ??
-      path.join(extensionRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm");
+    // Load the WASM file copied next to dist/extension.js in packaged VSIX builds.
+    const runtimeDirectory = this.options.extensionRuntimeDirectory ?? __dirname;
+    const wasmPath = this.options.sqlWasmPath ?? path.join(runtimeDirectory, "sql-wasm.wasm");
     log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
 
     const wasmBinary = new Uint8Array(fs.readFileSync(wasmPath)).buffer as ArrayBuffer;

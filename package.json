@@ -36,8 +36,9 @@
     "test": "vscode-test",
     "clean": "rm -rf dist out *.vsix",
     "clean:vsix": "rm -rf *.vsix",
+    "assert:vsix-assets": "node scripts/assert-vsix-assets.js",
     "docs": "typedoc",
-    "vsix": "npm run clean:vsix && npm run package && npx @vscode/vsce package --no-yarn --no-dependencies",
+    "vsix": "npm run clean:vsix && npm run package && npx @vscode/vsce package --no-yarn --no-dependencies && npm run assert:vsix-assets",
     "vsix:install": "code --install-extension ./b2-vscode-*.vsix --force",
     "vscode:prepublish": "npm run build:icons && npm run package"
   },
