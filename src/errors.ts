@@ -365,11 +365,12 @@ export function formatB2UserMessage(error: unknown): string {
   }
 
   const message = redactSensitiveText(getErrorMessage(error));
-  if (!isB2ErrorLike(error) && isSafeExtensionMessage(message)) {
-    return message;
-  }
+  const b2ErrorLike = isB2ErrorLike(error);
+  if (!b2ErrorLike) {
+    if (isSafeExtensionMessage(message)) {
+      return message;
+    }
 
-  if (!isB2ErrorLike(error) && message) {
     return "Unexpected error. Check the Backblaze B2 output log for details.";
   }
 

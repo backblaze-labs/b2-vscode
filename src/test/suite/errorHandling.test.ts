@@ -101,6 +101,13 @@ suite("B2 error handling", () => {
     assert.doesNotMatch(message, /Cannot read properties|secret/);
   });
 
+  test("does not label empty-message non-B2 errors as B2 errors", () => {
+    const message = formatB2UserMessage(new Error(""));
+
+    assert.match(message, /Unexpected error/i);
+    assert.doesNotMatch(message, /Unexpected B2 error/i);
+  });
+
   test("preserves safe extension guidance for expected non-B2 errors", () => {
     const message = formatB2UserMessage(
       new Error("Not authenticated. Please run the B2: Authenticate command first."),
