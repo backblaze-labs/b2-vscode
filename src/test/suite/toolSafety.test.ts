@@ -64,6 +64,14 @@ suite("LM Tool Safety", () => {
     }
   });
 
+  test("listFiles limit schema matches integer validation", () => {
+    const limit = listFilesTool.parameters.properties.limit as Record<string, unknown>;
+
+    assert.strictEqual(limit.type, "integer");
+    assert.strictEqual(limit.minimum, 1);
+    assert.strictEqual(limit.maximum, 1000);
+  });
+
   test("cancellation is passed through without a failure wrapper", async () => {
     const cancellationOperation: B2ToolOperation<unknown, unknown> = {
       async execute() {

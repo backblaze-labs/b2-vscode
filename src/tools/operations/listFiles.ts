@@ -92,16 +92,17 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
     while (files.length < limit) {
       throwIfCancellationRequested(token);
       const remaining = limit - files.length;
+      const pageSize = Math.min(MAX_FILE_COUNT, remaining);
       const page = await bucket.listFileNames({
         ...(params.prefix !== undefined ? { prefix: params.prefix } : {}),
         ...(delimiter !== undefined ? { delimiter } : {}),
         ...(startFileName !== undefined ? { startFileName } : {}),
-        pageSize: Math.min(MAX_FILE_COUNT, remaining),
+        pageSize,
       });
       pageCount++;
 
       // pageSize should already bound page.files; keep slice as a defensive cap.
-      const visibleFiles = page.files.slice(0, remaining);
+      const visibleFiles = page.files.slice(0, pageSize);
       for (const f of visibleFiles) {
         throwIfCancellationRequested(token);
         files.push({

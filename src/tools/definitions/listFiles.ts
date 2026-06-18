@@ -29,7 +29,9 @@ export const listFilesTool: B2ToolDefinition = {
           "If true, list all files recursively. If false (default), list only the immediate level.",
       },
       limit: {
-        type: "number",
+        type: "integer",
+        minimum: 1,
+        maximum: 1000,
         description:
           "Maximum number of entries to return. Defaults to 200, or 100 when recursive=true. Hard-capped at 1000, or 500 when recursive=true.",
       },

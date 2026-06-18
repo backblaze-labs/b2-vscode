@@ -194,15 +194,16 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
     }
 
     const startFileName = state.nextFileName;
+    const pageSize = Math.min(TREE_LIST_PAGE_SIZE, remaining);
     const page = await bucket.listFileNames({
       delimiter: "/",
-      pageSize: Math.min(TREE_LIST_PAGE_SIZE, remaining),
+      pageSize,
       ...(prefix ? { prefix } : {}),
       ...(startFileName !== undefined ? { startFileName } : {}),
     });
 
     // pageSize should already bound page.files; keep slice as a defensive cap.
-    const visibleFiles = page.files.slice(0, remaining);
+    const visibleFiles = page.files.slice(0, pageSize);
     for (const file of visibleFiles) {
       if (file.action === "folder") {
         state.items.push(new FolderTreeItem(bucket, file.fileName));

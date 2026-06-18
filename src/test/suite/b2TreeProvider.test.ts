@@ -181,6 +181,32 @@ suite("B2 tree provider paging", () => {
     assert.strictEqual(calls.length, 1);
   });
 
+  test("caps oversized initial pages to the requested tree page size", async () => {
+    const oversizedFiles = Array.from({ length: TREE_LIST_PAGE_SIZE + 25 }, (_, index) =>
+      file(`item-${index}.txt`),
+    );
+    const { bucket, calls } = makeBucket([
+      { files: oversizedFiles, nextFileName: "sdk-next.txt" },
+      { files: [], nextFileName: null },
+    ]);
+    const provider = makeProvider(bucket);
+    const bucketItem = new BucketTreeItem(bucket);
+
+    const children = await provider.getChildren(bucketItem);
+
+    assert.strictEqual(calls[0]?.pageSize, TREE_LIST_PAGE_SIZE);
+    assert.strictEqual(children.length, TREE_LIST_PAGE_SIZE + 1);
+    assert.strictEqual(
+      label(children[TREE_LIST_PAGE_SIZE - 1]),
+      `item-${TREE_LIST_PAGE_SIZE - 1}.txt`,
+    );
+    assert.ok(children[TREE_LIST_PAGE_SIZE] instanceof LoadMoreTreeItem);
+
+    await provider.loadMore(children[TREE_LIST_PAGE_SIZE] as LoadMoreTreeItem);
+
+    assert.strictEqual(calls[1]?.startFileName, `item-${TREE_LIST_PAGE_SIZE - 1}.txt`);
+  });
+
   test("preserves deep prefixes and special characters when listing folders", async () => {
     const prefix = "deep prefix/üñîçødé & symbols/#/";
     const { bucket, calls } = makeBucket([
