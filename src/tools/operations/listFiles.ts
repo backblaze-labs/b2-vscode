@@ -113,10 +113,10 @@ export const listFilesOperation: B2ToolOperation<ListFilesParams, ListFilesResul
         });
       }
 
-      // If an oversized page is sliced, continue after the last exposed item.
+      // If an oversized page is sliced, continue from the first hidden item.
       nextContinuationToken =
         page.files.length > visibleFiles.length
-          ? visibleFiles[visibleFiles.length - 1]?.fileName
+          ? page.files[visibleFiles.length]?.fileName
           : (page.nextFileName ?? undefined);
       if (nextContinuationToken === undefined) {
         break;

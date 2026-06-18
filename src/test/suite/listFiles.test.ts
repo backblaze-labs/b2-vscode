@@ -18,7 +18,11 @@ import {
 } from "@backblaze-labs/b2-sdk";
 // @ts-expect-error Classic moduleResolution does not read this package export map.
 import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
-import { LIST_FILES_DEFAULT_LIMIT, LIST_FILES_RECURSIVE_LIMIT_CAP } from "../../constants";
+import {
+  LIST_FILES_DEFAULT_LIMIT,
+  LIST_FILES_LIMIT_CAP,
+  LIST_FILES_RECURSIVE_LIMIT_CAP,
+} from "../../constants";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import type { ToolExtras } from "../../tools/types";
 
@@ -135,6 +139,23 @@ suite("B2 listFiles tool paging", () => {
       calls.map((call) => call?.startFileName ?? null),
       [null, "c.txt", "e.txt"],
     );
+  });
+
+  test("continues oversized SDK pages from the first hidden file", async () => {
+    const oversizedFiles = Array.from({ length: LIST_FILES_LIMIT_CAP + 1 }, (_, index) =>
+      file(`item-${index}.txt`),
+    );
+    const { extras, calls } = makeExtras([{ files: oversizedFiles, nextFileName: "sdk-next.txt" }]);
+
+    const result = await listFilesOperation.execute(
+      { bucket: "bucket", limit: LIST_FILES_LIMIT_CAP },
+      extras,
+    );
+
+    assert.strictEqual(calls[0]?.pageSize, LIST_FILES_LIMIT_CAP);
+    assert.strictEqual(result.count, LIST_FILES_LIMIT_CAP);
+    assert.strictEqual(result.truncated, true);
+    assert.strictEqual(result.nextContinuationToken, `item-${LIST_FILES_LIMIT_CAP}.txt`);
   });
 
   test("applies recursive hard cap and truncation metadata", async () => {

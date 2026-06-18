@@ -212,10 +212,10 @@ export class B2TreeProvider implements vscode.TreeDataProvider<B2TreeItem> {
       }
     }
 
-    // If an oversized page is sliced, continue after the last exposed item.
+    // If an oversized page is sliced, continue from the first hidden item.
     const nextFileName =
       page.files.length > visibleFiles.length
-        ? visibleFiles[visibleFiles.length - 1]?.fileName
+        ? page.files[visibleFiles.length]?.fileName
         : (page.nextFileName ?? undefined);
     if (nextFileName !== undefined && nextFileName === startFileName) {
       throw new Error("B2 returned an unchanged continuation token; listing stopped.");

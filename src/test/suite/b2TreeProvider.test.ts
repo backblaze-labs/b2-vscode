@@ -204,7 +204,7 @@ suite("B2 tree provider paging", () => {
 
     await provider.loadMore(children[TREE_LIST_PAGE_SIZE] as LoadMoreTreeItem);
 
-    assert.strictEqual(calls[1]?.startFileName, `item-${TREE_LIST_PAGE_SIZE - 1}.txt`);
+    assert.strictEqual(calls[1]?.startFileName, `item-${TREE_LIST_PAGE_SIZE}.txt`);
   });
 
   test("preserves deep prefixes and special characters when listing folders", async () => {
