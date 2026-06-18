@@ -2,10 +2,7 @@
 
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
-
-// Keep in sync with DEFAULT_SQL_WASM_FILENAME in src/services/authService.ts
-// and PACKAGED_SQL_WASM_ENTRY in scripts/assert-vsix-assets.js.
-const SQL_WASM_FILENAME = "sql-wasm.wasm";
+const sqlWasmAsset = require("./src/sql-wasm-asset.json");
 
 /** @typedef {import('webpack').Configuration} WebpackConfig */
 
@@ -42,8 +39,13 @@ const extensionConfig = {
     new CopyPlugin({
       patterns: [
         {
-          from: path.join("node_modules", "sql.js", "dist", SQL_WASM_FILENAME),
-          to: SQL_WASM_FILENAME,
+          from: sqlWasmAsset.runtimeSourcePath,
+          to: sqlWasmAsset.runtimeFilename,
+          info: { minimized: true },
+        },
+        {
+          from: sqlWasmAsset.sourcePath,
+          to: sqlWasmAsset.filename,
         },
       ],
     }),

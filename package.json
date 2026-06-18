@@ -27,8 +27,8 @@
     "compile-tests": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && tsc -p tsconfig.test.json",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "format": "prettier --write 'src/**/*.ts' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
-    "format:check": "prettier --check 'src/**/*.ts' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
+    "format": "prettier --write 'src/**/*.{ts,json}' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
+    "format:check": "prettier --check 'src/**/*.{ts,json}' '*.{js,json,md,mjs}' 'tsconfig*.json' '.vscode/*.json'",
     "check": "npm run format:check && npm run lint && npm run type-check",
     "check:fix": "npm run format && npm run lint:fix && npm run type-check",
     "type-check": "tsc --noEmit",
@@ -563,7 +563,7 @@
   },
   "dependencies": {
     "@backblaze-labs/b2-sdk": "^0.1.0",
-    "sql.js": "^1.14.1"
+    "sql.js": "1.14.1"
   },
   "overrides": {
     "diff": "8.0.3",

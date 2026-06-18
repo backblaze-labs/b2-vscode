@@ -14,10 +14,11 @@
 
 ### Fixed
 
-- Packaged CLI credential auto-detection now bundles the SQL.js runtime module
-  and loads the WASM asset from the extension runtime directory
-  (`dist/sql-wasm.wasm`). VSIX packaging now verifies the runtime bundle and
-  WASM asset before release.
+- Packaged CLI credential auto-detection now loads copied SQL.js runtime assets
+  from the extension runtime directory (`dist/sql-wasm.js` and
+  `dist/sql-wasm.wasm`). VSIX packaging now verifies pinned SQL.js runtime and
+  WASM SHA-256 values and statically checks that the bundle does not require
+  repository `node_modules`.
 
 ### Security
 

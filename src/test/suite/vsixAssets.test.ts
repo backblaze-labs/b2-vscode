@@ -9,10 +9,33 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import JSZip from "jszip";
+import sqlWasmAsset from "../../sql-wasm-asset.json";
 
 interface VsixAssetAssertions {
   assertVsixAssets(packagePath?: string): Promise<void>;
 }
+
+interface SqlWasmAssetConfig {
+  filename: string;
+  packagedDistDir: string;
+  runtimeFilename: string;
+  runtimeSourcePath: string;
+  sourcePath: string;
+}
+
+const SQL_WASM_ASSET: SqlWasmAssetConfig = sqlWasmAsset;
+const SQL_JS_RUNTIME_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.runtimeSourcePath);
+const SQL_WASM_FIXTURE_PATH = path.join(process.cwd(), SQL_WASM_ASSET.sourcePath);
+const PACKAGED_SQL_RUNTIME_ENTRY = path.posix.join(
+  "extension",
+  SQL_WASM_ASSET.packagedDistDir,
+  SQL_WASM_ASSET.runtimeFilename,
+);
+const PACKAGED_SQL_WASM_ENTRY = path.posix.join(
+  "extension",
+  SQL_WASM_ASSET.packagedDistDir,
+  SQL_WASM_ASSET.filename,
+);
 
 function loadVsixAssetAssertions(): VsixAssetAssertions {
   return require(path.join(process.cwd(), "scripts/assert-vsix-assets.js")) as VsixAssetAssertions;
@@ -39,12 +62,21 @@ async function createFixtureVsix(
 
 function baseEntries(
   extensionSource: string,
+  runtimeContent: Buffer,
   wasmContent: Buffer,
 ): Record<string, Buffer | string> {
   return {
     "extension/package.json": "{}",
     "extension/dist/extension.js": extensionSource,
-    "extension/dist/sql-wasm.wasm": wasmContent,
+    [PACKAGED_SQL_RUNTIME_ENTRY]: runtimeContent,
+    [PACKAGED_SQL_WASM_ENTRY]: wasmContent,
+  };
+}
+
+function baseRuntimeAndWasm(): { runtime: Buffer; wasm: Buffer } {
+  return {
+    runtime: fs.readFileSync(SQL_JS_RUNTIME_FIXTURE_PATH),
+    wasm: fs.readFileSync(SQL_WASM_FIXTURE_PATH),
   };
 }
 
@@ -54,10 +86,11 @@ suite("VSIX runtime asset assertions", () => {
     const assertions = loadVsixAssetAssertions();
 
     try {
-      const wasm = fs.readFileSync(
-        path.join(process.cwd(), "node_modules/sql.js/dist/sql-wasm.wasm"),
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const vsixPath = await createFixtureVsix(
+        dir,
+        baseEntries("module.exports = {};", runtime, wasm),
       );
-      const vsixPath = await createFixtureVsix(dir, baseEntries("module.exports = {};", wasm));
 
       await assertions.assertVsixAssets(vsixPath);
     } finally {
@@ -72,7 +105,11 @@ suite("VSIX runtime asset assertions", () => {
     try {
       const vsixPath = await createFixtureVsix(
         dir,
-        baseEntries("module.exports = {};", Buffer.alloc(0)),
+        baseEntries(
+          "module.exports = {};",
+          fs.readFileSync(SQL_JS_RUNTIME_FIXTURE_PATH),
+          Buffer.alloc(0),
+        ),
       );
 
       await assert.rejects(assertions.assertVsixAssets(vsixPath), /sql-wasm\.wasm/i);
@@ -88,10 +125,34 @@ suite("VSIX runtime asset assertions", () => {
     try {
       const vsixPath = await createFixtureVsix(
         dir,
-        baseEntries("module.exports = {};", Buffer.from("not wasm")),
+        baseEntries(
+          "module.exports = {};",
+          fs.readFileSync(SQL_JS_RUNTIME_FIXTURE_PATH),
+          Buffer.from("not wasm"),
+        ),
       );
 
       await assert.rejects(assertions.assertVsixAssets(vsixPath), /unexpected.*sql-wasm\.wasm/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a corrupt packaged sql.js runtime asset", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const vsixPath = await createFixtureVsix(
+        dir,
+        baseEntries(
+          "module.exports = {};",
+          Buffer.from("not runtime"),
+          fs.readFileSync(SQL_WASM_FIXTURE_PATH),
+        ),
+      );
+
+      await assert.rejects(assertions.assertVsixAssets(vsixPath), /unexpected.*sql-wasm\.js/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -102,18 +163,37 @@ suite("VSIX runtime asset assertions", () => {
     const assertions = loadVsixAssetAssertions();
 
     try {
-      const wasm = fs.readFileSync(
-        path.join(process.cwd(), "node_modules/sql.js/dist/sql-wasm.wasm"),
-      );
+      const { runtime, wasm } = baseRuntimeAndWasm();
       const vsixPath = await createFixtureVsix(
         dir,
-        baseEntries('module.exports = require("sql.js");', wasm),
+        baseEntries('module.exports = require("sql.js");', runtime, wasm),
       );
 
-      await assert.rejects(
-        assertions.assertVsixAssets(vsixPath),
-        /without repository node_modules/i,
+      await assert.rejects(assertions.assertVsixAssets(vsixPath), /unresolved sql\.js import/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not execute packaged extension JavaScript while verifying assets", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+    const sideEffectPath = path.join(dir, "side-effect");
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const vsixPath = await createFixtureVsix(
+        dir,
+        baseEntries(
+          `require("node:fs").writeFileSync(${JSON.stringify(sideEffectPath)}, "executed");`,
+          runtime,
+          wasm,
+        ),
       );
+
+      await assertions.assertVsixAssets(vsixPath);
+
+      assert.strictEqual(fs.existsSync(sideEffectPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

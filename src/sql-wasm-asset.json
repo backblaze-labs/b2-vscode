@@ -1,0 +1,10 @@
+{
+  "filename": "sql-wasm.wasm",
+  "packagedDistDir": "dist",
+  "runtimeFilename": "sql-wasm.js",
+  "runtimeSha256": "77d6435bac506af0e3c59636dce9d22b1b14156348bc327f41a1577f3212360f",
+  "runtimeSourcePath": "node_modules/sql.js/dist/sql-wasm.js",
+  "sourcePath": "node_modules/sql.js/dist/sql-wasm.wasm",
+  "sha256": "438c88f666dc054ce4e9395f80fe9db4218b1a3c379960454880f048a7898aed",
+  "sqlJsVersion": "1.14.1"
+}

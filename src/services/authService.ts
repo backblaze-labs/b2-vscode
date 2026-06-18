@@ -14,7 +14,8 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import initSqlJs from "sql.js";
+import * as crypto from "crypto";
+import sqlWasmAsset from "../sql-wasm-asset.json";
 import {
   ENV_KEY_ID,
   ENV_APP_KEY,
@@ -23,9 +24,21 @@ import {
   CTX_AUTHENTICATED,
 } from "../constants";
 import type { B2AuthState } from "../types";
-import { log, logError } from "../logger";
+import { log } from "../logger";
 
-type SqlJsRuntime = Awaited<ReturnType<typeof initSqlJs>>;
+type InitSqlJs = typeof import("sql.js").default;
+type SqlJsRuntime = Awaited<ReturnType<InitSqlJs>>;
+
+declare const __non_webpack_require__: NodeRequire | undefined;
+
+interface SqlWasmAssetConfig {
+  filename: string;
+  runtimeFilename: string;
+  runtimeSha256: string;
+  sha256: string;
+}
+
+const SQL_WASM_ASSET: SqlWasmAssetConfig = sqlWasmAsset;
 
 /**
  * Resolved B2 credentials.
@@ -34,10 +47,6 @@ export interface B2Credentials {
   keyId: string;
   appKey: string;
 }
-
-// Keep in sync with SQL_WASM_FILENAME in webpack.config.js and
-// PACKAGED_SQL_WASM_ENTRY in scripts/assert-vsix-assets.js.
-const DEFAULT_SQL_WASM_FILENAME = "sql-wasm.wasm";
 
 const SQL_WASM_ASSET_READ_ERROR_CODES = new Set(["EACCES", "ENOENT", "ENOTDIR"]);
 
@@ -58,6 +67,8 @@ export interface AuthServiceOptions {
   b2CliDatabasePaths?: readonly string[];
   /** Override the bundled sql.js WASM path for tests. Defaults to __dirname/sql-wasm.wasm. */
   sqlWasmPath?: string;
+  /** Override the bundled sql.js runtime path for tests. Defaults to __dirname/sql-wasm.js. */
+  sqlJsRuntimePath?: string;
 }
 
 /**
@@ -72,6 +83,8 @@ export class AuthService implements vscode.Disposable {
   private state: B2AuthState = { isAuthenticated: false };
 
   private credentialResolutionWarning: string | undefined;
+
+  private sqlRuntimePromise: Promise<SqlJsRuntime> | undefined;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -178,46 +191,92 @@ export class AuthService implements vscode.Disposable {
       return null;
     }
 
-    log(`CLI-AUTH: Found database at: ${dbPath}`);
+    log("CLI-AUTH: Found B2 CLI database.");
     try {
       const result = await this.queryB2Database(dbPath);
       log(`CLI-AUTH: Query result: ${result ? "credentials found" : "no credentials"}`);
       return result;
     } catch (err) {
-      logError("CLI-AUTH: Error reading B2 CLI database", err);
+      log(`CLI-AUTH: Error reading B2 CLI database (${this.formatCredentialErrorForLog(err)}).`);
       this.credentialResolutionWarning = this.buildB2CliCredentialWarning(err);
       return null;
     }
   }
 
   private buildB2CliCredentialWarning(error: unknown): string {
-    if (this.isSqlWasmInitializationError(error)) {
+    if (error instanceof SqlWasmInitializationError) {
       return "B2 CLI credential auto-detection could not initialize. The bundled SQL.js runtime asset is missing, unreadable, or invalid. Check the Backblaze B2 output log for details.";
     }
 
-    return "B2 CLI credentials could not be read. Check file permissions or run B2: Authenticate to store credentials in VS Code.";
+    return "B2 CLI credentials could not be read. Check file permissions, review the Backblaze B2 output log for details, or run B2: Authenticate to store credentials in VS Code.";
   }
 
-  private isSqlWasmInitializationError(error: unknown): boolean {
-    return error instanceof SqlWasmInitializationError;
+  private formatCredentialErrorForLog(error: unknown): string {
+    if (error instanceof SqlWasmInitializationError) {
+      const originalCode = this.getErrorCode(error.originalError);
+      if (originalCode) {
+        return `sql.js runtime initialization failed, code=${originalCode}`;
+      }
+
+      const originalDetail =
+        error.originalError instanceof Error
+          ? `${error.originalError.name}: ${error.originalError.message}`
+          : undefined;
+      return originalDetail
+        ? `sql.js runtime initialization failed (${originalDetail})`
+        : "sql.js runtime initialization failed";
+    }
+
+    const errorCode = this.getErrorCode(error);
+    if (errorCode) {
+      return `code=${errorCode}`;
+    }
+
+    return error instanceof Error ? error.name : typeof error;
   }
 
-  private isSqlWasmAssetReadError(error: unknown): boolean {
+  private getErrorCode(error: unknown): string | undefined {
     const errorCode =
       typeof error === "object" && error !== null && "code" in error
         ? (error as { code?: unknown }).code
         : undefined;
+    return typeof errorCode === "string" ? errorCode : undefined;
+  }
+
+  private isSqlWasmAssetReadError(error: unknown): boolean {
+    const errorCode = this.getErrorCode(error);
     return typeof errorCode === "string" && SQL_WASM_ASSET_READ_ERROR_CODES.has(errorCode);
   }
 
   private resolveSqlWasmPath(): string {
-    return this.options.sqlWasmPath ?? path.join(__dirname, DEFAULT_SQL_WASM_FILENAME);
+    return this.options.sqlWasmPath ?? path.join(__dirname, SQL_WASM_ASSET.filename);
   }
 
-  private readSqlWasmFile(wasmPath: string): Buffer {
+  private resolveSqlJsRuntimePath(): string {
+    return this.options.sqlJsRuntimePath ?? path.join(__dirname, SQL_WASM_ASSET.runtimeFilename);
+  }
+
+  private readVerifiedSqlAssetFile(
+    assetPath: string,
+    expectedSha256: string,
+    label: string,
+  ): Buffer {
     try {
-      return fs.readFileSync(wasmPath);
+      const assetFile = fs.readFileSync(assetPath);
+      const actualSha256 = crypto.createHash("sha256").update(assetFile).digest("hex");
+      if (actualSha256 !== expectedSha256) {
+        throw new SqlWasmInitializationError(
+          new Error(
+            `Bundled SQL.js ${label} SHA-256 mismatch: expected ${expectedSha256}, got ${actualSha256}`,
+          ),
+        );
+      }
+
+      return assetFile;
     } catch (error) {
+      if (error instanceof SqlWasmInitializationError) {
+        throw error;
+      }
       if (this.isSqlWasmAssetReadError(error)) {
         throw new SqlWasmInitializationError(error);
       }
@@ -225,11 +284,19 @@ export class AuthService implements vscode.Disposable {
     }
   }
 
+  private readSqlWasmFile(wasmPath: string): Buffer {
+    return this.readVerifiedSqlAssetFile(wasmPath, SQL_WASM_ASSET.sha256, "WASM");
+  }
+
+  private verifySqlJsRuntimeFile(runtimePath: string): void {
+    this.readVerifiedSqlAssetFile(runtimePath, SQL_WASM_ASSET.runtimeSha256, "runtime");
+  }
+
   private findB2CliDatabase(): string | null {
     if (this.options.b2CliDatabasePaths) {
       for (const candidate of this.options.b2CliDatabasePaths) {
         const candidateExists = fs.existsSync(candidate);
-        log(`CLI-AUTH: Checking configured path: ${candidate} -> exists=${candidateExists}`);
+        log(`CLI-AUTH: Checking configured B2 CLI database path -> exists=${candidateExists}`);
         if (candidateExists) {
           return candidate;
         }
@@ -239,11 +306,11 @@ export class AuthService implements vscode.Disposable {
     }
 
     const home = os.homedir();
-    log(`CLI-AUTH: Home directory: ${home}`);
+    log("CLI-AUTH: Checking default B2 CLI database locations.");
 
     const legacyPath = path.join(home, ".b2_account_info");
     const legacyPathExists = fs.existsSync(legacyPath);
-    log(`CLI-AUTH: Checking legacy path: ${legacyPath} -> exists=${legacyPathExists}`);
+    log(`CLI-AUTH: Checking legacy B2 CLI database path -> exists=${legacyPathExists}`);
     if (legacyPathExists) {
       return legacyPath;
     }
@@ -252,7 +319,7 @@ export class AuthService implements vscode.Disposable {
     const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
     const xdgPathExists = fs.existsSync(xdgPath);
-    log(`CLI-AUTH: Checking XDG path: ${xdgPath} -> exists=${xdgPathExists}`);
+    log(`CLI-AUTH: Checking XDG B2 CLI database path -> exists=${xdgPathExists}`);
     if (xdgPathExists) {
       return xdgPath;
     }
@@ -265,21 +332,7 @@ export class AuthService implements vscode.Disposable {
     const fileBuffer = fs.readFileSync(dbPath);
     log(`CLI-AUTH: File size: ${fileBuffer.length} bytes`);
 
-    // Load the WASM file copied next to dist/extension.js in packaged VSIX builds.
-    const wasmPath = this.resolveSqlWasmPath();
-    log(`CLI-AUTH: WASM path: ${wasmPath} -> exists=${fs.existsSync(wasmPath)}`);
-
-    const wasmBinary = new Uint8Array(this.readSqlWasmFile(wasmPath)).buffer as ArrayBuffer;
-    log(`CLI-AUTH: WASM binary size: ${wasmBinary.byteLength} bytes`);
-
-    let SQL: SqlJsRuntime;
-    try {
-      SQL = await initSqlJs({ wasmBinary });
-    } catch (error) {
-      throw new SqlWasmInitializationError(error);
-    }
-    log("CLI-AUTH: sql.js initialized successfully");
-
+    const SQL = await this.getSqlRuntime();
     const db = new SQL.Database(fileBuffer);
     log("CLI-AUTH: Database opened successfully");
 
@@ -307,6 +360,51 @@ export class AuthService implements vscode.Disposable {
       return null;
     } finally {
       db.close();
+    }
+  }
+
+  private getSqlRuntime(): Promise<SqlJsRuntime> {
+    this.sqlRuntimePromise ??= this.initializeSqlRuntime();
+    return this.sqlRuntimePromise;
+  }
+
+  private loadSqlJsInitializer(): InitSqlJs {
+    const runtimePath = this.resolveSqlJsRuntimePath();
+    log(`CLI-AUTH: Bundled SQL.js runtime exists=${fs.existsSync(runtimePath)}`);
+    this.verifySqlJsRuntimeFile(runtimePath);
+
+    try {
+      const runtimeRequire =
+        typeof __non_webpack_require__ === "function"
+          ? __non_webpack_require__
+          : (eval("require") as NodeRequire);
+      const loadedRuntime = runtimeRequire(runtimePath) as InitSqlJs | { default?: InitSqlJs };
+      const initSqlJs = typeof loadedRuntime === "function" ? loadedRuntime : loadedRuntime.default;
+
+      if (typeof initSqlJs !== "function") {
+        throw new Error("SQL.js runtime asset did not export an initializer function.");
+      }
+
+      return initSqlJs;
+    } catch (error) {
+      throw new SqlWasmInitializationError(error);
+    }
+  }
+
+  private async initializeSqlRuntime(): Promise<SqlJsRuntime> {
+    const initSqlJs = this.loadSqlJsInitializer();
+    const wasmPath = this.resolveSqlWasmPath();
+    log(`CLI-AUTH: Bundled SQL.js WASM exists=${fs.existsSync(wasmPath)}`);
+
+    const wasmBinary = new Uint8Array(this.readSqlWasmFile(wasmPath)).buffer as ArrayBuffer;
+    log(`CLI-AUTH: WASM binary size: ${wasmBinary.byteLength} bytes`);
+
+    try {
+      const SQL = await initSqlJs({ wasmBinary });
+      log("CLI-AUTH: sql.js initialized successfully");
+      return SQL;
+    } catch (error) {
+      throw new SqlWasmInitializationError(error);
     }
   }
 }
