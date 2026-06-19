@@ -117,6 +117,17 @@ async function pathExists(candidatePath: string): Promise<boolean> {
   }
 }
 
+async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefined> {
+  try {
+    return await fs.promises.lstat(candidatePath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 async function nearestExistingPath(candidatePath: string): Promise<string> {
   let currentPath = candidatePath;
   for (;;) {
@@ -165,8 +176,8 @@ export async function assertSafeWritePath(rootPath: string, candidatePath: strin
     );
   }
 
-  if (await pathExists(resolvedCandidate)) {
-    const candidateStats = await fs.promises.lstat(resolvedCandidate);
+  const candidateStats = await lstatIfExists(resolvedCandidate);
+  if (candidateStats) {
     if (candidateStats.isSymbolicLink()) {
       throw pathSafetyError(
         "Destination path must not be a symlink.",
@@ -188,8 +199,8 @@ export async function assertSafeFileWritePath(
   const resolvedCandidate = path.resolve(candidatePath);
   await assertSafeWritePath(rootPath, resolvedCandidate);
 
-  if (await pathExists(resolvedCandidate)) {
-    const candidateStats = await fs.promises.lstat(resolvedCandidate);
+  const candidateStats = await lstatIfExists(resolvedCandidate);
+  if (candidateStats) {
     if (candidateStats.isDirectory()) {
       throw pathSafetyError(
         "Destination must be a file path, not a directory.",

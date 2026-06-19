@@ -184,6 +184,10 @@ test("safe writes create owner-only files and reject final symlinks", async () =
     fs.writeFileSync(targetPath, "target");
     fs.symlinkSync(targetPath, symlinkPath);
 
+    const danglingSymlinkPath = path.join(root, "dangling-link.txt");
+    fs.symlinkSync(path.join(root, "missing-target.txt"), danglingSymlinkPath);
+
+    await assert.rejects(() => assertSafeWritePath(root, danglingSymlinkPath));
     await assert.rejects(() => writeFileNoFollow(symlinkPath, Buffer.from("blocked")));
   }
 });
