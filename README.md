@@ -38,7 +38,7 @@ Custom values must be HTTPS URLs without embedded credentials, query strings, or
 
 ### Public Bucket Visibility
 
-Creating a public bucket or changing a private bucket to public requires a modal confirmation. Public B2 buckets can make files accessible without authorization, so use public visibility only when object-level public access is intentional.
+Creating a public bucket or changing a private bucket to public requires a modal confirmation and typed bucket-name confirmation. Public B2 buckets can make current and future files accessible without authorization, so use public visibility only when object-level public access is intentional.
 
 ## Commands
 

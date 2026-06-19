@@ -25,8 +25,11 @@ import { B2PartialFailureError, formatB2UserMessage } from "../errors";
 import { logError } from "../logger";
 import {
   buildPublicBucketWarningMessage,
+  buildPublicBucketTypedConfirmationPrompt,
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
+  isPublicBucketNameConfirmationAccepted,
+  PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
   shouldConfirmPublicBucketVisibility,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
@@ -50,7 +53,22 @@ async function confirmPublicBucketVisibility(
     CONFIRM_PUBLIC_BUCKET_LABEL,
   );
 
-  return isPublicBucketConfirmationAccepted(answer);
+  if (!isPublicBucketConfirmationAccepted(answer)) {
+    return false;
+  }
+
+  const typedBucketName = await vscode.window.showInputBox({
+    title: "Confirm Public Bucket",
+    prompt: buildPublicBucketTypedConfirmationPrompt(bucketName),
+    placeHolder: PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
+    ignoreFocusOut: true,
+    validateInput: (value) =>
+      isPublicBucketNameConfirmationAccepted(bucketName, value)
+        ? undefined
+        : `Type "${bucketName}" to confirm public access`,
+  });
+
+  return isPublicBucketNameConfirmationAccepted(bucketName, typedBucketName);
 }
 
 /**
@@ -121,6 +139,136 @@ export async function openFileCommand(
   }
 }
 
+export async function createBucketCommand(services: CommandServices): Promise<void> {
+  const { treeProvider, getClient } = services;
+  const client = getClient();
+  if (!client) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+
+  const bucketName = await vscode.window.showInputBox({
+    title: "Create B2 Bucket",
+    prompt: "Enter a name for the new bucket",
+    placeHolder: "my-new-bucket",
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      if (!value) {
+        return "Bucket name is required";
+      }
+      if (value.length < 6) {
+        return "Bucket name must be at least 6 characters";
+      }
+      if (value.length > 50) {
+        return "Bucket name must be at most 50 characters";
+      }
+      if (!/^[a-zA-Z0-9-]+$/.test(value)) {
+        return "Bucket name can only contain letters, digits, and hyphens";
+      }
+      return undefined;
+    },
+  });
+  if (!bucketName) {
+    return;
+  }
+
+  const visibility = await vscode.window.showQuickPick(
+    [
+      {
+        label: "Private",
+        description: "Files require authorization to access",
+        value: "allPrivate" as const,
+      },
+      {
+        label: "Public",
+        description: "Files can be accessed without authorization",
+        value: "allPublic" as const,
+      },
+    ],
+    {
+      title: "Bucket Visibility",
+      placeHolder: "Select bucket visibility",
+      ignoreFocusOut: true,
+    },
+  );
+  if (!visibility) {
+    return;
+  }
+
+  if (
+    shouldConfirmPublicBucketVisibility(undefined, visibility.value) &&
+    !(await confirmPublicBucketVisibility("create", bucketName))
+  ) {
+    return;
+  }
+
+  try {
+    const bucket = await client.createBucket({
+      bucketName,
+      bucketType: visibility.value,
+    });
+    treeProvider.refresh();
+    vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
+  } catch (error) {
+    showCommandError("B2: Failed to create bucket", error);
+  }
+}
+
+export async function changeBucketVisibilityCommand(
+  services: CommandServices,
+  item?: BucketTreeItem,
+): Promise<void> {
+  const { treeProvider, getClient } = services;
+  if (!getClient()) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showErrorMessage("B2: Select a bucket first.");
+    return;
+  }
+
+  const currentType = item.bucketType;
+  const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
+  const newLabel = newType === "allPublic" ? "Public" : "Private";
+  const currentLabel = currentType === "allPublic" ? "Public" : "Private";
+
+  const confirm = await vscode.window.showQuickPick(
+    [
+      {
+        label: `Change to ${newLabel}`,
+        description: `Currently: ${currentLabel}`,
+        value: true,
+      },
+      { label: "Cancel", value: false },
+    ],
+    {
+      title: `Change Visibility: ${item.bucketName}`,
+      placeHolder: `Bucket is currently ${currentLabel}`,
+      ignoreFocusOut: true,
+    },
+  );
+
+  if (!confirm?.value) {
+    return;
+  }
+
+  if (
+    shouldConfirmPublicBucketVisibility(currentType, newType) &&
+    !(await confirmPublicBucketVisibility("change", item.bucketName))
+  ) {
+    return;
+  }
+
+  try {
+    await item.bucket.update({ bucketType: newType });
+    treeProvider.refresh();
+    vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
+  } catch (error) {
+    showCommandError("B2: Failed to update bucket", error);
+  }
+}
+
 /**
  * Register all B2 commands.
  */
@@ -186,133 +334,14 @@ export function registerCommands(services: CommandServices): void {
 
   // ── Create Bucket ─────────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.createBucket", async () => {
-      const client = getClient();
-      if (!client) {
-        vscode.window.showErrorMessage("B2: Not authenticated.");
-        return;
-      }
-
-      const bucketName = await vscode.window.showInputBox({
-        title: "Create B2 Bucket",
-        prompt: "Enter a name for the new bucket",
-        placeHolder: "my-new-bucket",
-        ignoreFocusOut: true,
-        validateInput: (value) => {
-          if (!value) {
-            return "Bucket name is required";
-          }
-          if (value.length < 6) {
-            return "Bucket name must be at least 6 characters";
-          }
-          if (value.length > 50) {
-            return "Bucket name must be at most 50 characters";
-          }
-          if (!/^[a-zA-Z0-9-]+$/.test(value)) {
-            return "Bucket name can only contain letters, digits, and hyphens";
-          }
-          return undefined;
-        },
-      });
-      if (!bucketName) {
-        return;
-      }
-
-      const visibility = await vscode.window.showQuickPick(
-        [
-          {
-            label: "Private",
-            description: "Files require authorization to access",
-            value: "allPrivate" as const,
-          },
-          {
-            label: "Public",
-            description: "Files can be accessed without authorization",
-            value: "allPublic" as const,
-          },
-        ],
-        {
-          title: "Bucket Visibility",
-          placeHolder: "Select bucket visibility",
-          ignoreFocusOut: true,
-        },
-      );
-      if (!visibility) {
-        return;
-      }
-
-      if (
-        shouldConfirmPublicBucketVisibility(undefined, visibility.value) &&
-        !(await confirmPublicBucketVisibility("create", bucketName))
-      ) {
-        return;
-      }
-
-      try {
-        const bucket = await client.createBucket({
-          bucketName,
-          bucketType: visibility.value,
-        });
-        treeProvider.refresh();
-        vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
-      } catch (error) {
-        showCommandError("B2: Failed to create bucket", error);
-      }
-    }),
+    vscode.commands.registerCommand("b2.createBucket", () => createBucketCommand(services)),
   );
 
   // ── Change Bucket Visibility ─────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.changeBucketVisibility", async (item?: BucketTreeItem) => {
-      if (!getClient()) {
-        vscode.window.showErrorMessage("B2: Not authenticated.");
-        return;
-      }
-      if (!item) {
-        vscode.window.showErrorMessage("B2: Select a bucket first.");
-        return;
-      }
-
-      const currentType = item.bucketType;
-      const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
-      const newLabel = newType === "allPublic" ? "Public" : "Private";
-      const currentLabel = currentType === "allPublic" ? "Public" : "Private";
-
-      const confirm = await vscode.window.showQuickPick(
-        [
-          {
-            label: `Change to ${newLabel}`,
-            description: `Currently: ${currentLabel}`,
-            value: true,
-          },
-          { label: "Cancel", value: false },
-        ],
-        {
-          title: `Change Visibility: ${item.bucketName}`,
-          placeHolder: `Bucket is currently ${currentLabel}`,
-          ignoreFocusOut: true,
-        },
-      );
-
-      if (!confirm?.value) {
-        return;
-      }
-
-      if (
-        shouldConfirmPublicBucketVisibility(currentType, newType) &&
-        !(await confirmPublicBucketVisibility("change", item.bucketName))
-      ) {
-        return;
-      }
-
-      try {
-        await item.bucket.update({ bucketType: newType });
-        treeProvider.refresh();
-        vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
-      } catch (error) {
-        showCommandError("B2: Failed to update bucket", error);
-      }
-    }),
+    vscode.commands.registerCommand("b2.changeBucketVisibility", (item?: BucketTreeItem) =>
+      changeBucketVisibilityCommand(services, item),
+    ),
   );
 
   // ── Create Folder ─────────────────────────────────────────────────────

@@ -6,9 +6,11 @@
 
 import * as assert from "assert";
 import {
+  buildPublicBucketTypedConfirmationPrompt,
   buildPublicBucketWarningMessage,
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
+  isPublicBucketNameConfirmationAccepted,
   shouldConfirmPublicBucketVisibility,
 } from "../../commands/publicBucketVisibility";
 
@@ -35,10 +37,30 @@ suite("Public bucket visibility warnings", () => {
     assert.strictEqual(isPublicBucketConfirmationAccepted(CONFIRM_PUBLIC_BUCKET_LABEL), true);
   });
 
+  test("requires the exact bucket name for typed confirmation", () => {
+    assert.strictEqual(isPublicBucketNameConfirmationAccepted("public-assets", undefined), false);
+    assert.strictEqual(isPublicBucketNameConfirmationAccepted("public-assets", ""), false);
+    assert.strictEqual(
+      isPublicBucketNameConfirmationAccepted("public-assets", "PUBLIC-ASSETS"),
+      false,
+    );
+    assert.strictEqual(
+      isPublicBucketNameConfirmationAccepted("public-assets", "public-assets"),
+      true,
+    );
+  });
+
   test("explains that public files may be accessible without authorization", () => {
     const message = buildPublicBucketWarningMessage("change", "public-assets");
 
     assert.ok(message.includes("public-assets"));
     assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("typed confirmation prompt repeats the bucket name and public exposure risk", () => {
+    const prompt = buildPublicBucketTypedConfirmationPrompt("public-assets");
+
+    assert.ok(prompt.includes('"public-assets"'));
+    assert.ok(prompt.includes("accessible without authorization"));
   });
 });

@@ -6,9 +6,17 @@
 
 import * as assert from "assert";
 import * as vscode from "vscode";
-import { B2Client, classifyError } from "@backblaze-labs/b2-sdk";
-import { buildCommandErrorMessage, openFileCommand } from "../../commands";
+import { B2Client, classifyError, type Bucket, type BucketType } from "@backblaze-labs/b2-sdk";
+import {
+  buildCommandErrorMessage,
+  changeBucketVisibilityCommand,
+  createBucketCommand,
+  openFileCommand,
+  type CommandServices,
+} from "../../commands";
+import { CONFIRM_PUBLIC_BUCKET_LABEL } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError } from "../../errors";
+import { BucketTreeItem } from "../../models/bucketTreeItem";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
 
@@ -42,6 +50,210 @@ function stubErrorMessages(messages: string[]): () => void {
   return () => {
     mutableWindow.showErrorMessage = originalShowErrorMessage;
   };
+}
+
+type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
+type CreateBucketResult = Awaited<ReturnType<B2Client["createBucket"]>>;
+type UpdateBucketOptions = Parameters<Bucket["update"]>[0];
+type UpdateBucketResult = Awaited<ReturnType<Bucket["update"]>>;
+
+interface WarningMessageCall {
+  readonly message: string;
+  readonly options: vscode.MessageOptions | undefined;
+  readonly items: readonly string[];
+}
+
+interface QuickPickCall {
+  readonly labels: readonly string[];
+  readonly options: vscode.QuickPickOptions | undefined;
+}
+
+interface CommandUiCalls {
+  readonly inputs: readonly vscode.InputBoxOptions[];
+  readonly quickPicks: readonly QuickPickCall[];
+  readonly warnings: readonly WarningMessageCall[];
+  readonly errors: readonly string[];
+  readonly infos: readonly string[];
+}
+
+interface CommandUiStubOptions {
+  readonly inputValues?: readonly (string | undefined)[];
+  readonly quickPickValues?: readonly unknown[];
+  readonly warningValues?: readonly (string | undefined)[];
+}
+
+const privateVisibilityPick = {
+  label: "Private",
+  description: "Files require authorization to access",
+  value: "allPrivate" as const,
+};
+
+const publicVisibilityPick = {
+  label: "Public",
+  description: "Files can be accessed without authorization",
+  value: "allPublic" as const,
+};
+
+const confirmVisibilityPick = {
+  label: "Change visibility",
+  value: true,
+};
+
+function makeCommandServices(client: B2Client | null): {
+  readonly services: CommandServices;
+  readonly refreshCount: () => number;
+} {
+  let refreshes = 0;
+  const services = {
+    treeProvider: {
+      refresh() {
+        refreshes++;
+      },
+    },
+    getClient: () => client,
+  } as unknown as CommandServices;
+
+  return {
+    services,
+    refreshCount: () => refreshes,
+  };
+}
+
+function makeCreateBucketClient(
+  implementation?: (options: CreateBucketOptions) => Promise<CreateBucketResult>,
+): { readonly client: B2Client; readonly calls: CreateBucketOptions[] } {
+  const calls: CreateBucketOptions[] = [];
+  const client = {
+    async createBucket(options: CreateBucketOptions): Promise<CreateBucketResult> {
+      calls.push(options);
+      if (implementation) {
+        return implementation(options);
+      }
+      const createdBucket: Partial<CreateBucketResult> = { name: options.bucketName };
+      return createdBucket as CreateBucketResult;
+    },
+  } as unknown as B2Client;
+
+  return { client, calls };
+}
+
+function makeBucketTreeItem(
+  bucketName: string,
+  bucketType: BucketType,
+  implementation?: (options: UpdateBucketOptions) => Promise<UpdateBucketResult>,
+): { readonly item: BucketTreeItem; readonly updates: UpdateBucketOptions[] } {
+  const updates: UpdateBucketOptions[] = [];
+  const bucket = {
+    id: "bucket-id",
+    name: bucketName,
+    info: { bucketType },
+    async update(options: UpdateBucketOptions): Promise<UpdateBucketResult> {
+      updates.push(options);
+      if (implementation) {
+        return implementation(options);
+      }
+      const updatedBucket: Partial<UpdateBucketResult> = {
+        bucketName,
+        bucketType: options.bucketType ?? bucketType,
+      };
+      return updatedBucket as UpdateBucketResult;
+    },
+  } as unknown as Bucket;
+
+  return {
+    item: new BucketTreeItem(bucket),
+    updates,
+  };
+}
+
+function labelForQuickPickItem(item: unknown): string {
+  if (typeof item === "string") {
+    return item;
+  }
+  if (typeof item === "object" && item !== null && "label" in item) {
+    const label = (item as { label?: unknown }).label;
+    return typeof label === "string" ? label : "";
+  }
+  return "";
+}
+
+async function withCommandUiStubs(
+  options: CommandUiStubOptions,
+  callback: () => Promise<void>,
+): Promise<CommandUiCalls> {
+  const mutableWindow = vscode.window as unknown as {
+    showInputBox: typeof vscode.window.showInputBox;
+    showQuickPick: typeof vscode.window.showQuickPick;
+    showWarningMessage: typeof vscode.window.showWarningMessage;
+    showErrorMessage: typeof vscode.window.showErrorMessage;
+    showInformationMessage: typeof vscode.window.showInformationMessage;
+  };
+  const originalShowInputBox = mutableWindow.showInputBox;
+  const originalShowQuickPick = mutableWindow.showQuickPick;
+  const originalShowWarningMessage = mutableWindow.showWarningMessage;
+  const originalShowErrorMessage = mutableWindow.showErrorMessage;
+  const originalShowInformationMessage = mutableWindow.showInformationMessage;
+  const inputValues = [...(options.inputValues ?? [])];
+  const quickPickValues = [...(options.quickPickValues ?? [])];
+  const warningValues = [...(options.warningValues ?? [])];
+  const inputs: vscode.InputBoxOptions[] = [];
+  const quickPicks: QuickPickCall[] = [];
+  const warnings: WarningMessageCall[] = [];
+  const errors: string[] = [];
+  const infos: string[] = [];
+
+  mutableWindow.showInputBox = ((inputOptions?: vscode.InputBoxOptions) => {
+    inputs.push(inputOptions ?? {});
+    return Promise.resolve(inputValues.shift());
+  }) as typeof vscode.window.showInputBox;
+
+  mutableWindow.showQuickPick = ((
+    items: readonly unknown[] | Thenable<readonly unknown[]>,
+    quickPickOptions?: vscode.QuickPickOptions,
+  ) => {
+    const itemArray = Array.isArray(items) ? items : [];
+    quickPicks.push({
+      labels: itemArray.map(labelForQuickPickItem),
+      options: quickPickOptions,
+    });
+    return Promise.resolve(quickPickValues.shift());
+  }) as typeof vscode.window.showQuickPick;
+
+  mutableWindow.showWarningMessage = ((
+    message: string,
+    optionsOrFirstItem?: vscode.MessageOptions | string,
+    ...restItems: string[]
+  ) => {
+    const hasOptions = typeof optionsOrFirstItem === "object" && optionsOrFirstItem !== null;
+    const messageOptions = hasOptions ? optionsOrFirstItem : undefined;
+    const items =
+      !hasOptions && optionsOrFirstItem !== undefined
+        ? [optionsOrFirstItem, ...restItems]
+        : restItems;
+    warnings.push({ message, options: messageOptions, items });
+    return Promise.resolve(warningValues.shift());
+  }) as typeof vscode.window.showWarningMessage;
+
+  mutableWindow.showErrorMessage = ((message: string) => {
+    errors.push(message);
+    return Promise.resolve(undefined);
+  }) as typeof vscode.window.showErrorMessage;
+
+  mutableWindow.showInformationMessage = ((message: string) => {
+    infos.push(message);
+    return Promise.resolve(undefined);
+  }) as typeof vscode.window.showInformationMessage;
+
+  try {
+    await callback();
+    return { inputs, quickPicks, warnings, errors, infos };
+  } finally {
+    mutableWindow.showInformationMessage = originalShowInformationMessage;
+    mutableWindow.showErrorMessage = originalShowErrorMessage;
+    mutableWindow.showWarningMessage = originalShowWarningMessage;
+    mutableWindow.showQuickPick = originalShowQuickPick;
+    mutableWindow.showInputBox = originalShowInputBox;
+  }
 }
 
 suite("B2 commands error handling", () => {
@@ -100,5 +312,147 @@ suite("B2 commands error handling", () => {
       restoreErrors();
       restoreProgress();
     }
+  });
+});
+
+suite("B2 public bucket command safety", () => {
+  test("creates a private bucket without a public access warning", async () => {
+    const { client, calls } = makeCreateBucketClient();
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["private-bucket"],
+        quickPickValues: [privateVisibilityPick],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.deepStrictEqual(calls, [{ bucketName: "private-bucket", bucketType: "allPrivate" }]);
+    assert.strictEqual(ui.warnings.length, 0);
+    assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("creates a public bucket only after modal and typed confirmation", async () => {
+    const { client, calls } = makeCreateBucketClient();
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket", "public-bucket"],
+        quickPickValues: [publicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.deepStrictEqual(calls, [{ bucketName: "public-bucket", bucketType: "allPublic" }]);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.warnings[0]?.options?.modal, true);
+    assert.deepStrictEqual(ui.warnings[0]?.items, [CONFIRM_PUBLIC_BUCKET_LABEL]);
+    assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
+    assert.strictEqual(ui.inputs.length, 2);
+    assert.match(ui.inputs[1]?.prompt ?? "", /Type "public-bucket"/);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("changes a private bucket to public only after explicit confirmation", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate");
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["photos-public"],
+        quickPickValues: [confirmVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, [{ bucketType: "allPublic" }]);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
+    assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("changes a public bucket to private without a public access warning", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-private", "allPublic");
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        quickPickValues: [confirmVisibilityPick],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate" }]);
+    assert.strictEqual(ui.warnings.length, 0);
+    assert.strictEqual(ui.inputs.length, 0);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("cancels public bucket creation when the warning is dismissed", async () => {
+    const { client, calls } = makeCreateBucketClient();
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket"],
+        quickPickValues: [publicVisibilityPick],
+        warningValues: [undefined],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+  });
+
+  test("shows an error when bucket creation fails", async () => {
+    const { client, calls } = makeCreateBucketClient(async () => {
+      throw new Error("duplicate bucket");
+    });
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["private-bucket"],
+        quickPickValues: [privateVisibilityPick],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
+    assert.match(ui.errors[0] ?? "", /Unexpected error/);
+  });
+
+  test("shows an error when visibility update fails", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
+      throw new Error("access denied");
+    });
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["photos-public"],
+        quickPickValues: [confirmVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
+    assert.match(ui.errors[0] ?? "", /Unexpected error/);
   });
 });
