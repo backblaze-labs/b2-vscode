@@ -66,5 +66,5 @@ document why that package needs scripts, and extend the guardrail tests.
 
 ## Accepted Dependency Advisories
 
-There are no accepted unfixed npm advisories as of 2026-06-19. The
-`acceptedAdvisories` list in `audit-policy.jsonc` is intentionally empty.
+The `acceptedAdvisories` list in `audit-policy.jsonc` stays empty unless a
+tracked, time-boxed exception is required.

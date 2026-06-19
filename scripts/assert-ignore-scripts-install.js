@@ -8,6 +8,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { npmCommand } = require("./npm-command");
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-ignore-scripts-"));
 const fixtureRoot = path.join(tempRoot, "postinstall-fixture");
@@ -70,8 +71,8 @@ try {
     )}\n`,
   );
 
-  run("npm", ["install", "--package-lock-only", "--ignore-scripts"]);
-  run("npm", ["ci", "--ignore-scripts"]);
+  run(npmCommand, ["install", "--package-lock-only", "--ignore-scripts"]);
+  run(npmCommand, ["ci", "--ignore-scripts"]);
 
   if (fs.existsSync(markerPath)) {
     throw new Error("postinstall fixture executed during npm ci --ignore-scripts.");

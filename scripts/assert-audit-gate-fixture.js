@@ -9,6 +9,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { collectAuditFindings, dateOnlyDaysFromNow } = require("./audit-policy");
+const { npmCommand } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-fixture-"));
@@ -80,7 +81,7 @@ function assertInvalidCliArgs(args, expectedMessage) {
 }
 
 function loadFixtureFindings() {
-  const result = run("npm", ["audit", "--json", "--audit-level=moderate"], {
+  const result = run(npmCommand, ["audit", "--json", "--audit-level=moderate"], {
     cwd: tempRoot,
   });
   if (result.error) {

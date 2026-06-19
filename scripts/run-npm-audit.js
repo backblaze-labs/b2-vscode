@@ -14,6 +14,7 @@ const {
   loadCurrentPolicy,
   validateAuditPolicy,
 } = require("./audit-policy");
+const { npmCommand } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
 
@@ -71,11 +72,15 @@ try {
   const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot, args.policy);
   validateAuditPolicy(auditPolicy, packageJson);
 
-  const result = spawnSync("npm", ["audit", "--json", `--audit-level=${auditPolicy.auditLevel}`], {
-    cwd: args.directory,
-    encoding: "utf8",
-    env: { ...process.env, npm_config_ignore_scripts: "true" },
-  });
+  const result = spawnSync(
+    npmCommand,
+    ["audit", "--json", `--audit-level=${auditPolicy.auditLevel}`],
+    {
+      cwd: args.directory,
+      encoding: "utf8",
+      env: { ...process.env, npm_config_ignore_scripts: "true" },
+    },
+  );
 
   if (result.error) {
     failInfrastructure(result.error.message);
