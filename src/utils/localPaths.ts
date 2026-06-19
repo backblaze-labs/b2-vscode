@@ -144,6 +144,18 @@ export function assertSafeWritePath(rootPath: string, candidatePath: string): vo
 }
 
 /**
+ * Verify that a file write target is safely contained and is not a directory.
+ */
+export function assertSafeFileWritePath(rootPath: string, candidatePath: string): void {
+  const resolvedCandidate = path.resolve(candidatePath);
+  assertSafeWritePath(rootPath, resolvedCandidate);
+
+  if (fs.existsSync(resolvedCandidate) && fs.lstatSync(resolvedCandidate).isDirectory()) {
+    throw new Error("Destination must be a file path, not a directory.");
+  }
+}
+
+/**
  * Build the temp-cache path for a downloaded B2 object.
  */
 export function buildTempFilePath(tempRoot: string, bucketName: string, fileName: string): string {
@@ -170,12 +182,12 @@ export function resolveDownloadSavePath(
 ): string {
   if (!localPath) {
     const defaultPath = buildDefaultDownloadFilePath(workspaceRoot, remotePath);
-    assertSafeWritePath(workspaceRoot, defaultPath);
+    assertSafeFileWritePath(workspaceRoot, defaultPath);
     return defaultPath;
   }
 
   assertRelativePathInput(localPath);
   const resolvedPath = resolveInsideRoot(workspaceRoot, localPath);
-  assertSafeWritePath(workspaceRoot, resolvedPath);
+  assertSafeFileWritePath(workspaceRoot, resolvedPath);
   return resolvedPath;
 }

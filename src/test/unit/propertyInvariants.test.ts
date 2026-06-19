@@ -11,6 +11,7 @@ import * as path from "node:path";
 import test, { after } from "node:test";
 import * as fc from "fast-check";
 import {
+  assertSafeFileWritePath,
   assertSafeWritePath,
   buildTempFilePath,
   resolveDownloadSavePath,
@@ -176,6 +177,16 @@ test("absolute download paths inside the workspace are rejected", () => {
     () => resolveDownloadSavePath(workspaceRoot, "safe.txt", insidePath),
     /relative to the workspace/,
   );
+});
+
+test("download destinations reject existing directories", () => {
+  const directoryPath = fs.mkdtempSync(path.join(workspaceRoot, "existing-dir-"));
+
+  assert.throws(
+    () => resolveDownloadSavePath(workspaceRoot, "safe.txt", directoryPath),
+    /file path/,
+  );
+  assert.throws(() => assertSafeFileWritePath(workspaceRoot, directoryPath), /file path/);
 });
 
 test(
