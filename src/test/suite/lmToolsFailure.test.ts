@@ -351,7 +351,7 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
-  test("download tool requires a workspace for absolute localPath", async function () {
+  test("download tool requires a workspace before choosing localPath", async function () {
     if (vscode.workspace.workspaceFolders?.length) {
       this.skip();
     }

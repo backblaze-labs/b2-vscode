@@ -207,14 +207,15 @@ test("download default paths stay inside the workspace for arbitrary B2 names", 
 test("download localPath inputs are either confined or rejected", async () => {
   await fc.assert(
     fc.asyncProperty(b2Name, b2Name, async (remotePath, localPath) => {
+      let resolvedPath: string;
       try {
-        assertInsideRoot(
-          workspaceRoot,
-          await resolveDownloadSavePath(workspaceRoot, remotePath, localPath),
-        );
+        resolvedPath = await resolveDownloadSavePath(workspaceRoot, remotePath, localPath);
       } catch (error) {
         assert.ok(error instanceof Error);
+        return;
       }
+
+      assertInsideRoot(workspaceRoot, resolvedPath);
     }),
     { numRuns: PROPERTY_RUNS },
   );
