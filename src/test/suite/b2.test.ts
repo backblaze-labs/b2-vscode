@@ -178,6 +178,9 @@ function stubWithProgress(
 suite("B2 utility helpers", () => {
   test("formats fractional byte values without invalid units", () => {
     assert.strictEqual(humanSize(0.5), "1 B");
+    assert.strictEqual(humanSize(-1), "0 B");
+    assert.strictEqual(humanSize(Number.NaN), "0 B");
+    assert.strictEqual(humanSize(Number.POSITIVE_INFINITY), "0 B");
     assert.doesNotMatch(humanSize(0.5), /undefined/);
   });
 
