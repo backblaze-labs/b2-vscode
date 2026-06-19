@@ -10,7 +10,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client, Bucket, BucketType, FileId } from "@backblaze-labs/b2-sdk";
+import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
@@ -48,6 +48,7 @@ import {
   type PublicPrivateBucketType,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
+import { renameFileVersion } from "./renameFile";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
@@ -209,28 +210,6 @@ async function withBucketMutationTimeout<T>(
     if (timer) {
       clearTimeout(timer);
     }
-  }
-}
-
-export async function renameFileVersion(
-  bucket: Pick<Bucket, "copyFile" | "deleteFileVersion">,
-  oldPath: string,
-  fileId: FileId,
-  newPath: string,
-): Promise<void> {
-  let copyCompleted = false;
-  try {
-    await bucket.copyFile({ sourceFileId: fileId, fileName: newPath });
-    copyCompleted = true;
-    await bucket.deleteFileVersion(oldPath, fileId);
-  } catch (error) {
-    if (copyCompleted) {
-      throw new B2PartialFailureError(
-        `Rename incomplete. Copied "${oldPath}" to "${newPath}", but failed to delete the original. Both B2 objects may exist. ${formatB2UserMessage(error)}`,
-        error,
-      );
-    }
-    throw error;
   }
 }
 

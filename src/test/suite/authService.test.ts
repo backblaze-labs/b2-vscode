@@ -8,11 +8,13 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as vscode from "vscode";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
 import { ENV_APP_KEY, ENV_KEY_ID, SECRET_APP_KEY, SECRET_KEY_ID } from "../../constants";
-import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
+import {
+  createMemorySecretStorage,
+  createNoopSecretStorage,
+} from "../../testSupport/noopSecretStorage";
 import {
   BUNDLED_CREDENTIAL_SMOKE_ENV,
   type BundledCredentialSmokeResolver,
@@ -42,26 +44,6 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
-}
-
-function createMemorySecretStorage(initial: Record<string, string>): vscode.SecretStorage {
-  const values = new Map(Object.entries(initial));
-  const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
-
-  return {
-    onDidChange: emitter.event,
-    async get(key: string) {
-      return values.get(key);
-    },
-    async store(key: string, value: string) {
-      values.set(key, value);
-      emitter.fire({ key });
-    },
-    async delete(key: string) {
-      values.delete(key);
-      emitter.fire({ key });
-    },
-  };
 }
 
 function loadBundledExtension(): BundledExtensionSmokeExports {

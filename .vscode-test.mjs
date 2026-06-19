@@ -1,5 +1,5 @@
 import { defineConfig } from "@vscode/test-cli";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { compiledTestFilesGlob, mochaOptions } from "./test-harness.config.mjs";
 const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
-const testProfilePrefix = "b2-vscode-test-profile-";
+const testProfilePrefix = "b2-vscode-test-";
 const staleProfileMaxAgeMs = 24 * 60 * 60 * 1000;
 
 for (const entry of readdirSync(tmpdir())) {
@@ -24,17 +24,9 @@ for (const entry of readdirSync(tmpdir())) {
   }
 }
 
-const testProfileRoot = mkdtempSync(join(tmpdir(), testProfilePrefix));
-const testUserDataDir = join(testProfileRoot, "user-data");
-const testExtensionsDir = join(testProfileRoot, "extensions");
-process.once("exit", () => {
-  try {
-    rmSync(testProfileRoot, { recursive: true, force: true });
-  } catch {
-    // Best-effort cleanup; VS Code can still hold profile files open.
-  }
-});
-
+const testRunRoot = mkdtempSync(join(tmpdir(), testProfilePrefix));
+const testUserDataDir = join(testRunRoot, "user-data");
+const testExtensionsDir = join(testRunRoot, "extensions");
 const launchArgs = [
   "--disable-extensions",
   "--disable-workspace-trust",
@@ -46,10 +38,23 @@ if (process.platform === "darwin") {
   launchArgs.push("--use-mock-keychain");
 }
 
+chmodSync(testRunRoot, 0o700);
 mkdirSync(join(testHome, ".vscode"), { recursive: true });
 mkdirSync(testXdgConfig, { recursive: true });
 mkdirSync(testUserDataDir, { recursive: true });
 mkdirSync(testExtensionsDir, { recursive: true });
+
+function cleanupTestRunRoot() {
+  rmSync(testRunRoot, { recursive: true, force: true });
+}
+
+process.once("exit", cleanupTestRunRoot);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    cleanupTestRunRoot();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
 
 export default defineConfig([
   {
