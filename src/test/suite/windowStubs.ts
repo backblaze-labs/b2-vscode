@@ -119,21 +119,19 @@ export async function withWindowUiStubs(
     return Promise.resolve(inputValues.shift());
   }) as typeof vscode.window.showInputBox;
 
-  mutableWindow.showQuickPick = ((
+  mutableWindow.showQuickPick = (async (
     items: readonly unknown[] | Thenable<readonly unknown[]>,
     quickPickOptions?: vscode.QuickPickOptions,
   ) => {
-    const itemArray = Array.isArray(items) ? items : [];
+    const itemArray = Array.isArray(items) ? items : await items;
     const selectedLabel = quickPickLabels.shift();
     quickPicks.push({
       labels: itemArray.map(labelForQuickPickItem),
       options: quickPickOptions,
     });
-    return Promise.resolve(
-      selectedLabel === undefined
-        ? undefined
-        : itemArray.find((item) => labelForQuickPickItem(item) === selectedLabel),
-    );
+    return selectedLabel === undefined
+      ? undefined
+      : itemArray.find((item) => labelForQuickPickItem(item) === selectedLabel);
   }) as typeof vscode.window.showQuickPick;
 
   mutableWindow.showWarningMessage = ((
