@@ -83,6 +83,15 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
   return expiresIn;
 }
 
+export function buildPresignedDownloadUrl(
+  downloadUrl: string,
+  bucketName: string,
+  filePath: string,
+  authorizationToken: string,
+): string {
+  return buildB2DownloadUrl(downloadUrl, bucketName, filePath, authorizationToken);
+}
+
 function signalFromCancellationToken(token: CancellationToken | undefined): {
   readonly signal: AbortSignal | undefined;
   dispose(): void;

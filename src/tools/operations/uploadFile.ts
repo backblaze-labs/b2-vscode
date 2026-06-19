@@ -4,9 +4,9 @@
  * @module tools/operations/uploadFile
  */
 
-import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import {
