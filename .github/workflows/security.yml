@@ -15,6 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  npm-audit:
+    name: npm dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit full dependency tree
+        run: npm run audit:ci
+
   github-actions:
     name: GitHub Actions security
     runs-on: ubuntu-latest
@@ -24,4 +43,3 @@ jobs:
           persist-credentials: false
 
       - uses: backblaze-labs/github-actions/actions/gha-security@7dedd1467663493ccb5b5ca6d3a2533d3604f7b0 # v0.1.0
-
