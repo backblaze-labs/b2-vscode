@@ -257,7 +257,7 @@ async function withCommandUiStubs(
     progress.push(progressOptions);
     const tokenSource = new vscode.CancellationTokenSource();
     try {
-      return task({ report() {} }, tokenSource.token);
+      return await task({ report() {} }, tokenSource.token);
     } finally {
       tokenSource.dispose();
     }
