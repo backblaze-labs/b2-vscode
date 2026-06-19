@@ -268,10 +268,6 @@ async function renameIntoPlace(sourcePath: string, destinationPath: string): Pro
       return;
     }
 
-    if (code !== "EXDEV") {
-      throw error;
-    }
-
     throw error;
   }
 }
