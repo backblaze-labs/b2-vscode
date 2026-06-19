@@ -40,6 +40,8 @@ Custom values must be HTTPS URLs without embedded credentials, query strings, or
 
 Creating a public bucket or changing a private bucket to public requires a modal confirmation and typed bucket-name confirmation. Public B2 buckets can make current and future files accessible without authorization, so use public visibility only when object-level public access is intentional.
 
+If a public bucket create or visibility-change request fails after it was sent and the final B2 state is uncertain, the extension refreshes the bucket tree and shows a modal warning that the bucket may already be public.
+
 ## Commands
 
 | Command                        | Description                               |

@@ -297,11 +297,11 @@ function isTransientServiceFailure(error: unknown): boolean {
 }
 
 /**
- * Whether a mutation's final state is uncertain because the client saw a
- * network failure or a transient B2 service failure.
+ * Whether a mutation's final state is uncertain because the client could not
+ * reliably observe the B2 response after the request was sent.
  */
 export function isB2MutationStateAmbiguous(error: unknown): boolean {
-  return isNetworkFailure(error) || isTransientServiceFailure(error);
+  return isNetworkFailure(error) || isTransientServiceFailure(error) || isMalformedResponse(error);
 }
 
 function retryAfterText(error: unknown): string {

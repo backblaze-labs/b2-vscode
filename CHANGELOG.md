@@ -34,6 +34,10 @@
   `presignUrl` tools warn that the action cannot be undone or exposes data, so an
   agent cannot run them without a clear prompt. Documented the prompt-injection
   caution for agent mode in the README.
+- Creating public buckets and changing private buckets to public now require a
+  modal warning plus exact bucket-name confirmation. Ambiguous failures after a
+  public visibility request refresh the bucket tree and warn that the bucket may
+  already be public.
 
 ## [0.0.1] — 2026-03-25
 

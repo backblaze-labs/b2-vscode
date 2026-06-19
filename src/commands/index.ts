@@ -1,6 +1,11 @@
 /**
  * Command registrations for the B2 extension.
  *
+ * Most command handlers stay inline in registerCommands. Safety-critical flows
+ * that need command-path tests can be extracted behind narrow service
+ * interfaces; public bucket visibility changes use that pattern because they
+ * can expose bucket contents.
+ *
  * @module commands
  */
 
@@ -156,11 +161,10 @@ async function warnUnknownPublicBucketState(
   services.treeProvider.refresh();
   await vscode.window.showWarningMessage(
     buildPublicBucketUnknownStateWarningMessage(action, bucketName),
+    { modal: true },
   );
 }
 
-// Exported so the public-exposure flows can be tested at command-path level;
-// most commands remain inline in registerCommands until they need similar coverage.
 export async function createBucketCommand(services: BucketCommandServices): Promise<void> {
   const { treeProvider, getClient } = services;
   const client = getClient();

@@ -21,7 +21,7 @@ import {
   openFileCommand,
 } from "../../commands";
 import { CONFIRM_PUBLIC_BUCKET_LABEL } from "../../commands/publicBucketVisibility";
-import { B2PartialFailureError } from "../../errors";
+import { B2PartialFailureError, isB2MutationStateAmbiguous } from "../../errors";
 import { BucketTreeItem } from "../../models/bucketTreeItem";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
@@ -85,31 +85,14 @@ interface CommandUiCalls {
 
 interface CommandUiStubOptions {
   readonly inputValues?: readonly (string | undefined)[];
-  readonly quickPickValues?: readonly unknown[];
+  readonly quickPickLabels?: readonly (string | undefined)[];
   readonly warningValues?: readonly (string | undefined)[];
 }
 
-const privateVisibilityPick = {
-  label: "Private",
-  description: "Files require authorization to access",
-  value: "allPrivate" as const,
-};
-
-const publicVisibilityPick = {
-  label: "Public",
-  description: "Files can be accessed without authorization",
-  value: "allPublic" as const,
-};
-
-const confirmPublicVisibilityPick = {
-  label: "Change to Public",
-  value: true,
-};
-
-const confirmPrivateVisibilityPick = {
-  label: "Change to Private",
-  value: true,
-};
+const PRIVATE_VISIBILITY_LABEL = "Private";
+const PUBLIC_VISIBILITY_LABEL = "Public";
+const CONFIRM_PUBLIC_VISIBILITY_LABEL = "Change to Public";
+const CONFIRM_PRIVATE_VISIBILITY_LABEL = "Change to Private";
 
 function makeCommandServices(client: B2Client | null): {
   readonly services: BucketCommandServices;
@@ -208,7 +191,7 @@ async function withCommandUiStubs(
   const originalShowInformationMessage = mutableWindow.showInformationMessage;
   const originalWithProgress = mutableWindow.withProgress;
   const inputValues = [...(options.inputValues ?? [])];
-  const quickPickValues = [...(options.quickPickValues ?? [])];
+  const quickPickLabels = [...(options.quickPickLabels ?? [])];
   const warningValues = [...(options.warningValues ?? [])];
   const inputs: vscode.InputBoxOptions[] = [];
   const quickPicks: QuickPickCall[] = [];
@@ -227,11 +210,16 @@ async function withCommandUiStubs(
     quickPickOptions?: vscode.QuickPickOptions,
   ) => {
     const itemArray = Array.isArray(items) ? items : [];
+    const selectedLabel = quickPickLabels.shift();
     quickPicks.push({
       labels: itemArray.map(labelForQuickPickItem),
       options: quickPickOptions,
     });
-    return Promise.resolve(quickPickValues.shift());
+    return Promise.resolve(
+      selectedLabel === undefined
+        ? undefined
+        : itemArray.find((item) => labelForQuickPickItem(item) === selectedLabel),
+    );
   }) as typeof vscode.window.showQuickPick;
 
   mutableWindow.showWarningMessage = ((
@@ -345,6 +333,20 @@ suite("B2 commands error handling", () => {
       restoreProgress();
     }
   });
+
+  test("treats malformed mutation responses as ambiguous", () => {
+    assert.strictEqual(
+      isB2MutationStateAmbiguous(classifyError({ status: 400, code: "bad_json", message: "" })),
+      true,
+    );
+    assert.strictEqual(isB2MutationStateAmbiguous(new SyntaxError("Unexpected end of JSON")), true);
+    assert.strictEqual(
+      isB2MutationStateAmbiguous(
+        classifyError({ status: 403, code: "access_denied", message: "denied" }),
+      ),
+      false,
+    );
+  });
 });
 
 suite("B2 public bucket command safety", () => {
@@ -355,7 +357,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["private-bucket"],
-        quickPickValues: [privateVisibilityPick],
+        quickPickLabels: [PRIVATE_VISIBILITY_LABEL],
       },
       () => createBucketCommand(commandServices.services),
     );
@@ -376,7 +378,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["public-bucket", "public-bucket"],
-        quickPickValues: [publicVisibilityPick],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => createBucketCommand(commandServices.services),
@@ -401,7 +403,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["public-bucket", "wrong-name"],
-        quickPickValues: [publicVisibilityPick],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => createBucketCommand(commandServices.services),
@@ -421,7 +423,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["photos-public"],
-        quickPickValues: [confirmPublicVisibilityPick],
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
@@ -444,7 +446,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: [undefined],
-        quickPickValues: [confirmPublicVisibilityPick],
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
@@ -463,7 +465,7 @@ suite("B2 public bucket command safety", () => {
 
     const ui = await withCommandUiStubs(
       {
-        quickPickValues: [confirmPrivateVisibilityPick],
+        quickPickLabels: [CONFIRM_PRIVATE_VISIBILITY_LABEL],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
@@ -483,7 +485,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["public-bucket"],
-        quickPickValues: [publicVisibilityPick],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
         warningValues: [undefined],
       },
       () => createBucketCommand(commandServices.services),
@@ -505,7 +507,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["private-bucket"],
-        quickPickValues: [privateVisibilityPick],
+        quickPickLabels: [PRIVATE_VISIBILITY_LABEL],
       },
       () => createBucketCommand(commandServices.services),
     );
@@ -527,7 +529,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["public-bucket", "public-bucket"],
-        quickPickValues: [publicVisibilityPick],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
       },
       () => createBucketCommand(commandServices.services),
@@ -537,8 +539,33 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
     assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(ui.warnings[1]?.options?.modal, true);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
+  });
+
+  test("refreshes and warns when public bucket creation gets malformed response", async () => {
+    const { client, calls } = makeCreateBucketClient(async () => {
+      throw classifyError({ status: 400, code: "bad_json", message: "malformed body" });
+    });
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket", "public-bucket"],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 2);
+    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(ui.warnings[1]?.options?.modal, true);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /could not parse/);
   });
 
   test("does not show unknown-state warning for definitive public create failures", async () => {
@@ -550,7 +577,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["public-bucket", "public-bucket"],
-        quickPickValues: [publicVisibilityPick],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => createBucketCommand(commandServices.services),
@@ -572,7 +599,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["photos-public"],
-        quickPickValues: [confirmPublicVisibilityPick],
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
@@ -582,9 +609,34 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
     assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(ui.warnings[1]?.options?.modal, true);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
     assert.match(ui.errors[0] ?? "", /Network connection to B2 failed/);
+  });
+
+  test("refreshes and warns when public visibility update gets malformed response", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
+      throw new SyntaxError("Unexpected end of JSON input");
+    });
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["photos-public"],
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 2);
+    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(ui.warnings[1]?.options?.modal, true);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /could not parse/);
   });
 
   test("does not show unknown-state warning for definitive visibility update failures", async () => {
@@ -596,7 +648,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["photos-public"],
-        quickPickValues: [confirmPublicVisibilityPick],
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
