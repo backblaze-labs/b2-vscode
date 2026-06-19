@@ -6,6 +6,7 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
+import { createRequire } from "module";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -29,6 +30,7 @@ import {
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";
+const nodeRequire = createRequire(__filename);
 
 interface UploadedToolFixture extends SimulatorBucketFixture {
   readonly extras: ToolExtras;
@@ -253,6 +255,54 @@ suite("B2 LM tool operations with simulator", () => {
       assert.strictEqual(downloaded.size, Buffer.byteLength(CONTENT));
       assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile closes the temp file before replacing the destination", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { extras } = await createUploadedToolFixture();
+    const downloadPath = path.join(workspaceRoot, "downloads", "source file.txt");
+    const closedTempPaths = new Set<string>();
+    const mutableFs = nodeRequire("fs") as typeof fs;
+    const originalCreateWriteStream = mutableFs.createWriteStream;
+    const originalRename = mutableFs.promises.rename;
+    let renameChecked = false;
+
+    mutableFs.createWriteStream = ((filePath, options) => {
+      const output = originalCreateWriteStream(filePath, options);
+      const filePathString = String(filePath);
+      if (filePathString.includes(".b2-download-")) {
+        output.once("close", () => closedTempPaths.add(filePathString));
+      }
+      return output;
+    }) as typeof fs.createWriteStream;
+
+    mutableFs.promises.rename = (async (oldPath, newPath) => {
+      const oldPathString = String(oldPath);
+      if (oldPathString.includes(".b2-download-")) {
+        renameChecked = true;
+        assert.strictEqual(closedTempPaths.has(oldPathString), true);
+      }
+      return originalRename(oldPath, newPath);
+    }) as typeof fs.promises.rename;
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(renameChecked, true);
+      assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
+    } finally {
+      mutableFs.createWriteStream = originalCreateWriteStream;
+      mutableFs.promises.rename = originalRename;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
