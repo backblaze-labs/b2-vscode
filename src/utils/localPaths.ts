@@ -11,7 +11,7 @@ import { Buffer } from "buffer";
 import { toWellFormedString } from "./strings";
 
 const ENCODED_SEGMENT_PREFIX = "__b2_";
-const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F<>:"|?*\\/]/;
+const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F<>:"|?*\\/]/g;
 const UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS = /[. ]+$/;
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
