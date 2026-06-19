@@ -17,8 +17,16 @@ function run(command, args, options = {}) {
     ...options,
   });
 
+  if (result.error) {
+    throw new Error(`${command} ${args.join(" ")} failed to start: ${result.error.message}`);
+  }
+
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
+    const stdout = result.stdout || "";
+    const stderr = result.stderr || "";
+    throw new Error(
+      `${command} ${args.join(" ")} failed with exit ${result.status}:\n${stdout}\n${stderr}`,
+    );
   }
 }
 

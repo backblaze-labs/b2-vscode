@@ -37,6 +37,13 @@ function hasTokens(block, tokens) {
   return tokens.every((token) => normalized.includes(token));
 }
 
+function assertIgnoreScriptsEnv(label, step) {
+  assert(
+    /npm_config_ignore_scripts\s*:\s*["']?true["']?/.test(step),
+    `${label} must set npm_config_ignore_scripts: "true".`,
+  );
+}
+
 function assertNoPlainNpmCi(workflow, workflowName) {
   const offenders = workflow
     .split("\n")
@@ -84,6 +91,7 @@ for (const [label, step] of [
   ["test audit step", testAuditStep],
   ["release audit step", releaseAuditStep],
 ]) {
+  assertIgnoreScriptsEnv(label, step);
   assert(
     hasTokens(step, [
       "bash scripts/retry.sh",
