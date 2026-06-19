@@ -17,14 +17,7 @@ function sanitizeLocalPathSegment(segment: string): string {
     .replace(/[\u0000-\u001F<>:"|?*\\/]/g, "_")
     .replace(/[. ]+$/g, (trailing) => "_".repeat(trailing.length));
 
-  let safeSegment = sanitized;
-  if (safeSegment === ".") {
-    safeSegment = "_";
-  } else if (safeSegment === "..") {
-    safeSegment = "__";
-  } else if (!safeSegment) {
-    safeSegment = FALLBACK_FILE_NAME;
-  }
+  const safeSegment = sanitized || FALLBACK_FILE_NAME;
 
   return WINDOWS_RESERVED_NAME.test(safeSegment) ? `_${safeSegment}` : safeSegment;
 }
