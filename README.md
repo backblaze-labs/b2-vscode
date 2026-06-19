@@ -109,7 +109,7 @@ provenance, and rollback are documented in
 [`docs/release.md`](docs/release.md).
 
 Expected test output includes the discovery guard and a nonzero Mocha summary, for example
-`Discovered N compiled test file(s) for N source test file(s).` followed by a nonzero
+`Discovered N compiled test file(s) for M source test file(s).` followed by a nonzero
 `passing` count. If the compiled test files are missing, `npm test` exits nonzero instead of
 reporting `0 passing`.
 
