@@ -13,6 +13,8 @@
   Node 22, matching the SDK's runtime requirement.
 - Download and temp-open paths now preserve natural B2 object basenames while
   sanitizing traversal and platform-unsafe path segments before writing locally.
+- Copilot downloads require an open workspace, and explicit absolute download
+  destinations must resolve inside that workspace before writing.
 
 ### Fixed
 
@@ -57,6 +59,8 @@
 - LM `downloadFile` writes only to workspace-relative paths and refuses to
   overwrite existing workspace files. LM `uploadFile` reads only
   workspace-relative files.
+- Temp-open downloads now use a private per-process cache directory with
+  owner-only file permissions.
 
 ## [0.0.1] — 2026-03-25
 

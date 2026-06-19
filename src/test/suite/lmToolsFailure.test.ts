@@ -351,6 +351,35 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool requires a workspace for absolute localPath", async function () {
+    if (vscode.workspace.workspaceFolders?.length) {
+      this.skip();
+    }
+
+    const client = {
+      async getBucket() {
+        return {
+          async download() {
+            assert.fail("Expected workspace validation before download");
+          },
+        };
+      },
+    } as unknown as B2Client;
+
+    await assert.rejects(
+      () =>
+        downloadFileOperation.execute(
+          {
+            bucket: "b",
+            path: "a.txt",
+            localPath: path.join(os.tmpdir(), "a.txt"),
+          },
+          { getClient: () => client },
+        ),
+      /No workspace folder open/i,
+    );
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(

@@ -18,12 +18,7 @@ export function encodeUrlComponent(value: string): string {
 }
 
 export function encodeB2FileNameForUrl(fileName: string): string {
-  const segments = fileName.split("/");
-  if (segments.some((segment) => segment.length === 0)) {
-    throw new Error("B2 file names must not contain empty path segments.");
-  }
-
-  return segments.map(encodeUrlComponent).join("/");
+  return fileName.split("/").map(encodeUrlComponent).join("/");
 }
 
 export function buildB2DownloadUrl(

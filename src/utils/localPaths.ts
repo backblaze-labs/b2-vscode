@@ -37,12 +37,8 @@ function sanitizeLocalPathSegment(segment: string): string {
   return sanitized;
 }
 
-function splitB2Path(fileName: string): string[] {
-  return fileName.split("/");
-}
-
 function safeB2FileSegments(fileName: string): string[] {
-  return splitB2Path(fileName).map(sanitizeLocalPathSegment);
+  return fileName.split("/").map(sanitizeLocalPathSegment);
 }
 
 function assertNoNulPath(value: string): void {
@@ -87,15 +83,44 @@ function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
 }
 
 function assertLexicallyInsideRoot(rootPath: string, candidatePath: string): void {
-  if (!isPathInsideRoot(path.resolve(rootPath), path.resolve(candidatePath))) {
-    throw new Error("Resolved path escapes the destination directory.");
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedCandidate = path.resolve(candidatePath);
+  if (!isPathInsideRoot(resolvedRoot, resolvedCandidate)) {
+    throw pathSafetyError(
+      "Resolved path escapes the destination directory.",
+      resolvedRoot,
+      resolvedCandidate,
+      "lexical_escape",
+    );
   }
 }
 
-function nearestExistingPath(candidatePath: string): string {
+function pathSafetyError(
+  message: string,
+  rootPath: string,
+  candidatePath: string,
+  reason: string,
+): Error {
+  const error = new Error(
+    `${message} (reason=${reason}; root=${JSON.stringify(path.resolve(rootPath))}; candidate=${JSON.stringify(path.resolve(candidatePath))})`,
+  ) as Error & { code?: string };
+  error.code = `B2_PATH_${reason.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+  return error;
+}
+
+async function pathExists(candidatePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(candidatePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function nearestExistingPath(candidatePath: string): Promise<string> {
   let currentPath = candidatePath;
   for (;;) {
-    if (fs.existsSync(currentPath)) {
+    if (await pathExists(currentPath)) {
       return currentPath;
     }
 
@@ -119,7 +144,7 @@ function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
  * Verify that a path to be written cannot escape `rootPath`, including through
  * existing symlinks in the path prefix. Call this immediately before writes.
  */
-export function assertSafeWritePath(rootPath: string, candidatePath: string): void {
+export async function assertSafeWritePath(rootPath: string, candidatePath: string): Promise<void> {
   assertNoNulPath(rootPath);
   assertNoNulPath(candidatePath);
 
@@ -127,18 +152,28 @@ export function assertSafeWritePath(rootPath: string, candidatePath: string): vo
   const resolvedCandidate = path.resolve(candidatePath);
   assertLexicallyInsideRoot(resolvedRoot, resolvedCandidate);
 
-  const realRoot = fs.realpathSync.native(resolvedRoot);
-  const existingPath = nearestExistingPath(resolvedCandidate);
-  const realExistingPath = fs.realpathSync.native(existingPath);
+  const realRoot = await fs.promises.realpath(resolvedRoot);
+  const existingPath = await nearestExistingPath(resolvedCandidate);
+  const realExistingPath = await fs.promises.realpath(existingPath);
 
   if (!isPathInsideRoot(realRoot, realExistingPath)) {
-    throw new Error("Resolved path escapes the destination directory through a symlink.");
+    throw pathSafetyError(
+      "Resolved path escapes the destination directory through a symlink.",
+      realRoot,
+      realExistingPath,
+      "symlink_escape",
+    );
   }
 
-  if (fs.existsSync(resolvedCandidate)) {
-    const candidateStats = fs.lstatSync(resolvedCandidate);
+  if (await pathExists(resolvedCandidate)) {
+    const candidateStats = await fs.promises.lstat(resolvedCandidate);
     if (candidateStats.isSymbolicLink()) {
-      throw new Error("Destination path must not be a symlink.");
+      throw pathSafetyError(
+        "Destination path must not be a symlink.",
+        resolvedRoot,
+        resolvedCandidate,
+        "final_symlink",
+      );
     }
   }
 }
@@ -146,12 +181,61 @@ export function assertSafeWritePath(rootPath: string, candidatePath: string): vo
 /**
  * Verify that a file write target is safely contained and is not a directory.
  */
-export function assertSafeFileWritePath(rootPath: string, candidatePath: string): void {
+export async function assertSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+): Promise<void> {
   const resolvedCandidate = path.resolve(candidatePath);
-  assertSafeWritePath(rootPath, resolvedCandidate);
+  await assertSafeWritePath(rootPath, resolvedCandidate);
 
-  if (fs.existsSync(resolvedCandidate) && fs.lstatSync(resolvedCandidate).isDirectory()) {
-    throw new Error("Destination must be a file path, not a directory.");
+  if (await pathExists(resolvedCandidate)) {
+    const candidateStats = await fs.promises.lstat(resolvedCandidate);
+    if (candidateStats.isDirectory()) {
+      throw pathSafetyError(
+        "Destination must be a file path, not a directory.",
+        rootPath,
+        resolvedCandidate,
+        "directory_target",
+      );
+    }
+  }
+}
+
+/**
+ * Create the parent directory for a safe file write, then re-check containment
+ * after mkdir so a concurrently-created symlink cannot redirect the write.
+ */
+export async function prepareSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+): Promise<void> {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const parentPath = path.dirname(resolvedCandidate);
+
+  await assertSafeWritePath(rootPath, parentPath);
+  await fs.promises.mkdir(parentPath, { recursive: true });
+  await assertSafeWritePath(rootPath, parentPath);
+  await assertSafeFileWritePath(rootPath, resolvedCandidate);
+}
+
+/**
+ * Write a file after opening the final path with symlink-following disabled.
+ */
+export async function writeFileNoFollow(
+  filePath: string,
+  data: string | Uint8Array,
+): Promise<void> {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fileHandle = await fs.promises.open(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollowFlag,
+    0o600,
+  );
+
+  try {
+    await fileHandle.writeFile(data);
+  } finally {
+    await fileHandle.close();
   }
 }
 
@@ -175,19 +259,19 @@ function buildDefaultDownloadFilePath(workspaceRoot: string, fileName: string): 
  * Resolve a tool download destination. User-provided paths must be
  * workspace-relative and are constrained to the workspace root.
  */
-export function resolveDownloadSavePath(
+export async function resolveDownloadSavePath(
   workspaceRoot: string,
   remotePath: string,
   localPath?: string,
-): string {
+): Promise<string> {
   if (!localPath) {
     const defaultPath = buildDefaultDownloadFilePath(workspaceRoot, remotePath);
-    assertSafeFileWritePath(workspaceRoot, defaultPath);
+    await assertSafeFileWritePath(workspaceRoot, defaultPath);
     return defaultPath;
   }
 
   assertRelativePathInput(localPath);
   const resolvedPath = resolveInsideRoot(workspaceRoot, localPath);
-  assertSafeFileWritePath(workspaceRoot, resolvedPath);
+  await assertSafeFileWritePath(workspaceRoot, resolvedPath);
   return resolvedPath;
 }

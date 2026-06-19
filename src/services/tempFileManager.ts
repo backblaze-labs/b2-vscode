@@ -15,16 +15,15 @@ import { TEMP_DIR_NAME } from "../constants";
 import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
 import { log } from "../logger";
 import {
-  ensureContainedDirectoryPath,
   ensureRealDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
 } from "./pathSafety";
 import {
-  assertSafeFileWritePath,
-  assertSafeWritePath,
   buildTempFilePath,
+  prepareSafeFileWritePath,
 } from "../utils/localPaths";
+import { createPrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
@@ -163,7 +162,7 @@ export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
 
-  constructor(tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME)) {
+  constructor(tempRoot = createPrivateTempRoot(TEMP_DIR_NAME)) {
     this.tempRoot = path.resolve(tempRoot);
     this.ensureManagedTempRoot();
     this.ensurePrivateTempRoot();
@@ -184,12 +183,6 @@ export class TempFileManager implements vscode.Disposable {
     } catch {
       // Best effort: existing directories may not allow chmod on every platform.
     }
-  }
-
-  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
-    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
-      mode: 0o700,
-    });
   }
 
   dispose(): void {
@@ -214,11 +207,7 @@ export class TempFileManager implements vscode.Disposable {
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
-    const dir = path.dirname(localPath);
-    assertSafeWritePath(this.tempRoot, dir);
-    await this.ensureCacheDirectoryPath(dir);
-    assertSafeWritePath(this.tempRoot, dir);
-    assertSafeFileWritePath(this.tempRoot, localPath);
+    await prepareSafeFileWritePath(this.tempRoot, localPath);
 
     await downloadStreamToFile(stream, localPath, options);
 

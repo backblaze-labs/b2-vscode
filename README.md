@@ -97,7 +97,7 @@ npm run check
 # Run property/unit tests and VS Code extension tests
 npm test
 
-# Run only Node unit/property tests after compile-tests
+# Compile and run only Node unit/property tests
 npm run test:unit
 
 # Fix formatting and lint issues

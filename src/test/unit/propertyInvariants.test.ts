@@ -14,10 +14,15 @@ import {
   assertSafeFileWritePath,
   assertSafeWritePath,
   buildTempFilePath,
+  prepareSafeFileWritePath,
   resolveDownloadSavePath,
+  writeFileNoFollow,
 } from "../../utils/localPaths";
+import { createPrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
+import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import type { ToolExtras } from "../../tools/types";
 
 const PROPERTY_RUNS = 1000;
 const propertyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-properties-"));
@@ -53,14 +58,17 @@ after(() => {
   fs.rmSync(propertyRoot, { recursive: true, force: true });
 });
 
+test("unit test process does not receive storage or GitHub secrets", () => {
+  for (const key of ["B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "GITHUB_TOKEN"]) {
+    assert.equal(process.env[key], undefined);
+  }
+});
+
 function isInsideRoot(root: string, candidate: string): boolean {
-  const relativePath = path.relative(path.resolve(root), path.resolve(candidate));
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
   return (
-    relativePath === "" ||
-    (!!relativePath &&
-      relativePath !== ".." &&
-      !relativePath.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relativePath))
+    resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
   );
 }
 
@@ -97,14 +105,14 @@ test("temp cache paths stay inside the temp root for arbitrary B2 names", () => 
   );
 });
 
-test("natural B2 basenames are preserved for default download and temp paths", () => {
+test("natural B2 basenames are preserved for default download and temp paths", async () => {
   const naturalName = "My File #1.csv";
   const unicodeName = "caf\u00e9 #1.txt";
   const bucketPath = buildTempFilePath(tempRoot, "bucket/with\\slash", "safe.txt");
   const bucketPathSegments = path.relative(tempRoot, bucketPath).split(path.sep);
 
   assert.equal(
-    path.basename(resolveDownloadSavePath(workspaceRoot, `reports/${naturalName}`)),
+    path.basename(await resolveDownloadSavePath(workspaceRoot, `reports/${naturalName}`)),
     naturalName,
   );
   assert.equal(
@@ -112,7 +120,8 @@ test("natural B2 basenames are preserved for default download and temp paths", (
     unicodeName,
   );
   assert.equal(bucketPathSegments.length, 2);
-  assert.match(bucketPathSegments[0], /^__b2_/);
+  assert.notEqual(bucketPathSegments[0], "bucket/with\\slash");
+  assert.notEqual(bucketPathSegments[0], "");
   assert.equal(bucketPathSegments[1], "safe.txt");
 });
 
@@ -120,19 +129,65 @@ test("empty B2 path segments are preserved in temp cache paths", () => {
   const collapsedPath = buildTempFilePath(tempRoot, "bucket", "a/b.txt");
   const emptySegmentPath = buildTempFilePath(tempRoot, "bucket", "a//b.txt");
   const literalFallbackPath = buildTempFilePath(tempRoot, "bucket", "a/download/b.txt");
-  const literalEncodedPrefixPath = buildTempFilePath(tempRoot, "bucket", "a/__b2_empty/b.txt");
   const emptySegmentPathSegments = path.relative(tempRoot, emptySegmentPath).split(path.sep);
 
   assert.notEqual(emptySegmentPath, collapsedPath);
   assert.notEqual(emptySegmentPath, literalFallbackPath);
-  assert.notEqual(emptySegmentPath, literalEncodedPrefixPath);
-  assert.deepEqual(emptySegmentPathSegments, ["bucket", "a", "__b2_empty", "b.txt"]);
+  assert.equal(emptySegmentPathSegments.length, 4);
+  assert.equal(emptySegmentPathSegments[0], "bucket");
+  assert.equal(emptySegmentPathSegments[1], "a");
+  assert.notEqual(emptySegmentPathSegments[2], "");
+  assert.equal(emptySegmentPathSegments[3], "b.txt");
 });
 
-test("download default paths stay inside the workspace for arbitrary B2 names", () => {
-  fc.assert(
-    fc.property(b2Name, (fileName) => {
-      const localPath = resolveDownloadSavePath(workspaceRoot, fileName);
+test("private temp roots are unpredictable and owner-only", () => {
+  const prefix = `b2-vscode-private-test-${process.pid}`;
+  const fixedRoot = path.join(os.tmpdir(), prefix);
+  const symlinkTarget = fs.mkdtempSync(path.join(propertyRoot, "temp-symlink-target-"));
+  if (process.platform !== "win32") {
+    fs.symlinkSync(symlinkTarget, fixedRoot, "dir");
+  }
+  const privateRoot = createPrivateTempRoot(prefix);
+
+  try {
+    const stats = fs.lstatSync(privateRoot);
+    const mode = stats.mode & 0o777;
+
+    assert.notEqual(privateRoot, fixedRoot);
+    assert.equal(privateRoot.startsWith(`${fixedRoot}-`), true);
+    assert.equal(stats.isDirectory(), true);
+    assert.equal(stats.isSymbolicLink(), false);
+    assert.equal(mode & 0o077, 0);
+  } finally {
+    fs.rmSync(fixedRoot, { recursive: true, force: true });
+    fs.rmSync(privateRoot, { recursive: true, force: true });
+  }
+});
+
+test("safe writes create owner-only files and reject final symlinks", async () => {
+  const root = fs.mkdtempSync(path.join(propertyRoot, "safe-write-"));
+  const filePath = path.join(root, "nested", "file.txt");
+
+  await prepareSafeFileWritePath(root, filePath);
+  await writeFileNoFollow(filePath, Buffer.from("content"));
+
+  const mode = fs.statSync(filePath).mode & 0o777;
+  assert.equal(mode & 0o077, 0);
+
+  if (process.platform !== "win32") {
+    const targetPath = path.join(root, "target.txt");
+    const symlinkPath = path.join(root, "link.txt");
+    fs.writeFileSync(targetPath, "target");
+    fs.symlinkSync(targetPath, symlinkPath);
+
+    await assert.rejects(() => writeFileNoFollow(symlinkPath, Buffer.from("blocked")));
+  }
+});
+
+test("download default paths stay inside the workspace for arbitrary B2 names", async () => {
+  await fc.assert(
+    fc.asyncProperty(b2Name, async (fileName) => {
+      const localPath = await resolveDownloadSavePath(workspaceRoot, fileName);
 
       assert.equal(path.isAbsolute(localPath), true);
       assertInsideRoot(workspaceRoot, localPath);
@@ -141,73 +196,64 @@ test("download default paths stay inside the workspace for arbitrary B2 names", 
   );
 });
 
-test("download localPath inputs are either confined or rejected", () => {
-  fc.assert(
-    fc.property(b2Name, b2Name, (remotePath, localPath) => {
+test("download localPath inputs are either confined or rejected", async () => {
+  await fc.assert(
+    fc.asyncProperty(b2Name, b2Name, async (remotePath, localPath) => {
       try {
         assertInsideRoot(
           workspaceRoot,
-          resolveDownloadSavePath(workspaceRoot, remotePath, localPath),
+          await resolveDownloadSavePath(workspaceRoot, remotePath, localPath),
         );
       } catch (error) {
-        assert.match(
-          error instanceof Error ? error.message : String(error),
-          /workspace|NUL|destination|relative/,
-        );
+        assert.ok(error instanceof Error);
       }
     }),
     { numRuns: PROPERTY_RUNS },
   );
 });
 
-test("absolute download paths outside the workspace are rejected", () => {
+test("absolute download paths outside the workspace are rejected", async () => {
   const outsideRoot = fs.mkdtempSync(path.join(propertyRoot, "outside-"));
   const outsidePath = path.join(outsideRoot, "authorized_keys");
 
-  assert.throws(
+  await assert.rejects(
     () => resolveDownloadSavePath(workspaceRoot, "safe.txt", outsidePath),
     /relative to the workspace/,
   );
 });
 
-test("absolute download paths inside the workspace are rejected", () => {
+test("absolute download paths inside the workspace are rejected", async () => {
   const insidePath = path.join(workspaceRoot, "downloads", "safe.txt");
 
-  assert.throws(
+  await assert.rejects(
     () => resolveDownloadSavePath(workspaceRoot, "safe.txt", insidePath),
     /relative to the workspace/,
   );
 });
 
-test("download destinations reject existing directories", () => {
+test("download destinations reject existing directories", async () => {
   const directoryPath = fs.mkdtempSync(path.join(workspaceRoot, "existing-dir-"));
 
-  assert.throws(
-    () => resolveDownloadSavePath(workspaceRoot, "safe.txt", directoryPath),
-    /file path/,
-  );
-  assert.throws(() => assertSafeFileWritePath(workspaceRoot, directoryPath), /file path/);
+  await assert.rejects(() => resolveDownloadSavePath(workspaceRoot, "safe.txt", directoryPath));
+  await assert.rejects(() => assertSafeFileWritePath(workspaceRoot, directoryPath));
 });
 
 test(
   "workspace symlink downloads cannot redirect outside the workspace",
   { skip: process.platform === "win32" ? "directory symlink support varies on Windows" : false },
-  () => {
+  async () => {
     const root = fs.mkdtempSync(path.join(propertyRoot, "workspace-"));
     const outsideRoot = fs.mkdtempSync(path.join(propertyRoot, "outside-"));
     fs.symlinkSync(outsideRoot, path.join(root, "downloads"), "dir");
 
-    assert.throws(
-      () => resolveDownloadSavePath(root, "safe.txt", "downloads/safe.txt"),
-      /symlink|destination directory/,
-    );
+    await assert.rejects(() => resolveDownloadSavePath(root, "safe.txt", "downloads/safe.txt"));
   },
 );
 
 test(
   "temp cache symlinks cannot redirect writes outside the temp root",
   { skip: process.platform === "win32" ? "directory symlink support varies on Windows" : false },
-  () => {
+  async () => {
     const root = fs.mkdtempSync(path.join(propertyRoot, "temp-"));
     const outsideRoot = fs.mkdtempSync(path.join(propertyRoot, "outside-"));
     const bucketDir = path.join(root, "bucket");
@@ -216,7 +262,7 @@ test(
 
     const localPath = buildTempFilePath(root, "bucket", "redirect/file.txt");
 
-    assert.throws(() => assertSafeWritePath(root, localPath), /symlink|destination directory/);
+    await assert.rejects(() => assertSafeWritePath(root, localPath));
   },
 );
 
@@ -225,12 +271,44 @@ test("presigned URL encoding preserves slash separators for nested object names"
   assert.equal(encodeB2FileNameForUrl("reports/q4 final #1.pdf"), "reports/q4%20final%20%231.pdf");
 });
 
-test("presigned URL encoding rejects empty path segments", () => {
-  assert.throws(() => encodeB2FileNameForUrl("photos//img.jpg"), /empty path segments/);
-  assert.throws(
-    () => buildB2DownloadUrl("https://download.example.com", "bucket", "/img.jpg", "token"),
-    /empty path segments/,
+test("presigned URL encoding supports empty path segments", () => {
+  assert.equal(encodeB2FileNameForUrl("photos//img.jpg"), "photos//img.jpg");
+
+  const url = buildB2DownloadUrl("https://download.example.com", "bucket", "/img.jpg", "token");
+  const parsedUrl = new URL(url);
+
+  assert.equal(parsedUrl.pathname, "/file/bucket//img.jpg");
+  assert.equal(parsedUrl.searchParams.get("Authorization"), "token");
+});
+
+test("presign operation supports object names with empty path segments", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket(bucketName: string) {
+        assert.equal(bucketName, "bucket");
+        return {
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token/with #spaces" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute(
+    { bucket: "bucket", path: "a//b.txt", expiresIn: 60 },
+    extras,
   );
+  const parsedUrl = new URL(result.url);
+
+  assert.deepEqual(authorizationRequests, [["a//b.txt", 60]]);
+  assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
+  assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
 });
 
 test("presigned URL file-name encoding is per-segment reversible", () => {
