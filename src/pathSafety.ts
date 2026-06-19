@@ -249,7 +249,9 @@ export function resolvePathInsideReal(
     existingAncestor = nearestExistingAncestor(resolvedCandidate);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENAMETOOLONG") {
-      throw new Error(`${parameterName} is too long.`);
+      const tooLongError = new Error(`${parameterName} is too long.`) as NodeJS.ErrnoException;
+      tooLongError.code = "ENAMETOOLONG";
+      throw tooLongError;
     }
     throw error;
   }

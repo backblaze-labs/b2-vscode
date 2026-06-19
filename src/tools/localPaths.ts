@@ -9,6 +9,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as vscode from "vscode";
 import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../constants";
+import { B2ToolInputError } from "../errors";
 import {
   ensurePrivateDirectorySync,
   isPathInside,
@@ -24,7 +25,7 @@ const SENSITIVE_WORKSPACE_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode
 
 function rejectNullByte(value: string, parameterName: string): void {
   if (value.includes("\0")) {
-    throw new Error(`${parameterName} must not contain null bytes.`);
+    throw new B2ToolInputError(`${parameterName} must not contain null bytes.`);
   }
 }
 
@@ -36,7 +37,7 @@ export function resolveWorkspaceRelativePath(
   rejectNullByte(relativePath, parameterName);
 
   if (path.isAbsolute(relativePath)) {
-    throw new Error(`${parameterName} must be workspace-relative.`);
+    throw new B2ToolInputError(`${parameterName} must be workspace-relative.`);
   }
 
   const resolved = path.resolve(workspaceRoot, relativePath);
@@ -76,7 +77,7 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
     .map((segment) => segment.toLowerCase());
 
   if (segments.some((segment) => SENSITIVE_WORKSPACE_DIRECTORIES.has(segment))) {
-    throw new Error(
+    throw new B2ToolInputError(
       "localPath must not target workspace control directories such as .git or .vscode.",
     );
   }
@@ -110,7 +111,7 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
     }
   }
 
-  throw new Error(
+  throw new B2ToolInputError(
     "localPath must stay within the current workspace or extension tools temporary directory.",
   );
 }

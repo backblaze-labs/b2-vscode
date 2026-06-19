@@ -41,6 +41,14 @@ const WORKSPACE_REQUIRED_MESSAGE =
   "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
 const LM_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
 
+function existingDestinationError(savePath: string): Error {
+  const error = new Error(
+    `File already exists at ${savePath}. Choose a different localPath.`,
+  ) as NodeJS.ErrnoException;
+  error.code = "EEXIST";
+  return error;
+}
+
 function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
   const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
   if (blocked) {
@@ -94,7 +102,7 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
     throw error;
   }
 
-  throw new Error(`downloadFile refuses to overwrite existing workspace file: ${destinationPath}`);
+  throw existingDestinationError(destinationPath);
 }
 
 interface WorkspaceDestination {

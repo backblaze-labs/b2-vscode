@@ -875,7 +875,7 @@ suite("Adversarial untrusted input fuzzing", () => {
               { bucket: "bucket", path: "file.txt" },
               { getClient: () => client },
             ),
-          /refuses to overwrite existing workspace file/,
+          /File already exists .*Choose a different localPath/,
         );
       });
 
@@ -913,7 +913,7 @@ suite("Adversarial untrusted input fuzzing", () => {
               { bucket: "bucket", path: "file.txt", localPath: "file.txt" },
               { getClient: () => client },
             ),
-          /refuses to overwrite existing workspace file/,
+          /File already exists .*Choose a different localPath/,
         );
       });
 

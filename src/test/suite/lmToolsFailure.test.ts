@@ -388,6 +388,111 @@ suite("B2 LM tool failure handling", () => {
     );
   });
 
+  test("download tool surfaces existing destination feedback", async () => {
+    const dir = extensionTempFixture("download-exists-");
+    const targetPath = path.join(dir, "existing.txt");
+    const client = {
+      async getBucket() {
+        return {
+          async download() {
+            assert.fail("Expected destination validation before download");
+          },
+        };
+      },
+    } as unknown as B2Client;
+    const adapter = new B2ToolAdapter(downloadFileTool, downloadFileOperation, {
+      getClient: () => client,
+    });
+
+    try {
+      fs.writeFileSync(targetPath, "old");
+
+      await withWorkspaceFolder(dir, () =>
+        withCancellationToken((token) =>
+          assert.rejects(
+            () =>
+              adapter.invoke(
+                {
+                  input: { bucket: "b", path: "remote.txt", localPath: "existing.txt" },
+                } as vscode.LanguageModelToolInvocationOptions<{
+                  bucket: string;
+                  path: string;
+                  localPath: string;
+                }>,
+                token,
+              ),
+            /B2: Download File failed: File already exists .*Choose a different localPath/i,
+          ),
+        ),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tool adapters surface absolute localPath feedback", async () => {
+    const dir = extensionTempFixture("upload-absolute-");
+    const client = {
+      async getBucket() {
+        assert.fail("Expected localPath validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+    const adapter = new B2ToolAdapter(uploadFileTool, uploadFileOperation, {
+      getClient: () => client,
+    });
+
+    try {
+      await withWorkspaceFolder(dir, () =>
+        withCancellationToken((token) =>
+          assert.rejects(
+            () =>
+              adapter.invoke(
+                {
+                  input: { bucket: "b", localPath: path.join(os.tmpdir(), "session-token.txt") },
+                } as vscode.LanguageModelToolInvocationOptions<{
+                  bucket: string;
+                  localPath: string;
+                }>,
+                token,
+              ),
+            /B2: Upload File failed: localPath must be a relative path inside the allowed directory/i,
+          ),
+        ),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("presign tool surfaces invalid expiresIn feedback", async () => {
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket() {
+        assert.fail("Expected expiresIn validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+    const adapter = new B2ToolAdapter(presignUrlTool, presignUrlOperation, {
+      getClient: () => client,
+    });
+
+    await withCancellationToken((token) =>
+      assert.rejects(
+        () =>
+          adapter.invoke(
+            {
+              input: { bucket: "b", path: "file.txt", expiresIn: 0 },
+            } as vscode.LanguageModelToolInvocationOptions<{
+              bucket: string;
+              path: string;
+              expiresIn: number;
+            }>,
+            token,
+          ),
+        /B2: Pre-sign URL failed: expiresIn must be an integer between 1 and \d+ seconds/i,
+      ),
+    );
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(
@@ -864,7 +969,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "payload.txt" },
               { getClient: () => client },
             ),
-          /overwrite existing/i,
+          /File already exists .*Choose a different localPath/i,
         );
       });
 

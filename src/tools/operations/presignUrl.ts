@@ -6,7 +6,7 @@
 
 import type { CancellationToken } from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { B2ResourceNotFoundError } from "../../errors";
+import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { withTimeout } from "../../services/transferTimeout";
 import { isMissingCapabilityError } from "../../utils/b2Errors";
 import { buildB2DownloadUrl } from "../../utils/urlEncoding";
@@ -76,7 +76,7 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
     expiresIn < 1 ||
     expiresIn > MAX_PRESIGN_URL_EXPIRES_IN_SECONDS
   ) {
-    throw new Error(
+    throw new B2ToolInputError(
       `expiresIn must be an integer between 1 and ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds.`,
     );
   }
