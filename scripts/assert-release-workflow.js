@@ -28,10 +28,6 @@ function stringify(value) {
   return JSON.stringify(value ?? {});
 }
 
-function jobText(jobName, jobsToCheck = jobs) {
-  return stringify(jobsToCheck[jobName]);
-}
-
 function jobIf(jobName) {
   return String(jobs[jobName]?.if ?? "");
 }
