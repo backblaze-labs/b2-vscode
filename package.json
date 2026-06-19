@@ -35,7 +35,7 @@
     "check:fix": "npm run format && npm run lint:fix && npm run type-check",
     "check:release-workflow": "node scripts/assert-release-workflow.js",
     "type-check": "tsc --noEmit",
-    "audit:ci": "npx --yes audit-ci@7.1.0 --config audit-ci.jsonc",
+    "audit:ci": "npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc",
     "audit:release": "npm audit --omit=dev --audit-level=moderate",
     "pretest": "npm run test:unit && npm run compile && npm run compile:bundled-smoke && npm run test:discovery-guard:unit && npm run lint",
     "test": "node scripts/test-discovery-guard.js && vscode-test",

@@ -32,7 +32,7 @@ assert(
   "CI must not call the repo-controlled audit script.",
 );
 assert(
-  workflow.includes("npx --yes audit-ci@7.1.0 --config audit-ci.jsonc"),
+  workflow.includes("npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc"),
   "CI must call the pinned audit-ci command directly.",
 );
 assert(
@@ -45,7 +45,7 @@ assert(
 );
 assert(
   !/npm ci(?![^\n]*--ignore-scripts)/.test(workflow),
-  "plain npm ci must not be reintroduced before the audit gate.",
+  "plain npm ci must not be reintroduced in the required test workflow.",
 );
 assert(
   workflow.includes("npm audit signatures"),

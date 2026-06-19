@@ -74,7 +74,7 @@ jobs:
           npm_config_ignore_scripts: "true"
         run: |
           for attempt in 1 2 3; do
-            if npx --yes audit-ci@7.1.0 --config audit-ci.jsonc; then
+            if npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc; then
               exit 0
             fi
 
