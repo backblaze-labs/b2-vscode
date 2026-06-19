@@ -152,6 +152,10 @@ function assertInside(parentPath: string, candidatePath: string): void {
   assert.ok(isPathInside(parent, candidate), `${candidatePath} should remain under ${parent}`);
 }
 
+function hasUrlDotSegment(value: string): boolean {
+  return value.split("/").some((segment) => segment === "." || segment === "..");
+}
+
 function presignExtras(authorizationToken: string): ToolExtras {
   const testBucket = {
     async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
@@ -1034,6 +1038,21 @@ suite("Adversarial untrusted input fuzzing", () => {
         hostileString,
         validExpiresIn,
         async (bucketName, filePath, authorizationToken, expiresIn) => {
+          if (hasUrlDotSegment(bucketName) || hasUrlDotSegment(filePath)) {
+            await assert.rejects(
+              () =>
+                presignUrlOperation.execute(
+                  { bucket: bucketName, path: filePath, expiresIn },
+                  presignExtrasThatFailsBeforeSdkCalls(),
+                ),
+              (error: unknown) =>
+                error instanceof Error &&
+                error.message.includes('must not contain "." or ".."') &&
+                (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
+            );
+            return;
+          }
+
           const result = await presignUrlOperation.execute(
             { bucket: bucketName, path: filePath, expiresIn },
             presignExtras(authorizationToken),
@@ -1057,33 +1076,24 @@ suite("Adversarial untrusted input fuzzing", () => {
     );
   });
 
-  test("pre-signed URLs encode dot segments so URL parsing cannot collapse object paths", async () => {
+  test("pre-signed URLs reject dot segments before SDK calls", async () => {
     const cases = [
-      { path: "../escape.txt", expectedPath: "/file/bucket/%252E%252E/escape.txt" },
-      {
-        path: "safe/../../target.txt",
-        expectedPath: "/file/bucket/safe/%252E%252E/%252E%252E/target.txt",
-      },
-      { path: ".", expectedPath: "/file/bucket/%252E" },
-      { path: "..", expectedPath: "/file/bucket/%252E%252E" },
+      { bucket: "bucket", path: "../escape.txt" },
+      { bucket: "bucket", path: "safe/../../target.txt" },
+      { bucket: "bucket", path: "." },
+      { bucket: "bucket", path: ".." },
+      { bucket: "..", path: "file.txt" },
     ];
 
     for (const entry of cases) {
-      const result = await presignUrlOperation.execute(
-        { bucket: "bucket", path: entry.path },
-        presignExtras("token"),
+      await assert.rejects(
+        () => presignUrlOperation.execute(entry, presignExtrasThatFailsBeforeSdkCalls()),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes('must not contain "." or ".."') &&
+          (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
       );
-      const parsed = new URL(result.url);
-
-      assert.strictEqual(parsed.pathname, entry.expectedPath);
-      assert.strictEqual(parsed.searchParams.get("Authorization"), "token");
     }
-
-    const dotBucket = await presignUrlOperation.execute(
-      { bucket: "..", path: "file.txt" },
-      presignExtras("token"),
-    );
-    assert.strictEqual(new URL(dotBucket.url).pathname, "/file/%252E%252E/file.txt");
 
     const legitimateDots = await presignUrlOperation.execute(
       { bucket: "bucket", path: ".../notes.txt" },

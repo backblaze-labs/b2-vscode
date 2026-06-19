@@ -93,13 +93,7 @@ export function encodeUrlComponent(value: string): string {
 }
 
 export function encodeUrlPathSegment(value: string): string {
-  const wellFormed = toWellFormedUnicode(value);
-  if (wellFormed === "." || wellFormed === "..") {
-    // Double-encode traversal dot segments so URL parsing cannot normalize them.
-    return "%252E".repeat(wellFormed.length);
-  }
-
-  return encodeUrlComponent(wellFormed);
+  return encodeUrlComponent(value);
 }
 
 function byteLength(value: string): number {

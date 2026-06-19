@@ -83,12 +83,25 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
   return expiresIn;
 }
 
+function hasUrlDotSegment(value: string): boolean {
+  return value.split("/").some((segment) => segment === "." || segment === "..");
+}
+
+function rejectUrlDotSegments(parameterName: string, value: string): void {
+  if (hasUrlDotSegment(value)) {
+    throw new B2ToolInputError(`${parameterName} must not contain "." or ".." URL path segments.`);
+  }
+}
+
 export function buildPresignedDownloadUrl(
   downloadUrl: string,
   bucketName: string,
   filePath: string,
   authorizationToken: string,
 ): string {
+  rejectUrlDotSegments("bucket", bucketName);
+  rejectUrlDotSegments("path", filePath);
+
   return buildB2DownloadUrl(downloadUrl, bucketName, filePath, authorizationToken);
 }
 
@@ -218,6 +231,9 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
 
     const filePath = normalizeB2ObjectNameInput(params.path);
     const expiresIn = normalizePresignUrlExpiration(params.expiresIn);
+    rejectUrlDotSegments("bucket", params.bucket);
+    rejectUrlDotSegments("path", filePath);
+
     let authorizationInFlight = false;
     let authorizationCancellationLogged = false;
     const logAuthorizationCancellation = () => {
