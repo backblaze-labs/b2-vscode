@@ -8,7 +8,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { TEMP_DIR_NAME } from "../constants";
+import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../constants";
 import {
   ensurePrivateDirectorySync,
   isPathInside,
@@ -19,7 +19,7 @@ import {
 
 // Leaves enough room under common 255-byte segment limits for atomic temp suffixes.
 const DEFAULT_DOWNLOAD_NAME_MAX_BYTES = 180;
-const EXTENSION_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME);
+const EXTENSION_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
 const SENSITIVE_WORKSPACE_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 function rejectNullByte(value: string, parameterName: string): void {
@@ -86,7 +86,7 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
   ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
   const allowedRoots = [
     workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
-    { root: EXTENSION_TEMP_ROOT, description: "the extension temporary directory" },
+    { root: EXTENSION_TEMP_ROOT, description: "the extension tools temporary directory" },
   ].filter(
     (candidate): candidate is { root: string; description: string } => candidate !== undefined,
   );
@@ -111,7 +111,7 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
   }
 
   throw new Error(
-    "localPath must stay within the current workspace or extension temporary directory.",
+    "localPath must stay within the current workspace or extension tools temporary directory.",
   );
 }
 

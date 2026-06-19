@@ -19,7 +19,7 @@ import {
   type Bucket,
   type FileVersion,
 } from "@backblaze-labs/b2-sdk";
-import { TEMP_DIR_NAME } from "../../constants";
+import { TEMP_CACHE_DIR_NAME, TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
 import { FileTreeItem } from "../../models/fileTreeItem";
 import { FolderTreeItem } from "../../models/folderTreeItem";
 import { TempFileManager } from "../../services/tempFileManager";
@@ -264,8 +264,8 @@ suite("Adversarial untrusted input fuzzing", () => {
     );
   });
 
-  test("temp file cache never writes outside the extension temp root", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+  test("temp file cache never writes outside the extension cache root", async () => {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
 
     await fc.assert(
       fc.asyncProperty(hostileString, hostilePath, async (bucketName, fileName) => {
@@ -288,7 +288,7 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("temp cache handles dot-only and padded dot segments as files under temp root", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const dotNames = [" . ", " .. ", ".", ".."];
     const manager = new TempFileManager();
 
@@ -314,7 +314,7 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("temp cache sanitized filenames preserve extensions after truncation", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const manager = new TempFileManager();
 
     try {
@@ -332,7 +332,7 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("sanitized temp and default download names strip trailing dots", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const manager = new TempFileManager();
 
     try {
@@ -361,10 +361,11 @@ suite("Adversarial untrusted input fuzzing", () => {
       return;
     }
 
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
-    await fs.promises.rm(tempRoot, { recursive: true, force: true });
-    await fs.promises.mkdir(tempRoot, { mode: 0o777 });
-    await fs.promises.chmod(tempRoot, 0o777);
+    const tempBase = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(tempBase, TEMP_CACHE_DIR_NAME);
+    await fs.promises.rm(tempBase, { recursive: true, force: true });
+    await fs.promises.mkdir(tempBase, { mode: 0o777 });
+    await fs.promises.chmod(tempBase, 0o777);
     const manager = new TempFileManager();
 
     try {
@@ -380,6 +381,32 @@ suite("Adversarial untrusted input fuzzing", () => {
       assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "secret");
     } finally {
       manager.cleanup();
+      await fs.promises.rm(tempBase, { recursive: true, force: true });
+    }
+  });
+
+  test("temp cache cleanup does not remove extension tool outputs", async () => {
+    const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    await ensurePrivateDirectory(toolRoot);
+    const toolOutputDir = await fs.promises.mkdtemp(path.join(toolRoot, "persist-"));
+    const toolOutput = path.join(toolOutputDir, "output.txt");
+    const manager = new TempFileManager();
+
+    try {
+      await fs.promises.writeFile(toolOutput, "tool output");
+      const cachePath = await manager.saveStream(
+        "bucket",
+        "file.txt",
+        streamFromBytes(Buffer.from("cache")),
+      );
+
+      manager.cleanup();
+
+      assert.strictEqual(fs.existsSync(cachePath), false);
+      assert.strictEqual(await fs.promises.readFile(toolOutput, "utf8"), "tool output");
+    } finally {
+      manager.cleanup();
+      await fs.promises.rm(toolOutputDir, { recursive: true, force: true });
     }
   });
 
@@ -427,6 +454,10 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("workspace containment resolves symlinks before allowing local paths", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
     const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
     const outsideRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-out-"));
     const linkPath = path.join(workspaceRoot, "out");
@@ -445,6 +476,10 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("workspace containment returns the symlink-resolved local path", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
     const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
     const realRoot = path.join(workspaceRoot, "real");
     const linkPath = path.join(workspaceRoot, "link");
@@ -517,26 +552,30 @@ suite("Adversarial untrusted input fuzzing", () => {
 
     assert.throws(
       () => resolveToolLocalPath(sensitivePath, "workspace required"),
-      /localPath must stay within the current workspace or extension temporary directory/,
+      /localPath must stay within the current workspace or extension tools temporary directory/,
     );
     assert.throws(
       () => resolveToolLocalPath(arbitraryTempPath, "workspace required"),
-      /localPath must stay within the current workspace or extension temporary directory/,
+      /localPath must stay within the current workspace or extension tools temporary directory/,
     );
   });
 
-  test("absolute local paths may target the extension temp root", () => {
-    const allowedPath = path.join(os.tmpdir(), TEMP_DIR_NAME, "tool-output.bin");
+  test("absolute local paths may target the extension tools temp root", () => {
+    const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const allowedPath = path.join(toolRoot, "tool-output.bin");
     const resolved = resolveToolLocalPath(allowedPath, "workspace required");
 
-    assert.strictEqual(
-      resolved,
-      path.join(fs.realpathSync.native(path.join(os.tmpdir(), TEMP_DIR_NAME)), "tool-output.bin"),
-    );
+    assert.strictEqual(resolved, path.join(fs.realpathSync.native(toolRoot), "tool-output.bin"));
   });
 
   test("absolute local path resolution preserves non-containment errors", () => {
-    const tooLongPath = path.join(os.tmpdir(), TEMP_DIR_NAME, "x".repeat(300), "download.bin");
+    const tooLongPath = path.join(
+      os.tmpdir(),
+      TEMP_DIR_NAME,
+      TEMP_TOOLS_DIR_NAME,
+      "x".repeat(300),
+      "download.bin",
+    );
 
     assert.throws(
       () => resolveToolLocalPath(tooLongPath, "workspace required"),
@@ -848,7 +887,7 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("explicit downloads do not overwrite existing local files", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
     await ensurePrivateDirectory(tempRoot);
     const outputRoot = await fs.promises.mkdtemp(path.join(tempRoot, "explicit-"));
     const targetPath = path.join(outputRoot, "file.txt");
@@ -886,7 +925,9 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("tool operations tolerate hostile bucket and path strings", async () => {
-    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-tools-"));
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    await ensurePrivateDirectory(tempRoot);
+    const outputRoot = await fs.promises.mkdtemp(path.join(tempRoot, "tools-"));
     let downloadIndex = 0;
 
     try {

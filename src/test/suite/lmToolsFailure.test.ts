@@ -10,7 +10,7 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { B2Client, classifyError } from "@backblaze-labs/b2-sdk";
-import { TEMP_DIR_NAME } from "../../constants";
+import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
 import { ensurePrivateDirectorySync } from "../../pathSafety";
 import { B2ToolAdapter } from "../../tools/b2ToolAdapter";
 import type { B2ToolOperation, ToolExtras } from "../../tools/types";
@@ -163,7 +163,7 @@ function createFileSymlink(target: string, linkPath: string): boolean {
 
 suite("B2 LM tool failure handling", () => {
   function extensionTempFixture(prefix: string): string {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
     ensurePrivateDirectorySync(tempRoot);
     return fs.mkdtempSync(path.join(tempRoot, prefix));
   }
