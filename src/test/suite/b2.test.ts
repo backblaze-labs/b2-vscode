@@ -161,19 +161,21 @@ function stubWarningMessage(
   };
 }
 
-function stubWithProgress(
-  tokenSource: vscode.CancellationTokenSource = new vscode.CancellationTokenSource(),
-): () => void {
+function stubWithProgress(tokenSource?: vscode.CancellationTokenSource): () => void {
+  const ownedTokenSource = tokenSource ?? new vscode.CancellationTokenSource();
   const mutableWindow = vscode.window as unknown as {
     withProgress: typeof vscode.window.withProgress;
   };
   const originalWithProgress = mutableWindow.withProgress;
 
   mutableWindow.withProgress = ((_options, task) =>
-    task({ report: () => undefined }, tokenSource.token)) as typeof vscode.window.withProgress;
+    task({ report: () => undefined }, ownedTokenSource.token)) as typeof vscode.window.withProgress;
 
   return () => {
     mutableWindow.withProgress = originalWithProgress;
+    if (!tokenSource) {
+      ownedTokenSource.dispose();
+    }
   };
 }
 
