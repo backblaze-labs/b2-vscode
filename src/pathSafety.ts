@@ -137,6 +137,7 @@ export function sanitizeLocalPathSegment(value: string, options: SafePathSegment
     .replace(/[\0-\x1f\x7f]/g, "_")
     .replace(/[<>:"|?*]/g, "_")
     .replace(/[\\/]+/g, "_")
+    .replace(/[. ]+$/g, "")
     .trim();
 
   let changed = sanitized !== value;

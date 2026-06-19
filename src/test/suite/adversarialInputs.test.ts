@@ -298,6 +298,25 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("sanitized temp and default download names strip trailing dots", async () => {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const manager = new TempFileManager();
+
+    try {
+      const defaultName = safeDefaultDownloadName("folder/file.");
+      assert.ok(defaultName.length > 0);
+      assert.strictEqual(defaultName.endsWith("."), false);
+
+      const savedPath = await manager.saveFile("bucket.", "file.", Buffer.from("ok"));
+      assertInside(tempRoot, savedPath);
+      const relativeSegments = path.relative(tempRoot, savedPath).split(path.sep);
+      assert.ok(relativeSegments.every((segment) => !segment.endsWith(".")));
+      assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "ok");
+    } finally {
+      manager.cleanup();
+    }
+  });
+
   test("concurrent temp cache writes cannot expose a torn file", async () => {
     const manager = new TempFileManager();
     const first = Buffer.alloc(256 * 1024, "a");
