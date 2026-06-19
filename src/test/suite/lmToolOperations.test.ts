@@ -189,6 +189,33 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("downloadFile allows in-workspace names that start with two dots", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const expectedPath = path.join(workspaceRoot, "..notes.txt");
+    const { extras } = await createUploadedToolFixture();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: "..notes.txt",
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, expectedPath);
+      assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("presignUrl returns an encoded URL with an authorization query parameter", async () => {
     const { extras } = await createUploadedToolFixture();
 
