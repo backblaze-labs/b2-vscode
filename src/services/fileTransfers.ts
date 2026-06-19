@@ -26,6 +26,7 @@ const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
+const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export class TransferStallTimeoutError extends Error {
@@ -201,6 +202,15 @@ function destinationMoveTempPath(destinationPath: string): string {
   );
 }
 
+function destinationReplaceBackupPath(destinationPath: string): string {
+  const random = crypto.randomBytes(12).toString("hex");
+  const parsed = path.parse(destinationPath);
+  return path.join(
+    parsed.dir,
+    `${REPLACE_BACKUP_TEMP_PREFIX}${parsed.base}-${process.pid}-${random}${TRANSFER_TEMP_SUFFIX}`,
+  );
+}
+
 function isTransferTempFile(name: string): boolean {
   return name.startsWith(TRANSFER_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
 }
@@ -257,14 +267,37 @@ async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
+async function replaceExistingDestination(
+  sourcePath: string,
+  destinationPath: string,
+): Promise<void> {
+  const backupPath = destinationReplaceBackupPath(destinationPath);
+  await fs.promises.rename(destinationPath, backupPath);
+
+  try {
+    await fs.promises.rename(sourcePath, destinationPath);
+  } catch (error) {
+    try {
+      await fs.promises.rename(backupPath, destinationPath);
+    } catch (restoreError) {
+      logError(
+        `Could not restore original destination after failed replace: ${destinationPath}`,
+        restoreError,
+      );
+    }
+    throw error;
+  }
+
+  await removeTempFile(backupPath);
+}
+
 async function renameIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
   try {
     await fs.promises.rename(sourcePath, destinationPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST" || code === "EPERM") {
-      await fs.promises.rm(destinationPath, { force: true });
-      await fs.promises.rename(sourcePath, destinationPath);
+      await replaceExistingDestination(sourcePath, destinationPath);
       return;
     }
 

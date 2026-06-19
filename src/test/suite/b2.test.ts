@@ -489,7 +489,60 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
-      assert.strictEqual(renameCalls, 2);
+      assert.strictEqual(renameCalls, 3);
+      assert.strictEqual(
+        fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
+        false,
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("restores existing destinations when overwrite rename fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-overwrite-restore-"));
+    const destination = path.join(dir, "file.bin");
+    fs.writeFileSync(destination, Buffer.from([1, 2, 3]));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    let backupPath = "";
+    let destinationRenameAttempts = 0;
+    fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      const oldResolved = path.resolve(String(oldPath));
+      const newResolved = path.resolve(String(newPath));
+      const backupResolved = backupPath ? path.resolve(backupPath) : "";
+
+      if (newResolved === path.resolve(destination) && oldResolved !== backupResolved) {
+        destinationRenameAttempts += 1;
+        if (destinationRenameAttempts === 1) {
+          throw Object.assign(new Error("destination exists"), { code: "EEXIST" });
+        }
+        throw new Error("replacement failed");
+      }
+
+      if (oldResolved === path.resolve(destination)) {
+        backupPath = String(newPath);
+      }
+
+      await originalRename(oldPath, newPath);
+    };
+
+    try {
+      await assert.rejects(() => downloadStreamToFile(stream, destination), /replacement failed/i);
+
+      assert.strictEqual(destinationRenameAttempts, 2);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+      assert.strictEqual(fs.existsSync(backupPath), false);
+      assert.strictEqual(
+        fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
+        false,
+      );
     } finally {
       fs.promises.rename = originalRename;
       fs.rmSync(dir, { recursive: true, force: true });
