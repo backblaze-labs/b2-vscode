@@ -9,25 +9,62 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import type { Bucket, FileVersion } from "@backblaze-labs/b2-sdk";
+import {
+  B2Client,
+  SSE_NONE,
+  accountId,
+  bucketId,
+  fileId,
+  type FileVersion,
+} from "@backblaze-labs/b2-sdk";
+// @ts-expect-error Classic moduleResolution does not read this package export map.
+import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
 import {
   buildCustomApiUrlWarningMessage,
   CONFIRM_CUSTOM_API_URL_LABEL,
   createB2Client,
   createConfiguredB2Client,
   DEFAULT_B2_API_URL,
-  downloadStreamToFile,
   resolveB2ClientApiUrl,
   resolveB2ApiUrlFromInspection,
-  uploadFileFromDisk,
   type B2ApiUrlInspection,
 } from "../../services/b2";
+import {
+  cleanupStaleTransferTempFiles,
+  downloadStreamToFile,
+  STREAMING_UPLOAD_PART_SIZE,
+  TransferStallTimeoutError,
+  uploadFileFromDisk,
+  type UploadBucketHandle,
+} from "../../services/fileTransfers";
+import { withCancellableTransferProgress } from "../../services/transferProgress";
+import { TempFileManager } from "../../services/tempFileManager";
 import type { B2Credentials } from "../../services/authService";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
 const ATTACKER_API_URL = "https://attacker.example.com";
 const TEST_CREDENTIALS: B2Credentials = { keyId: "key-id", appKey: "app-key" };
 const TEST_VERSION = "0.0.1";
+
+function fakeFileVersion(fileName: string, contentLength: number, id: string): FileVersion {
+  return {
+    accountId: accountId("account-id"),
+    action: "upload",
+    bucketId: bucketId("bucket-id"),
+    contentLength,
+    contentMd5: null,
+    contentSha1: null,
+    contentType: "application/octet-stream",
+    fileId: fileId(id),
+    fileInfo: {},
+    fileName,
+    fileRetention: { isClientAuthorizedToRead: true, value: null },
+    legalHold: { isClientAuthorizedToRead: true, value: null },
+    replicationStatus: null,
+    serverSideEncryption: SSE_NONE,
+    uploadTimestamp: 0,
+  };
+}
 
 interface WarningMessageCall {
   readonly message: string;
@@ -102,6 +139,22 @@ function stubWarningMessage(
 
   return () => {
     mutableWindow.showWarningMessage = originalShowWarningMessage;
+  };
+}
+
+function stubWithProgress(
+  tokenSource: vscode.CancellationTokenSource = new vscode.CancellationTokenSource(),
+): () => void {
+  const mutableWindow = vscode.window as unknown as {
+    withProgress: typeof vscode.window.withProgress;
+  };
+  const originalWithProgress = mutableWindow.withProgress;
+
+  mutableWindow.withProgress = ((_options, task) =>
+    task({ report: () => undefined }, tokenSource.token)) as typeof vscode.window.withProgress;
+
+  return () => {
+    mutableWindow.withProgress = originalWithProgress;
   };
 }
 
@@ -400,11 +453,7 @@ suite("B2 transfer helpers", () => {
                   uploaded.push(...chunk);
                 },
                 close() {
-                  resolveDone({
-                    fileId: "uploaded-id",
-                    fileName,
-                    contentLength: uploaded.length,
-                  } as FileVersion);
+                  resolveDone(fakeFileVersion(fileName, uploaded.length, "uploaded-id"));
                 },
               }),
               done,
@@ -415,7 +464,7 @@ suite("B2 transfer helpers", () => {
       async upload() {
         assert.fail("Expected non-empty local files to use the streaming upload path");
       },
-    } as unknown as Bucket;
+    } satisfies UploadBucketHandle;
 
     try {
       const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
@@ -425,6 +474,231 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(result.contentLength, 4);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uses single-upload path for empty files", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-empty-upload-"));
+    const localPath = path.join(dir, "empty.bin");
+    fs.writeFileSync(localPath, "");
+    let uploadWasCalled = false;
+
+    const bucket = {
+      async upload(options) {
+        uploadWasCalled = true;
+        assert.strictEqual(options.fileName, "remote/empty.bin");
+        return fakeFileVersion(options.fileName, 0, "empty-id");
+      },
+      file() {
+        assert.fail("Expected empty files to avoid the streaming write path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/empty.bin");
+
+      assert.strictEqual(uploadWasCalled, true);
+      assert.strictEqual(result.fileId, "empty-id");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans up unfinished multipart uploads after a part failure", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-multipart-fail-"));
+    const localPath = path.join(dir, "large.bin");
+    fs.writeFileSync(localPath, Buffer.alloc(STREAMING_UPLOAD_PART_SIZE + 1, 7));
+
+    const sim = new B2Simulator({
+      minimumPartSize: 1024,
+      recommendedPartSize: STREAMING_UPLOAD_PART_SIZE,
+    });
+    const client = new B2Client({
+      applicationKeyId: "test",
+      applicationKey: "test",
+      transport: sim.transport(),
+      retry: { maxRetries: 0 },
+    });
+    await client.authorize();
+    const bucket = await client.createBucket({
+      bucketName: "bucket",
+      bucketType: "allPrivate",
+    });
+    sim.injectFailure({
+      on: "b2_upload_part",
+      status: 503,
+      code: "service_unavailable",
+      message: "simulated part failure",
+      count: 1,
+    });
+
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(bucket, localPath, "remote/large.bin"),
+        /simulated part failure|service_unavailable/i,
+      );
+
+      const unfinished = await bucket.listUnfinishedLargeFiles({
+        namePrefix: "remote/large.bin",
+      });
+      assert.deepStrictEqual(unfinished.files, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("observes upload done rejection when pipeTo fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-reject-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let unhandled: unknown;
+    const onUnhandled = (error: unknown) => {
+      unhandled = error;
+    };
+    process.once("unhandledRejection", onUnhandled);
+
+    const bucket = {
+      async upload() {
+        assert.fail("Expected non-empty files to use the streaming upload path");
+      },
+      file() {
+        const done = new Promise<FileVersion>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("done failed")), 0);
+        });
+
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("pipe failed");
+                },
+              }),
+              done,
+            };
+          },
+        };
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(bucket, localPath, "remote/file.bin"),
+        /pipe failed/i,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.strictEqual(unhandled, undefined);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects B2 object keys that escape the temp cache", async () => {
+    const manager = new TempFileManager();
+    const outsidePath = path.join(os.tmpdir(), `b2-vscode-outside-${Date.now()}`, "owned.txt");
+    const maliciousKey = `../../${path.basename(path.dirname(outsidePath))}/owned.txt`;
+
+    try {
+      await assert.rejects(
+        () =>
+          manager.saveStream(
+            "bucket",
+            maliciousKey,
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.close();
+              },
+            }),
+          ),
+        /path traversal|relative path inside/i,
+      );
+
+      assert.strictEqual(fs.existsSync(outsidePath), false);
+      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), undefined);
+    } finally {
+      manager.dispose();
+      fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
+    }
+  });
+
+  test("times out stalled downloads and leaves no destination", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-stall-"));
+    const destination = path.join(dir, "stalled.bin");
+    const stream = new ReadableStream<Uint8Array>();
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { stallTimeoutMs: 20 }),
+        TransferStallTimeoutError,
+      );
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans stale managed transfer temp files", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-"));
+    const stale = path.join(dir, "b2-transfer-1-stale.tmp");
+    const fresh = path.join(dir, "b2-transfer-1-fresh.tmp");
+    const complete = path.join(dir, "complete.bin");
+    fs.writeFileSync(stale, "stale");
+    fs.writeFileSync(fresh, "fresh");
+    fs.writeFileSync(complete, "complete");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(stale, oldTime, oldTime);
+
+    try {
+      await cleanupStaleTransferTempFiles({ directory: dir, maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(stale), false);
+      assert.strictEqual(fs.existsSync(fresh), true);
+      assert.strictEqual(fs.existsSync(complete), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reports only requested progress cancellations as CancellationError", async () => {
+    const tokenSource = new vscode.CancellationTokenSource();
+    let restore = stubWithProgress(tokenSource);
+
+    try {
+      await assert.rejects(
+        () =>
+          withCancellableTransferProgress({ title: "Cancel test" }, async ({ signal }) => {
+            tokenSource.cancel();
+            signal.throwIfAborted();
+          }),
+        vscode.CancellationError,
+      );
+    } finally {
+      restore();
+      tokenSource.dispose();
+    }
+
+    restore = stubWithProgress();
+
+    try {
+      await assert.rejects(
+        () =>
+          withCancellableTransferProgress({ title: "Abort-like failure" }, async () => {
+            const error = new Error("network timeout");
+            error.name = "AbortError";
+            throw error;
+          }),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.strictEqual(error.name, "AbortError");
+          assert.match(error.message, /network timeout/);
+          assert.ok(!(error instanceof vscode.CancellationError));
+          return true;
+        },
+      );
+    } finally {
+      restore();
     }
   });
 });

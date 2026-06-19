@@ -10,6 +10,7 @@
 import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
+import { cleanupStaleTransferTempFiles } from "./services/fileTransfers";
 import { AuthService } from "./services/authService";
 import { TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
@@ -31,6 +32,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Activating Backblaze B2 extension...");
+  await cleanupStaleTransferTempFiles();
 
   // 1. Services
   const authService = new AuthService(context.secrets);

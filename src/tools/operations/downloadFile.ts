@@ -5,13 +5,13 @@
  */
 
 import * as vscode from "vscode";
-import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
+import { downloadStreamToFile } from "../../services/fileTransfers";
+import { b2KeyBasename, resolveContainedRelativePath } from "../../services/pathSafety";
 import {
   createTransferProgressReporter,
-  downloadStreamToFile,
   withCancellableTransferProgress,
-} from "../../services/b2";
+} from "../../services/transferProgress";
 import { B2ResourceNotFoundError } from "../../errors";
 
 interface DownloadFileParams {
@@ -31,7 +31,7 @@ function workspacePath(relativePath: string, missingWorkspaceMessage: string): s
   if (!workspaceFolder) {
     throw new Error(missingWorkspaceMessage);
   }
-  return path.join(workspaceFolder.uri.fsPath, relativePath);
+  return resolveContainedRelativePath(workspaceFolder.uri.fsPath, relativePath, "localPath");
 }
 
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
@@ -53,29 +53,26 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     // Determine local save path
     let savePath: string;
     if (params.localPath) {
-      savePath = path.isAbsolute(params.localPath)
-        ? params.localPath
-        : workspacePath(
-            params.localPath,
-            "No workspace folder open. Please use an absolute localPath.",
-          );
+      savePath = workspacePath(
+        params.localPath,
+        "No workspace folder open. Please omit localPath or use a workspace-relative localPath.",
+      );
     } else {
-      const fileName = path.basename(params.path);
+      const fileName = b2KeyBasename(params.path);
       savePath = workspacePath(fileName, "No workspace folder open. Please specify a localPath.");
     }
 
     const size = await withCancellableTransferProgress(
       { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
       async ({ progress, signal }) => {
-        const { body, headers } = await bucket.download(params.path, {
+        const { body } = await bucket.download(params.path, {
           signal,
           onProgress: createTransferProgressReporter(progress),
         });
 
-        const writtenBytes = await downloadStreamToFile(body, savePath, {
+        return downloadStreamToFile(body, savePath, {
           signal,
         });
-        return writtenBytes || headers.contentLength;
       },
     );
 

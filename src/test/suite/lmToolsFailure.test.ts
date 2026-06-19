@@ -89,6 +89,30 @@ async function withCancellationToken<T>(
   }
 }
 
+async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
+  Object.defineProperty(vscode.workspace, "workspaceFolders", {
+    configurable: true,
+    get: () => [
+      {
+        uri: vscode.Uri.file(workspacePath),
+        name: "workspace",
+        index: 0,
+      },
+    ],
+  });
+
+  try {
+    return await run();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(vscode.workspace, "workspaceFolders", descriptor);
+    } else {
+      delete (vscode.workspace as unknown as { workspaceFolders?: unknown }).workspaceFolders;
+    }
+  }
+}
+
 suite("B2 LM tool failure handling", () => {
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
@@ -181,7 +205,6 @@ suite("B2 LM tool failure handling", () => {
 
   test("upload tool surfaces missing local file path feedback", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-missing-"));
-    const missingFile = path.join(dir, "missing.txt");
     const client = {
       async getBucket() {
         assert.fail("Expected local path validation before bucket lookup");
@@ -192,16 +215,21 @@ suite("B2 LM tool failure handling", () => {
     });
 
     try {
-      await withCancellationToken((token) =>
-        assert.rejects(
-          () =>
-            adapter.invoke(
-              {
-                input: { bucket: "b", localPath: missingFile },
-              } as vscode.LanguageModelToolInvocationOptions<{ bucket: string; localPath: string }>,
-              token,
-            ),
-          /B2: Upload File failed: ENOENT.*missing\.txt/i,
+      await withWorkspaceFolder(dir, () =>
+        withCancellationToken((token) =>
+          assert.rejects(
+            () =>
+              adapter.invoke(
+                {
+                  input: { bucket: "b", localPath: "missing.txt" },
+                } as vscode.LanguageModelToolInvocationOptions<{
+                  bucket: string;
+                  localPath: string;
+                }>,
+                token,
+              ),
+            /B2: Upload File failed: ENOENT.*missing\.txt/i,
+          ),
         ),
       );
     } finally {
@@ -234,14 +262,73 @@ suite("B2 LM tool failure handling", () => {
     };
 
     try {
-      for (const entry of operations.filter((operation) => operation.name !== "listBuckets")) {
-        const input =
-          entry.name === "uploadFile" ? { bucket: "b", localPath: localFile } : entry.input;
+      await withWorkspaceFolder(dir, async () => {
+        for (const entry of operations.filter((operation) => operation.name !== "listBuckets")) {
+          const input =
+            entry.name === "uploadFile" ? { bucket: "b", localPath: "a.txt" } : entry.input;
+          await assert.rejects(
+            () => entry.operation.execute(input, getMissingBucketExtras),
+            /bucket .* not found/i,
+          );
+        }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool rejects workspace path traversal before writing", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-policy-"));
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
         await assert.rejects(
-          () => entry.operation.execute(input, getMissingBucketExtras),
-          /bucket .* not found/i,
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "../outside.txt" },
+              { getClient: () => client },
+            ),
+          /path traversal|relative path inside/i,
         );
-      }
+      });
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(path.dirname(dir), "outside.txt")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool rejects workspace path traversal before reading", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-policy-"));
+    const client = {
+      async getBucket() {
+        assert.fail("Expected traversal validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: "../secret.txt" },
+              { getClient: () => client },
+            ),
+          /path traversal|relative path inside/i,
+        );
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

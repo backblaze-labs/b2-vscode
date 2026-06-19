@@ -9,11 +9,12 @@ import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
+import { uploadFileFromDisk } from "../../services/fileTransfers";
+import { resolveContainedRelativePath } from "../../services/pathSafety";
 import {
   createTransferProgressReporter,
-  uploadFileFromDisk,
   withCancellableTransferProgress,
-} from "../../services/b2";
+} from "../../services/transferProgress";
 
 interface UploadFileParams {
   localPath: string;
@@ -28,6 +29,15 @@ interface UploadFileResult {
   message: string;
 }
 
+function workspaceFilePath(relativePath: string): string {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    throw new Error("No workspace folder open. The uploadFile tool only reads workspace files.");
+  }
+
+  return resolveContainedRelativePath(workspaceFolder.uri.fsPath, relativePath, "localPath");
+}
+
 export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileResult> = {
   async execute(
     params: UploadFileParams,
@@ -39,15 +49,7 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    // Resolve local path (workspace-relative or absolute)
-    let localPath = params.localPath;
-    if (!path.isAbsolute(localPath)) {
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder) {
-        throw new Error("No workspace folder open. Please use an absolute path.");
-      }
-      localPath = path.join(workspaceFolder.uri.fsPath, localPath);
-    }
+    const localPath = workspaceFilePath(params.localPath);
 
     await fs.promises.access(localPath, fs.constants.R_OK);
     const stats = await fs.promises.stat(localPath);

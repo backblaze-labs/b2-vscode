@@ -163,7 +163,8 @@ suite("LM Tool Safety", () => {
       localPath: "/tmp/downloads/out.csv",
     });
 
-    assert.match(text, /\/tmp\/downloads\/out\.csv/);
+    assert.match(text, /absolute path \/tmp\/downloads\/out\.csv/);
+    assert.match(text, /rejected by this tool/);
     assert.doesNotMatch(text, /your local workspace/);
   });
 

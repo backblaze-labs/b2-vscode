@@ -12,7 +12,8 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
-import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./b2";
+import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
+import { resolveContainedRelativePath } from "./pathSafety";
 
 /**
  * Manages a temp directory for caching B2 file downloads.
@@ -23,6 +24,12 @@ export class TempFileManager implements vscode.Disposable {
 
   constructor() {
     this.tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    fs.mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(this.tempRoot, 0o700);
+    } catch {
+      // Best effort: existing directories may not allow chmod on every platform.
+    }
   }
 
   dispose(): void {
@@ -45,14 +52,16 @@ export class TempFileManager implements vscode.Disposable {
     fileName: string,
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions = {},
-  ): Promise<{ localPath: string; size: number }> {
-    const localPath = path.join(this.tempRoot, bucketName, fileName);
-    const size = await downloadStreamToFile(stream, localPath, options);
+  ): Promise<string> {
+    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
+    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
+
+    await downloadStreamToFile(stream, localPath, options);
 
     const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
 
-    return { localPath, size };
+    return localPath;
   }
 
   /**

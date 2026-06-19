@@ -6,6 +6,7 @@
 
 import * as vscode from "vscode";
 import type { Bucket, FileVersion } from "@backblaze-labs/b2-sdk";
+import { humanSize } from "../utils/humanSize";
 
 /**
  * A leaf tree item representing a single B2 file.
@@ -56,17 +57,4 @@ export class FileTreeItem extends vscode.TreeItem {
       arguments: [this],
     };
   }
-}
-
-/**
- * Convert bytes to a human-readable string.
- */
-function humanSize(bytes: number): string {
-  if (bytes === 0) {
-    return "0 B";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = bytes / Math.pow(1024, i);
-  return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }

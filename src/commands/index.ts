@@ -15,11 +15,11 @@ import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
 import { registerB2Tools } from "../tools/registration";
+import { createConfiguredB2Client } from "../services/b2";
 import {
-  createConfiguredB2Client,
   createTransferProgressReporter,
   withCancellableTransferProgress,
-} from "../services/b2";
+} from "../services/transferProgress";
 import { B2PartialFailureError, formatB2UserMessage } from "../errors";
 import { logError } from "../logger";
 import {
@@ -567,16 +567,21 @@ export function registerCommands(services: CommandServices): void {
               signal,
               onProgress: createTransferProgressReporter(progress, item.file.contentLength),
             });
-            const { localPath } = await tempFileManager.saveStream(
+            const localPath = await tempFileManager.saveStream(
               item.bucketName,
               item.file.fileName,
               body,
-              { signal },
+              {
+                signal,
+              },
             );
             await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(localPath));
           },
         );
       } catch (error) {
+        if (error instanceof vscode.CancellationError) {
+          return;
+        }
         showCommandError("B2: Failed to open file", error);
       }
     }),
