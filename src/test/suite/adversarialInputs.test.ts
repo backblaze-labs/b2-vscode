@@ -23,20 +23,23 @@ import { TEMP_DIR_NAME } from "../../constants";
 import { FileTreeItem } from "../../models/fileTreeItem";
 import { FolderTreeItem } from "../../models/folderTreeItem";
 import { TempFileManager } from "../../services/tempFileManager";
-import {
-  buildPresignedDownloadUrl,
-  normalizePresignUrlExpiration,
-  presignUrlOperation,
-} from "../../tools/operations/presignUrl";
+import { presignUrlOperation } from "../../tools/operations/presignUrl";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
 import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listFilesOperation } from "../../tools/operations/listFiles";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 import {
-  isPathInside,
   resolveWorkspaceRelativePath,
+  resolveToolLocalPath,
   safeDefaultDownloadName,
 } from "../../tools/localPaths";
+import {
+  isPathInside,
+  toWellFormedUnicode,
+  writeBufferAtomically,
+  writeReadableStreamAtomically,
+} from "../../pathSafety";
 import type { ToolExtras } from "../../tools/types";
 
 const FUZZ_RUNS = 80;
@@ -78,14 +81,22 @@ const hostilePath = fc.oneof(
 );
 
 const validExpiresIn = fc.oneof(
-  fc.constantFrom(1, 60, 3600, 604800),
-  fc.integer({ min: 1, max: 604800 }),
+  fc.constantFrom(1, 60, 3600, MAX_PRESIGN_URL_EXPIRES_IN_SECONDS),
+  fc.integer({ min: 1, max: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS }),
 );
 
 const invalidExpiresIn = fc.oneof(
-  fc.constantFrom(-1, 0, 0.5, 1.25, Number.NaN, Number.POSITIVE_INFINITY, 604801),
+  fc.constantFrom(
+    -1,
+    0,
+    0.5,
+    1.25,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    MAX_PRESIGN_URL_EXPIRES_IN_SECONDS + 1,
+  ),
   fc.integer({ min: -1000000, max: 0 }),
-  fc.integer({ min: 604801, max: Number.MAX_SAFE_INTEGER }),
+  fc.integer({ min: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS + 1, max: Number.MAX_SAFE_INTEGER }),
 );
 
 function file(fileName: string): FileVersion {
@@ -123,36 +134,11 @@ function assertInside(parentPath: string, candidatePath: string): void {
   );
 }
 
-function wellFormedUnicode(value: string): string {
-  let result = "";
-
-  for (let index = 0; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        result += value[index] + value[index + 1];
-        index++;
-      } else {
-        result += "\ufffd";
-      }
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      result += "\ufffd";
-    } else {
-      result += value[index];
-    }
-  }
-
-  return result;
-}
-
 function presignExtras(authorizationToken: string): ToolExtras {
   const testBucket = {
     async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
-      assert.strictEqual(
-        normalizePresignUrlExpiration(validDurationInSeconds),
-        validDurationInSeconds,
-      );
+      assert.ok(validDurationInSeconds >= 1);
+      assert.ok(validDurationInSeconds <= MAX_PRESIGN_URL_EXPIRES_IN_SECONDS);
       return { authorizationToken, fileNamePrefix, validDurationInSeconds };
     },
   } as unknown as Bucket;
@@ -268,24 +254,117 @@ suite("Adversarial untrusted input fuzzing", () => {
     );
   });
 
+  test("temp cache handles dot-only and padded dot segments as files under temp root", async () => {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const dotNames = [" . ", " .. ", ".", ".."];
+    const manager = new TempFileManager();
+
+    try {
+      for (const name of dotNames) {
+        const savedPath = await manager.saveStream(name, name, streamFromBytes(Buffer.from(name)));
+        assertInside(tempRoot, savedPath);
+        assert.strictEqual((await fs.promises.stat(savedPath)).isFile(), true);
+        assert.notStrictEqual(path.basename(savedPath), ".");
+        assert.notStrictEqual(path.basename(savedPath), "..");
+
+        const normalPath = await manager.saveStream(
+          name,
+          "normal.txt",
+          streamFromBytes(Buffer.from("normal")),
+        );
+        assertInside(tempRoot, normalPath);
+        assert.strictEqual(await fs.promises.readFile(normalPath, "utf8"), "normal");
+      }
+    } finally {
+      manager.cleanup();
+    }
+  });
+
+  test("temp cache sanitized filenames preserve extensions after truncation", async () => {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    const manager = new TempFileManager();
+
+    try {
+      const savedPath = await manager.saveStream(
+        "bucket",
+        `${"x".repeat(300)}.xlsx`,
+        streamFromBytes(Buffer.from("ok")),
+      );
+      assertInside(tempRoot, savedPath);
+      assert.match(path.basename(savedPath), /\.xlsx$/);
+      assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "ok");
+    } finally {
+      manager.cleanup();
+    }
+  });
+
+  test("concurrent temp cache writes cannot expose a torn file", async () => {
+    const manager = new TempFileManager();
+    const first = Buffer.alloc(256 * 1024, "a");
+    const second = Buffer.alloc(256 * 1024, "b");
+
+    try {
+      const [firstPath, secondPath] = await Promise.all([
+        manager.saveStream("bucket", "same.txt", streamFromBytes(first)),
+        manager.saveStream("bucket", "same.txt", streamFromBytes(second)),
+      ]);
+      assert.strictEqual(firstPath, secondPath);
+
+      const saved = await fs.promises.readFile(firstPath);
+      assert.ok(saved.equals(first) || saved.equals(second));
+    } finally {
+      manager.cleanup();
+    }
+  });
+
   test("workspace-relative tool local paths cannot escape the workspace", () => {
-    const workspaceRoot = path.join(os.tmpdir(), "b2-vscode-fuzz-workspace");
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-fuzz-workspace-"));
 
-    fc.assert(
-      fc.property(hostilePath, (localPath) => {
-        if (path.isAbsolute(localPath)) {
-          return;
-        }
+    try {
+      fc.assert(
+        fc.property(hostilePath, (localPath) => {
+          try {
+            const resolved = resolveWorkspaceRelativePath(workspaceRoot, localPath);
+            assertInside(workspaceRoot, resolved);
+          } catch (error) {
+            assert.ok(error instanceof Error);
+            assert.match(
+              error.message,
+              /localPath (must (not contain null bytes|be workspace-relative|stay within)|is too long)/,
+            );
+          }
+        }),
+        { numRuns: FUZZ_RUNS },
+      );
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 
-        try {
-          const resolved = resolveWorkspaceRelativePath(workspaceRoot, localPath);
-          assertInside(workspaceRoot, resolved);
-        } catch (error) {
-          assert.ok(error instanceof Error);
-          assert.match(error.message, /localPath must (not contain null bytes|stay within)/);
-        }
-      }),
-      { numRuns: FUZZ_RUNS },
+  test("workspace containment resolves symlinks before allowing local paths", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
+    const outsideRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-out-"));
+    const linkPath = path.join(workspaceRoot, "out");
+
+    try {
+      await fs.promises.symlink(outsideRoot, linkPath, "dir");
+
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, "out/secret.txt"),
+        /localPath must stay within the current workspace/,
+      );
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.promises.rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("absolute local paths outside the allow-list are rejected", () => {
+    const sensitivePath = path.join(os.homedir(), ".ssh", "authorized_keys");
+
+    assert.throws(
+      () => resolveToolLocalPath(sensitivePath, "workspace required"),
+      /localPath must stay within the current workspace or system temporary directory/,
     );
   });
 
@@ -303,6 +382,40 @@ suite("Adversarial untrusted input fuzzing", () => {
       }),
       { numRuns: FUZZ_RUNS },
     );
+  });
+
+  test("default download names disambiguate sanitized names and preserve extensions", () => {
+    const queryName = safeDefaultDownloadName("reports/a?b.txt");
+    const colonName = safeDefaultDownloadName("reports/a:b.txt");
+    const longName = safeDefaultDownloadName(`reports/${"x".repeat(300)}.xlsx`);
+    const multibyteName = safeDefaultDownloadName(`reports/${"😀".repeat(80)}.json`);
+
+    assert.notStrictEqual(queryName, colonName);
+    assert.match(queryName, /\.txt$/);
+    assert.match(colonName, /\.txt$/);
+    assert.match(longName, /\.xlsx$/);
+    assert.match(multibyteName, /\.json$/);
+    assert.ok(Buffer.byteLength(longName, "utf8") <= 180);
+    assert.ok(Buffer.byteLength(multibyteName, "utf8") <= 180);
+  });
+
+  test("atomic non-overwrite writes preserve existing download targets", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-atomic-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+
+    try {
+      await writeBufferAtomically(targetPath, Buffer.from("old"));
+      await assert.rejects(
+        () =>
+          writeReadableStreamAtomically(targetPath, streamFromBytes(new Uint8Array([1, 2, 3])), {
+            overwrite: false,
+          }),
+        /EEXIST/,
+      );
+      assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "old");
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
   });
 
   test("tool operations tolerate hostile bucket and path strings", async () => {
@@ -371,21 +484,54 @@ suite("Adversarial untrusted input fuzzing", () => {
           assert.deepStrictEqual(Array.from(parsed.searchParams.keys()), ["Authorization"]);
           assert.strictEqual(
             parsed.searchParams.get("Authorization"),
-            wellFormedUnicode(authorizationToken),
+            toWellFormedUnicode(authorizationToken),
           );
           assert.strictEqual(result.expiresIn, expiresIn);
-
-          const directUrl = buildPresignedDownloadUrl(
-            DOWNLOAD_BASE_URL,
-            bucketName,
-            filePath,
-            authorizationToken,
-          );
-          assert.strictEqual(result.url, directUrl);
+          assert.strictEqual(result.message.includes(result.url), false);
         },
       ),
       { numRuns: ASYNC_FUZZ_RUNS },
     );
+  });
+
+  test("pre-signed URLs encode dot segments so URL parsing cannot collapse object paths", async () => {
+    const cases = [
+      { path: "../escape.txt", expectedPath: "/file/bucket/%252E%252E/escape.txt" },
+      {
+        path: "safe/../../target.txt",
+        expectedPath: "/file/bucket/safe/%252E%252E/%252E%252E/target.txt",
+      },
+      { path: ".", expectedPath: "/file/bucket/%252E" },
+      { path: "..", expectedPath: "/file/bucket/%252E%252E" },
+    ];
+
+    for (const entry of cases) {
+      const result = await presignUrlOperation.execute(
+        { bucket: "bucket", path: entry.path },
+        presignExtras("token"),
+      );
+      const parsed = new URL(result.url);
+
+      assert.strictEqual(parsed.pathname, entry.expectedPath);
+      assert.strictEqual(parsed.searchParams.get("Authorization"), "token");
+    }
+
+    const dotBucket = await presignUrlOperation.execute(
+      { bucket: "..", path: "file.txt" },
+      presignExtras("token"),
+    );
+    assert.strictEqual(new URL(dotBucket.url).pathname, "/file/%252E%252E/file.txt");
+  });
+
+  test("pre-signed URL messages do not duplicate the bearer token URL", async () => {
+    const result = await presignUrlOperation.execute(
+      { bucket: "bucket", path: "file.txt" },
+      presignExtras("secret-token"),
+    );
+
+    assert.match(result.url, /secret-token/);
+    assert.doesNotMatch(result.message, /secret-token/);
+    assert.doesNotMatch(result.message, /https:\/\/download\.example\.com/);
   });
 
   test("pre-signed URL expiration rejects invalid fuzzed values before SDK calls", async () => {
