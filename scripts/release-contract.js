@@ -28,7 +28,12 @@ const manifestContract = {
     "extension/resources/b2-icon.svg",
     "extension/resources/b2-icons.woff",
   ],
-  requiredInstalledFiles: ["dist/extension.js", "resources/b2-icon.png", "resources/b2-icons.woff"],
+  requiredInstalledFiles: [
+    "dist/extension.js",
+    "resources/b2-icon.png",
+    "resources/b2-icon.svg",
+    "resources/b2-icons.woff",
+  ],
   commandIds: [
     "b2.authenticate",
     "b2.logout",
