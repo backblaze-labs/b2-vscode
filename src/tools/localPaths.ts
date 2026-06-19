@@ -6,10 +6,21 @@
 
 import * as path from "path";
 import * as os from "os";
+import * as fs from "fs";
 import * as vscode from "vscode";
-import { isPathInside, resolvePathInsideReal, sanitizeLocalPathSegment } from "../pathSafety";
+import { TEMP_DIR_NAME } from "../constants";
+import {
+  ensurePrivateDirectorySync,
+  isPathInside,
+  PathContainmentError,
+  resolvePathInsideReal,
+  safeLocalBasename,
+} from "../pathSafety";
 
+// Leaves enough room under common 255-byte segment limits for atomic temp suffixes.
 const DEFAULT_DOWNLOAD_NAME_MAX_BYTES = 180;
+const EXTENSION_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME);
+const SENSITIVE_WORKSPACE_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 function rejectNullByte(value: string, parameterName: string): void {
   if (value.includes("\0")) {
@@ -29,42 +40,77 @@ export function resolveWorkspaceRelativePath(
   }
 
   const resolved = path.resolve(workspaceRoot, relativePath);
-  return resolvePathInsideReal(workspaceRoot, resolved, parameterName, "the current workspace");
+  const contained = resolvePathInsideReal(
+    workspaceRoot,
+    resolved,
+    parameterName,
+    "the current workspace",
+  );
+  rejectSensitiveWorkspacePath(workspaceRoot, contained);
+  return contained;
 }
 
 function currentWorkspaceRoot(): string | undefined {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    return undefined;
+  }
+  try {
+    fs.lstatSync(workspaceRoot);
+    return workspaceRoot;
+  } catch {
+    return undefined;
+  }
 }
 
-function isContainmentError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(" must stay within ");
+function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: string): void {
+  if (!isPathInside(workspaceRoot, candidatePath)) {
+    return;
+  }
+
+  const segments = path
+    .relative(workspaceRoot, candidatePath)
+    .split(path.sep)
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+
+  if (segments.some((segment) => SENSITIVE_WORKSPACE_DIRECTORIES.has(segment))) {
+    throw new Error(
+      "localPath must not target workspace control directories such as .git or .vscode.",
+    );
+  }
 }
 
 function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
+  ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
   const allowedRoots = [
     workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
-    { root: os.tmpdir(), description: "the system temporary directory" },
+    { root: EXTENSION_TEMP_ROOT, description: "the extension temporary directory" },
   ].filter(
     (candidate): candidate is { root: string; description: string } => candidate !== undefined,
   );
 
   for (const allowedRoot of allowedRoots) {
     try {
-      return resolvePathInsideReal(
+      const resolved = resolvePathInsideReal(
         allowedRoot.root,
         absolutePath,
         "localPath",
         allowedRoot.description,
       );
+      if (workspaceRoot && allowedRoot.root === workspaceRoot) {
+        rejectSensitiveWorkspacePath(workspaceRoot, resolved);
+      }
+      return resolved;
     } catch (error) {
-      if (!isContainmentError(error)) {
+      if (!(error instanceof PathContainmentError)) {
         throw error;
       }
     }
   }
 
   throw new Error(
-    "localPath must stay within the current workspace or system temporary directory.",
+    "localPath must stay within the current workspace or extension temporary directory.",
   );
 }
 
@@ -87,8 +133,7 @@ export function resolveToolLocalPath(
 }
 
 export function safeDefaultDownloadName(remotePath: string): string {
-  const basename = path.posix.basename(remotePath.replace(/\\/g, "/"));
-  return sanitizeLocalPathSegment(basename, {
+  return safeLocalBasename(remotePath, {
     fallback: "download",
     maxBytes: DEFAULT_DOWNLOAD_NAME_MAX_BYTES,
     hashInput: remotePath,

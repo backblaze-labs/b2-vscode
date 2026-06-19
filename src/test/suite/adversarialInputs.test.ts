@@ -35,7 +35,10 @@ import {
   safeDefaultDownloadName,
 } from "../../tools/localPaths";
 import {
+  ensurePrivateDirectory,
   isPathInside,
+  readFileNoFollow,
+  sweepStaleAtomicTempFiles,
   toWellFormedUnicode,
   writeBufferAtomically,
   writeReadableStreamAtomically,
@@ -152,6 +155,17 @@ function presignExtras(authorizationToken: string): ToolExtras {
   return { getClient: () => client };
 }
 
+function presignExtrasThatFailsBeforeSdkCalls(): ToolExtras {
+  const client = {
+    accountInfo: { getDownloadUrl: () => DOWNLOAD_BASE_URL },
+    async getBucket() {
+      assert.fail("Expected expiresIn validation before B2 SDK calls");
+    },
+  } as unknown as B2Client;
+
+  return { getClient: () => client };
+}
+
 function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(controller) {
@@ -162,13 +176,17 @@ function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
 }
 
 async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
-  Object.defineProperty(vscode.workspace, "workspaceFolders", {
+  const mutableWorkspace = vscode.workspace as unknown as {
+    workspaceFolders?: readonly vscode.WorkspaceFolder[];
+  };
+  const originalDescriptor = Object.getOwnPropertyDescriptor(mutableWorkspace, "workspaceFolders");
+
+  Object.defineProperty(mutableWorkspace, "workspaceFolders", {
     configurable: true,
     get: () => [
       {
         uri: vscode.Uri.file(workspacePath),
-        name: "workspace",
+        name: path.basename(workspacePath),
         index: 0,
       },
     ],
@@ -177,10 +195,10 @@ async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<
   try {
     return await run();
   } finally {
-    if (descriptor) {
-      Object.defineProperty(vscode.workspace, "workspaceFolders", descriptor);
+    if (originalDescriptor) {
+      Object.defineProperty(mutableWorkspace, "workspaceFolders", originalDescriptor);
     } else {
-      delete (vscode.workspace as unknown as { workspaceFolders?: unknown }).workspaceFolders;
+      delete mutableWorkspace.workspaceFolders;
     }
   }
 }
@@ -307,11 +325,42 @@ suite("Adversarial untrusted input fuzzing", () => {
       assert.ok(defaultName.length > 0);
       assert.strictEqual(defaultName.endsWith("."), false);
 
-      const savedPath = await manager.saveFile("bucket.", "file.", Buffer.from("ok"));
+      const savedPath = await manager.saveStream(
+        "bucket.",
+        "file.",
+        streamFromBytes(Buffer.from("ok")),
+      );
       assertInside(tempRoot, savedPath);
       const relativeSegments = path.relative(tempRoot, savedPath).split(path.sep);
       assert.ok(relativeSegments.every((segment) => !segment.endsWith(".")));
       assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "ok");
+    } finally {
+      manager.cleanup();
+    }
+  });
+
+  test("temp cache root is private before writing B2 bytes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    await fs.promises.mkdir(tempRoot, { mode: 0o777 });
+    await fs.promises.chmod(tempRoot, 0o777);
+    const manager = new TempFileManager();
+
+    try {
+      const savedPath = await manager.saveStream(
+        "bucket",
+        "secret.txt",
+        streamFromBytes(Buffer.from("secret")),
+      );
+      const rootMode = (await fs.promises.stat(tempRoot)).mode & 0o077;
+
+      assert.strictEqual(rootMode, 0);
+      assertInside(tempRoot, savedPath);
+      assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "secret");
     } finally {
       manager.cleanup();
     }
@@ -349,7 +398,7 @@ suite("Adversarial untrusted input fuzzing", () => {
             assert.ok(error instanceof Error);
             assert.match(
               error.message,
-              /localPath (must (not contain null bytes|be workspace-relative|stay within)|is too long)/,
+              /localPath (must (not contain null bytes|not target workspace control directories|be workspace-relative|stay within)|is too long)/,
             );
           }
         }),
@@ -378,17 +427,77 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("workspace control directories are rejected as tool local paths", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
+
+    try {
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, ".git/config"),
+        /workspace control directories/,
+      );
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, ".vscode/settings.json"),
+        /workspace control directories/,
+      );
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool rejects workspace control file destinations", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
+    let downloadCalled = false;
+    const testBucket = {
+      async download() {
+        downloadCalled = true;
+        return { body: streamFromBytes(new Uint8Array([1, 2, 3])) };
+      },
+    } as unknown as Bucket;
+    const client = {
+      async getBucket() {
+        return testBucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceRoot, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "bucket", path: "payload", localPath: ".git/config" },
+              { getClient: () => client },
+            ),
+          /workspace control directories/,
+        );
+      });
+      assert.strictEqual(downloadCalled, false);
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("absolute local paths outside the allow-list are rejected", () => {
     const sensitivePath = path.join(os.homedir(), ".ssh", "authorized_keys");
+    const arbitraryTempPath = path.join(os.tmpdir(), "session-token.txt");
 
     assert.throws(
       () => resolveToolLocalPath(sensitivePath, "workspace required"),
-      /localPath must stay within the current workspace or system temporary directory/,
+      /localPath must stay within the current workspace or extension temporary directory/,
+    );
+    assert.throws(
+      () => resolveToolLocalPath(arbitraryTempPath, "workspace required"),
+      /localPath must stay within the current workspace or extension temporary directory/,
     );
   });
 
+  test("absolute local paths may target the extension temp root", () => {
+    const allowedPath = path.join(os.tmpdir(), TEMP_DIR_NAME, "tool-output.bin");
+
+    assert.strictEqual(resolveToolLocalPath(allowedPath, "workspace required"), allowedPath);
+  });
+
   test("absolute local path resolution preserves non-containment errors", () => {
-    const tooLongPath = path.join(os.tmpdir(), "x".repeat(300), "download.bin");
+    const tooLongPath = path.join(os.tmpdir(), TEMP_DIR_NAME, "x".repeat(300), "download.bin");
 
     assert.throws(
       () => resolveToolLocalPath(tooLongPath, "workspace required"),
@@ -425,6 +534,20 @@ suite("Adversarial untrusted input fuzzing", () => {
     assert.match(multibyteName, /\.json$/);
     assert.ok(Buffer.byteLength(longName, "utf8") <= 180);
     assert.ok(Buffer.byteLength(multibyteName, "utf8") <= 180);
+  });
+
+  test("default download names avoid Windows reserved device basenames", () => {
+    for (const remotePath of [
+      "reports/CON",
+      "reports/NUL.txt",
+      "reports/AUX.",
+      "reports/com1.csv",
+      "reports/Lpt1.log",
+    ]) {
+      const fileName = safeDefaultDownloadName(remotePath);
+
+      assert.doesNotMatch(fileName, /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i);
+    }
   });
 
   test("atomic non-overwrite writes preserve existing download targets", async () => {
@@ -482,6 +605,180 @@ suite("Adversarial untrusted input fuzzing", () => {
       assert.ok(writeCalls > 1);
     } finally {
       (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("atomic stream writes cancel the reader on write failure", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-cancel-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+    const originalOpen = fs.promises.open;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    try {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async (
+        ...args: Parameters<typeof fs.promises.open>
+      ) => {
+        const handle = await originalOpen(...args);
+        (handle as unknown as { write: typeof handle.write }).write = (async () => {
+          throw new Error("forced write failure");
+        }) as typeof handle.write;
+        return handle;
+      }) as typeof fs.promises.open;
+
+      await assert.rejects(
+        () => writeReadableStreamAtomically(targetPath, stream),
+        /forced write failure/,
+      );
+      assert.strictEqual(cancelled, true);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("atomic stream writes time out stalled readers and clean up", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-timeout-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => writeReadableStreamAtomically(targetPath, stream, { idleTimeoutMs: 5 }),
+        /Download stream stalled/,
+      );
+      assert.strictEqual(cancelled, true);
+      assert.strictEqual(
+        (await fs.promises.readdir(outputRoot)).some((entry) => entry.endsWith(".tmp")),
+        false,
+      );
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("stale atomic temp files are swept without removing fresh writes", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-sweep-"));
+    const oldTemp = path.join(outputRoot, ".download.bin.1.1.abcdefabcdefabcd.tmp");
+    const freshTemp = path.join(outputRoot, ".download.bin.1.2.abcdefabcdefabce.tmp");
+    const oldDate = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    try {
+      await fs.promises.writeFile(oldTemp, "old");
+      await fs.promises.writeFile(freshTemp, "fresh");
+      await fs.promises.utimes(oldTemp, oldDate, oldDate);
+
+      await sweepStaleAtomicTempFiles(outputRoot, 60 * 60 * 1000);
+
+      assert.strictEqual(fs.existsSync(oldTemp), false);
+      assert.strictEqual(fs.existsSync(freshTemp), true);
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("no-follow reads reject symlink-swapped upload targets", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-nofollow-"));
+    const outsideFile = path.join(outputRoot, "outside.txt");
+    const linkPath = path.join(outputRoot, "link.txt");
+
+    try {
+      await fs.promises.writeFile(outsideFile, "secret");
+      await fs.promises.symlink(outsideFile, linkPath);
+
+      await assert.rejects(() => readFileNoFollow(linkPath), /ELOOP|symbolic link/i);
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("default downloads detect existing targets before downloading", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-default-"));
+    const targetPath = path.join(outputRoot, "file.txt");
+    let downloadCalled = false;
+    const testBucket = {
+      async download() {
+        downloadCalled = true;
+        return { body: streamFromBytes(new Uint8Array([1, 2, 3])) };
+      },
+    } as unknown as Bucket;
+    const client = {
+      async getBucket() {
+        return testBucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await fs.promises.writeFile(targetPath, "old");
+      await withWorkspaceFolder(outputRoot, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "bucket", path: "file.txt" },
+              { getClient: () => client },
+            ),
+          /refuses to overwrite existing workspace file/,
+        );
+      });
+
+      assert.strictEqual(downloadCalled, false);
+      assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "old");
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit downloads do not overwrite existing local files", async () => {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    await ensurePrivateDirectory(tempRoot);
+    const outputRoot = await fs.promises.mkdtemp(path.join(tempRoot, "explicit-"));
+    const targetPath = path.join(outputRoot, "file.txt");
+    let downloadCalled = false;
+    const testBucket = {
+      async download() {
+        downloadCalled = true;
+        return { body: streamFromBytes(new Uint8Array([1, 2, 3])) };
+      },
+    } as unknown as Bucket;
+    const client = {
+      async getBucket() {
+        return testBucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await fs.promises.writeFile(targetPath, "old");
+      await withWorkspaceFolder(outputRoot, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "bucket", path: "file.txt", localPath: "file.txt" },
+              { getClient: () => client },
+            ),
+          /refuses to overwrite existing workspace file/,
+        );
+      });
+
+      assert.strictEqual(downloadCalled, false);
+      assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "old");
+    } finally {
       await fs.promises.rm(outputRoot, { recursive: true, force: true });
     }
   });
@@ -609,7 +906,7 @@ suite("Adversarial untrusted input fuzzing", () => {
           () =>
             presignUrlOperation.execute(
               { bucket: "bucket", path: "file.txt", expiresIn },
-              presignExtras("token"),
+              presignExtrasThatFailsBeforeSdkCalls(),
             ),
           /expiresIn must be an integer/,
         );

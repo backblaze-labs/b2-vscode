@@ -10,6 +10,12 @@ import * as fs from "fs";
 import * as path from "path";
 
 const HASH_LENGTH = 16;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const STALE_ATOMIC_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const ATOMIC_TEMP_FILE_PATTERN = /^\..+\.\d+\.\d+\.[a-f0-9]{16}\.tmp$/;
+const WINDOWS_RESERVED_BASENAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+
+type StreamReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
 
 export interface SafePathSegmentOptions {
   fallback: string;
@@ -21,6 +27,24 @@ export interface SafePathSegmentOptions {
 
 export interface AtomicWriteOptions {
   overwrite?: boolean;
+  idleTimeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export class PathContainmentError extends Error {
+  readonly code = "ERR_PATH_CONTAINMENT";
+
+  constructor(parameterName: string, allowedDescription: string) {
+    super(`${parameterName} must stay within ${allowedDescription}.`);
+    this.name = "PathContainmentError";
+  }
+}
+
+class StreamIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Download stream stalled for ${timeoutMs}ms.`);
+    this.name = "StreamIdleTimeoutError";
+  }
 }
 
 export function contentHash(value: string): string {
@@ -63,7 +87,8 @@ export function encodeUrlComponent(value: string): string {
 export function encodeUrlPathSegment(value: string): string {
   const wellFormed = toWellFormedUnicode(value);
   if (/^\.+$/.test(wellFormed)) {
-    return ".".repeat(wellFormed.length).replace(/\./g, "%252E");
+    // Double-encode dot-only segments so URL parsing cannot normalize them as traversal.
+    return "%252E".repeat(wellFormed.length);
   }
 
   return encodeUrlComponent(wellFormed);
@@ -130,6 +155,10 @@ function fitSegmentToBytes(
   return `${truncateUtf8(fallback, fallbackStemBytes) || "file"}${fallbackSuffix}`;
 }
 
+function avoidWindowsReservedBasename(segment: string): string {
+  return WINDOWS_RESERVED_BASENAME.test(segment) ? `_${segment}` : segment;
+}
+
 export function sanitizeLocalPathSegment(value: string, options: SafePathSegmentOptions): string {
   const wellFormed = toWellFormedUnicode(value);
   const trimmed = wellFormed.trim();
@@ -141,6 +170,12 @@ export function sanitizeLocalPathSegment(value: string, options: SafePathSegment
     .trim();
 
   let changed = sanitized !== value;
+  const portable = avoidWindowsReservedBasename(sanitized);
+  if (portable !== sanitized) {
+    sanitized = portable;
+    changed = true;
+  }
+
   if (!sanitized || /^\.+$/.test(sanitized)) {
     sanitized = options.fallback;
     changed = true;
@@ -158,6 +193,11 @@ export function sanitizeLocalPathSegment(value: string, options: SafePathSegment
   );
 
   return !fitted || /^\.+$/.test(fitted) ? `${options.fallback}-${contentHash(value)}` : fitted;
+}
+
+export function safeLocalBasename(value: string, options: SafePathSegmentOptions): string {
+  const basename = path.posix.basename(value.replace(/\\/g, "/"));
+  return sanitizeLocalPathSegment(basename, options);
 }
 
 export function isPathInside(parentPath: string, candidatePath: string): boolean {
@@ -218,10 +258,83 @@ export function resolvePathInsideReal(
   const effectiveCandidate = path.resolve(ancestorReal, remainder);
 
   if (!isPathInside(parentReal, effectiveCandidate)) {
-    throw new Error(`${parameterName} must stay within ${allowedDescription}.`);
+    throw new PathContainmentError(parameterName, allowedDescription);
   }
 
   return resolvedCandidate;
+}
+
+function validatePrivateDirectoryStat(directoryPath: string, stat: fs.Stats): void {
+  if (!stat.isDirectory()) {
+    throw new Error(`${directoryPath} must be a directory.`);
+  }
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const getuid = process.getuid;
+  if (typeof getuid === "function" && stat.uid !== getuid()) {
+    throw new Error(`${directoryPath} is not owned by the current user.`);
+  }
+}
+
+export async function ensurePrivateDirectory(directoryPath: string): Promise<void> {
+  await fs.promises.mkdir(directoryPath, { recursive: true, mode: 0o700 });
+  const stat = await fs.promises.lstat(directoryPath);
+  validatePrivateDirectoryStat(directoryPath, stat);
+
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    await fs.promises.chmod(directoryPath, 0o700);
+  }
+}
+
+export function ensurePrivateDirectorySync(directoryPath: string): void {
+  fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(directoryPath);
+  validatePrivateDirectoryStat(directoryPath, stat);
+
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    fs.chmodSync(directoryPath, 0o700);
+  }
+}
+
+export async function sweepStaleAtomicTempFiles(
+  directoryPath: string,
+  maxAgeMs = STALE_ATOMIC_TEMP_MAX_AGE_MS,
+): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  const cutoff = Date.now() - maxAgeMs;
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && ATOMIC_TEMP_FILE_PATTERN.test(entry.name))
+      .map(async (entry) => {
+        const tempPath = path.join(directoryPath, entry.name);
+        const stat = await fs.promises.stat(tempPath);
+        if (stat.mtimeMs < cutoff) {
+          await fs.promises.rm(tempPath, { force: true });
+        }
+      }),
+  );
+}
+
+export async function readFileNoFollow(filePath: string): Promise<Buffer> {
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollow);
+
+  try {
+    return await handle.readFile();
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 function atomicTempPath(filePath: string): string {
@@ -276,14 +389,52 @@ export async function writeBufferAtomically(
 ): Promise<void> {
   const overwrite = options.overwrite !== false;
   await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
+  await sweepStaleAtomicTempFiles(path.dirname(destinationPath));
   const tempPath = atomicTempPath(destinationPath);
 
   try {
-    await fs.promises.writeFile(tempPath, content, { flag: "wx" });
+    await fs.promises.writeFile(tempPath, content, { flag: "wx", mode: 0o600 });
     await publishTempFile(tempPath, destinationPath, overwrite);
   } catch (error) {
     await fs.promises.rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+async function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<StreamReadResult> {
+  if (signal?.aborted) {
+    throw new Error("Download stream was aborted.");
+  }
+
+  let timeout: NodeJS.Timeout | undefined;
+  let abortHandler: (() => void) | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new StreamIdleTimeoutError(timeoutMs)), timeoutMs);
+  });
+  const abortPromise = signal
+    ? new Promise<never>((_, reject) => {
+        abortHandler = () => reject(new Error("Download stream was aborted."));
+        signal.addEventListener("abort", abortHandler, { once: true });
+      })
+    : undefined;
+
+  try {
+    return await Promise.race(
+      [reader.read(), timeoutPromise, abortPromise].filter(
+        (promise): promise is Promise<StreamReadResult> | Promise<never> => promise !== undefined,
+      ),
+    );
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    if (signal && abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
   }
 }
 
@@ -293,15 +444,18 @@ export async function writeReadableStreamAtomically(
   options: AtomicWriteOptions = {},
 ): Promise<number> {
   const overwrite = options.overwrite !== false;
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
+  await sweepStaleAtomicTempFiles(path.dirname(destinationPath));
   const tempPath = atomicTempPath(destinationPath);
-  const handle = await fs.promises.open(tempPath, "wx");
+  const handle = await fs.promises.open(tempPath, "wx", 0o600);
   let size = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   try {
-    const reader = stream.getReader();
+    reader = stream.getReader();
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithTimeout(reader, idleTimeoutMs, options.signal);
       if (done) {
         break;
       }
@@ -314,8 +468,19 @@ export async function writeReadableStreamAtomically(
     await publishTempFile(tempPath, destinationPath, overwrite);
     return size;
   } catch (error) {
+    if (reader) {
+      await reader.cancel(error).catch(() => undefined);
+    }
     await handle.close().catch(() => undefined);
     await fs.promises.rm(tempPath, { force: true });
     throw error;
+  } finally {
+    if (reader) {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Best-effort release after successful completion or cancellation.
+      }
+    }
   }
 }

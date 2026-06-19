@@ -10,6 +10,8 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { B2Client, classifyError } from "@backblaze-labs/b2-sdk";
+import { TEMP_DIR_NAME } from "../../constants";
+import { ensurePrivateDirectorySync } from "../../pathSafety";
 import { B2ToolAdapter } from "../../tools/b2ToolAdapter";
 import type { B2ToolOperation, ToolExtras } from "../../tools/types";
 import { deleteFileTool } from "../../tools/definitions/deleteFile";
@@ -160,6 +162,12 @@ function createFileSymlink(target: string, linkPath: string): boolean {
 }
 
 suite("B2 LM tool failure handling", () => {
+  function extensionTempFixture(prefix: string): string {
+    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    ensurePrivateDirectorySync(tempRoot);
+    return fs.mkdtempSync(path.join(tempRoot, prefix));
+  }
+
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
       { status: 429, code: "too_many_requests", message: "slow down" },
@@ -313,7 +321,7 @@ suite("B2 LM tool failure handling", () => {
   });
 
   test("upload tool surfaces missing local file path feedback", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-missing-"));
+    const dir = extensionTempFixture("upload-missing-");
     const client = {
       async getBucket() {
         assert.fail("Expected local path validation before bucket lookup");
@@ -494,7 +502,7 @@ suite("B2 LM tool failure handling", () => {
   });
 
   test("object lookup failures are mapped for file-oriented tools", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-tools-"));
+    const dir = extensionTempFixture("tools-");
     const localFile = path.join(dir, "a.txt");
     fs.writeFileSync(localFile, "hello");
 
