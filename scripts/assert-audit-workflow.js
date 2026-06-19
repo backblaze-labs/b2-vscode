@@ -64,8 +64,13 @@ const testSignatureIndex = testWorkflow.indexOf("- name: Verify dependency signa
 const releaseBuildIndex = releaseWorkflow.indexOf("- name: Build extension");
 const releaseAuditIndex = releaseWorkflow.indexOf("- name: Audit dependency advisories");
 const releaseSignatureIndex = releaseWorkflow.indexOf("- name: Verify dependency signatures");
+const readmePathFilterCount = (testWorkflow.match(/- "README\.md"/g) || []).length;
 
 assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
+assert(
+  readmePathFilterCount >= 2,
+  "test workflow push and pull_request path filters must include README.md.",
+);
 assert(!testWorkflow.includes("npm run audit:ci"), "CI must not call the PR-mutable audit script.");
 assert(testRunIndex !== -1, "test workflow must still run VS Code tests.");
 for (const [label, index] of [

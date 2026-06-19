@@ -4,11 +4,11 @@
 
 The required `VS Code Extension Tests` check runs the lockfile-pinned `audit-ci`
 binary against `audit-ci.jsonc`, which audits the full npm dependency tree,
-including development and release tooling. Dependency installation uses
-`npm ci --ignore-scripts`, so package lifecycle scripts cannot run before the
-advisory gate evaluates the lockfile. The gate fails on moderate, high, or
-critical advisories because tooling dependencies participate in building,
-packaging, and testing the VSIX.
+including development and release tooling. The required test check and the
+release workflow install dependencies with `npm ci --ignore-scripts`, so package
+lifecycle scripts cannot run before the advisory gate evaluates the lockfile on
+those paths. The gate fails on moderate, high, or critical advisories because
+tooling dependencies participate in building, packaging, and testing the VSIX.
 
 Runtime-only audits are still useful for triage, but they are not the blocking
 policy for this repository. Available fixes should be applied by upgrading direct
