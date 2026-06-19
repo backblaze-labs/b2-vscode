@@ -85,4 +85,25 @@ suite("TempFileManager", () => {
       fs.rmSync(outsideRoot, { recursive: true, force: true });
     }
   });
+
+  test("falls back instead of following a symlinked cache root", async () => {
+    const tempParent = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-parent-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const symlinkRoot = path.join(tempParent, "b2-vscode");
+    const outsidePath = path.join(outsideRoot, "bucket", "file.txt");
+    const manager = new TempFileManager(symlinkRoot);
+
+    try {
+      fs.symlinkSync(outsideRoot, symlinkRoot, process.platform === "win32" ? "junction" : "dir");
+
+      const localPath = await manager.saveFile("bucket", "file.txt", Buffer.from("cached"));
+
+      assert.strictEqual(fs.existsSync(outsidePath), false);
+      assert.strictEqual(fs.readFileSync(localPath, "utf8"), "cached");
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempParent, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
 });
