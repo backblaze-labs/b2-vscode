@@ -197,6 +197,27 @@ suite("VSIX runtime asset assertions", () => {
     }
   });
 
+  test("rejects a VSIX with a non-object contribution manifest", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const entries = {
+        ...baseEntries("module.exports = {};", runtime, wasm),
+        [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: "null",
+      };
+      const vsixPath = await createFixtureVsix(dir, entries);
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /package manifest must be an object/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a VSIX with the old repository URL", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();

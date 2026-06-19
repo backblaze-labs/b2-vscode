@@ -55,25 +55,26 @@ function assertAbsent(manifest, fieldName) {
 }
 
 function assertContributionManifest(manifest) {
-  assertEqual(manifest.name, manifestContract.packageName, "package name");
-  assertEqual(manifest.publisher, manifestContract.publisher, "package publisher");
-  assertEqual(manifest.main, manifestContract.versionedMain, "package main");
-  assertEqual(manifest.icon, manifestContract.icon, "package icon");
+  const packageManifest = assertObject(manifest, "package manifest");
+  assertEqual(packageManifest.name, manifestContract.packageName, "package name");
+  assertEqual(packageManifest.publisher, manifestContract.publisher, "package publisher");
+  assertEqual(packageManifest.main, manifestContract.versionedMain, "package main");
+  assertEqual(packageManifest.icon, manifestContract.icon, "package icon");
   assertExactArray(
-    manifest.activationEvents ?? [],
+    packageManifest.activationEvents ?? [],
     manifestContract.activationEvents,
     "package activationEvents",
   );
 
   for (const fieldName of manifestContract.forbiddenTopLevelFields) {
-    assertAbsent(manifest, fieldName);
+    assertAbsent(packageManifest, fieldName);
   }
 
-  const repository = assertObject(manifest.repository, "package repository");
+  const repository = assertObject(packageManifest.repository, "package repository");
   assertEqual(repository.type, manifestContract.repository.type, "package repository type");
   assertEqual(repository.url, manifestContract.repository.url, "package repository URL");
 
-  const contributes = assertObject(manifest.contributes, "package contributes");
+  const contributes = assertObject(packageManifest.contributes, "package contributes");
   const commands = assertArrayOfObjects(contributes.commands, "package contributes.commands");
   assertExactArray(
     commands.map((command, index) =>
