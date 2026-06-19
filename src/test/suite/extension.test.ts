@@ -20,7 +20,13 @@ interface LanguageModelToolContribution {
 }
 
 suite("B2 Extension Test Suite", () => {
-  test("Extension activates", async () => {
+  test("Extension activates from the compiled test harness", async () => {
+    const compiledTestFile = __filename.replace(/\\/g, "/");
+    assert.ok(
+      compiledTestFile.endsWith("/out/src/test/suite/extension.test.js"),
+      `Expected compiled extension test to run from out/src/test/suite, got ${compiledTestFile}`,
+    );
+
     const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
     assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
 

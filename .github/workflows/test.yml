@@ -53,5 +53,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run VS Code tests
+      - name: Run VS Code tests with discovery guard
         run: xvfb-run -a npm test

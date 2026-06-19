@@ -37,7 +37,7 @@
     "type-check": "tsc --noEmit",
     "audit:release": "npm audit --omit=dev --audit-level=moderate",
     "pretest": "npm run compile-tests && npm run compile && npm run compile:bundled-smoke && npm run lint",
-    "test": "vscode-test",
+    "test": "node scripts/assert-test-discovery.js && vscode-test",
     "clean": "rm -rf dist out *.vsix",
     "clean:vsix": "rm -rf *.vsix",
     "assert:vsix-assets": "node scripts/assert-vsix-assets.js",
