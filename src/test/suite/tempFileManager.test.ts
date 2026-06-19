@@ -37,4 +37,52 @@ suite("TempFileManager", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("rejects bucket and file names that escape the cache root", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const manager = new TempFileManager(tempRoot);
+    const traversalCases = [
+      { bucketName: "bucket", fileName: "../../escape.txt" },
+      { bucketName: "../escape-bucket", fileName: "file.txt" },
+    ];
+
+    try {
+      for (const { bucketName, fileName } of traversalCases) {
+        const escapePath = path.resolve(tempRoot, bucketName, fileName);
+
+        await assert.rejects(
+          () => manager.saveFile(bucketName, fileName, Buffer.from("escape")),
+          /B2 object path must stay within the temp cache/i,
+        );
+        assert.strictEqual(fs.existsSync(escapePath), false);
+      }
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects cache writes through symlinked parents", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const manager = new TempFileManager(tempRoot);
+    const bucketRoot = path.join(tempRoot, "bucket");
+    const symlinkPath = path.join(bucketRoot, "link");
+    const escapePath = path.join(outsideRoot, "escape.txt");
+
+    try {
+      fs.mkdirSync(bucketRoot, { recursive: true });
+      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+
+      await assert.rejects(
+        () => manager.saveFile("bucket", path.join("link", "escape.txt"), Buffer.from("escape")),
+        /B2 object path must stay within the temp cache/i,
+      );
+      assert.strictEqual(fs.existsSync(escapePath), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
 });
