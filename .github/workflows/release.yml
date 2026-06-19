@@ -67,14 +67,14 @@ jobs:
 
       # Step names/order in this job are asserted by
       # scripts/assert-audit-workflow.js; update that guard if they change.
-      - name: Assert audit policy guardrails
-        run: node scripts/assert-audit-policy.js
-
       - name: Install dependencies without lifecycle scripts
         timeout-minutes: 10
         # Keep this lifecycle-disabled. If a future dependency needs a build
         # step, add a targeted npm rebuild after the audit and document why.
         run: bash scripts/retry.sh npm ci --ignore-scripts
+
+      - name: Assert audit policy guardrails
+        run: node scripts/assert-audit-policy.js
 
       - name: Audit dependency advisories
         timeout-minutes: 10

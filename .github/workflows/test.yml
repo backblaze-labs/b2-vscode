@@ -70,9 +70,6 @@ jobs:
       - name: Assert audit workflow guardrails
         run: node scripts/assert-audit-workflow.js
 
-      - name: Assert audit policy guardrails
-        run: node scripts/assert-audit-policy.js
-
       - name: Assert lifecycle scripts stay disabled
         run: node scripts/assert-ignore-scripts-install.js
 
@@ -81,6 +78,9 @@ jobs:
         # Keep this lifecycle-disabled. If a future dependency needs a build
         # step, add a targeted npm rebuild after the audit and document why.
         run: bash scripts/retry.sh npm ci --ignore-scripts
+
+      - name: Assert audit policy guardrails
+        run: node scripts/assert-audit-policy.js
 
       - name: Assert audit gate fails closed
         timeout-minutes: 10
