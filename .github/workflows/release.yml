@@ -136,7 +136,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           languages: javascript-typescript
           queries: security-extended
@@ -154,7 +154,7 @@ jobs:
         run: npm run compile
 
       - name: Analyze with CodeQL
-        uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           category: "/language:javascript-typescript"
 
@@ -305,7 +305,7 @@ jobs:
         run: echo "path=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)" >> "$GITHUB_OUTPUT"
 
       - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: ${{ steps.vsix.outputs.path }}
 
