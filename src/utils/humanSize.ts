@@ -4,8 +4,11 @@
  * @module utils/humanSize
  */
 
-const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
+/**
+ * Convert bytes to a human-readable string without throwing for edge cases.
+ */
 export function humanSize(bytes: number): string {
   const normalizedBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 

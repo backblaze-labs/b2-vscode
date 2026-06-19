@@ -19,8 +19,8 @@ import {
   ensureRealDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
-  resolveContainedRelativePath,
 } from "./pathSafety";
+import { buildTempFilePath } from "../utils/localPaths";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
@@ -209,8 +209,7 @@ export class TempFileManager implements vscode.Disposable {
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
-    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
-    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
+    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
     await this.ensureCacheDirectoryPath(path.dirname(localPath));
 
     await downloadStreamToFile(stream, localPath, options);

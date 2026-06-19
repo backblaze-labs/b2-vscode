@@ -4,9 +4,9 @@
  * @module tools/operations/downloadFile
  */
 
-import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
 import {

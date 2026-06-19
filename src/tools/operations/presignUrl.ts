@@ -6,6 +6,7 @@
 
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
+import { buildB2DownloadUrl } from "../../utils/urlEncoding";
 
 interface PresignUrlParams {
   bucket: string;
@@ -50,9 +51,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
 
     const { authorizationToken } = await bucket.getDownloadAuthorization(params.path, expiresIn);
     const downloadUrl = client.accountInfo.getDownloadUrl();
-    // Encode each path segment (preserving "/") and the token for safe URL use.
-    const encodedPath = params.path.split("/").map(encodeURIComponent).join("/");
-    const url = `${downloadUrl}/file/${params.bucket}/${encodedPath}?Authorization=${encodeURIComponent(authorizationToken)}`;
+    const url = buildB2DownloadUrl(downloadUrl, params.bucket, params.path, authorizationToken);
 
     return {
       url,
