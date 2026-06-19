@@ -10,7 +10,10 @@
 import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
-import { cleanupStaleTransferTempFiles } from "./services/fileTransfers";
+import {
+  cleanupStaleTransferTempFiles,
+  cleanupStaleUnfinishedUploads,
+} from "./services/fileTransfers";
 import { AuthService } from "./services/authService";
 import { TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
@@ -78,6 +81,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await client.authorize();
 
       currentClient = client;
+      void client
+        .listBuckets()
+        .then((buckets) =>
+          Promise.all(
+            buckets.map((bucket) =>
+              cleanupStaleUnfinishedUploads(bucket).catch((error) => {
+                logError(`Could not clean stale unfinished uploads in ${bucket.name}`, error);
+              }),
+            ),
+          ),
+        )
+        .catch((error) => {
+          logError("Could not list buckets for stale unfinished upload cleanup", error);
+        });
       treeProvider.setClient(client);
 
       await authService.setAuthState({

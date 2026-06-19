@@ -5,6 +5,7 @@
  */
 
 import * as path from "path";
+import * as fs from "fs";
 
 export class UnsafePathError extends Error {
   constructor(message: string) {
@@ -41,6 +42,101 @@ function portableSegments(relativePath: string, label: string): string[] {
 }
 
 const WORKSPACE_CONTROL_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
+
+export interface EnsureRealDirectoryOptions {
+  readonly mode?: number;
+  readonly recursive?: boolean;
+}
+
+export function assertRealDirectory(stats: fs.Stats, directory: string, label: string): void {
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(
+      `${label} must be a real directory, not a symlink or special file: ${directory}`,
+    );
+  }
+}
+
+export async function pathExistsAsRealDirectory(
+  directory: string,
+  label: string,
+): Promise<boolean> {
+  try {
+    assertRealDirectory(await fs.promises.lstat(directory), directory, label);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export function ensureRealDirectorySync(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): void {
+  let stats: fs.Stats | undefined;
+  try {
+    stats = fs.lstatSync(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  if (stats) {
+    assertRealDirectory(stats, directory, label);
+    return;
+  }
+
+  fs.mkdirSync(directory, {
+    recursive: options.recursive ?? false,
+    ...(options.mode !== undefined ? { mode: options.mode } : {}),
+  });
+  assertRealDirectory(fs.lstatSync(directory), directory, label);
+}
+
+export async function ensureRealDirectory(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): Promise<void> {
+  if (await pathExistsAsRealDirectory(directory, label)) {
+    return;
+  }
+
+  await fs.promises.mkdir(directory, {
+    recursive: options.recursive ?? false,
+    ...(options.mode !== undefined ? { mode: options.mode } : {}),
+  });
+  assertRealDirectory(await fs.promises.lstat(directory), directory, label);
+}
+
+export async function ensureContainedDirectoryPath(
+  rootPath: string,
+  targetDirectory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): Promise<void> {
+  const root = path.resolve(rootPath);
+  const target = path.resolve(targetDirectory);
+  if (!isPathInsideOrEqual(root, target)) {
+    throw new Error(`${label} resolves outside the allowed root: ${targetDirectory}`);
+  }
+
+  const rootRealPath = await fs.promises.realpath(rootPath);
+  const relative = path.relative(root, target);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
+    current = path.join(current, segment);
+    await ensureRealDirectory(current, label, options);
+    const currentRealPath = await fs.promises.realpath(current);
+    if (!isPathInsideOrEqual(rootRealPath, currentRealPath)) {
+      throw new Error(`${label} resolves outside the allowed root: ${current}`);
+    }
+  }
+}
 
 export function isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
   const parent = path.resolve(parentPath);

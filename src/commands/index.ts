@@ -20,6 +20,7 @@ import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../services/transferProgress";
+import { withTransferStallTimeout } from "../services/fileTransfers";
 import { B2PartialFailureError, formatB2UserMessage } from "../errors";
 import { logError } from "../logger";
 import {
@@ -62,6 +63,62 @@ export interface CommandServices {
   context: vscode.ExtensionContext;
   getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
+}
+
+export interface OpenFileCommandServices {
+  tempFileManager: TempFileManager;
+  getClient: () => B2Client | null;
+}
+
+export async function openFileCommand(
+  item: FileTreeItem,
+  services: OpenFileCommandServices,
+): Promise<void> {
+  const { tempFileManager, getClient } = services;
+
+  if (!getClient()) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+
+  const cached = tempFileManager.getCachedPath(item.bucketName, item.file.fileName);
+  if (cached) {
+    await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(cached));
+    return;
+  }
+
+  try {
+    await withCancellableTransferProgress(
+      { title: `Downloading ${item.file.fileName}...` },
+      async ({ progress, signal }) => {
+        const reporter = createTransferProgressReporter(progress, item.file.contentLength);
+        const { body } = await withTransferStallTimeout(
+          `Download request for b2://${item.bucketName}/${item.file.fileName}`,
+          { signal },
+          (requestSignal, markActivity) =>
+            item.bucket.download(item.file.fileName, {
+              signal: requestSignal,
+              onProgress: (event) => {
+                markActivity();
+                reporter(event);
+              },
+            }),
+        );
+        const localPath = await tempFileManager.saveStream(
+          item.bucketName,
+          item.file.fileName,
+          body,
+          { signal },
+        );
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(localPath));
+      },
+    );
+  } catch (error) {
+    if (error instanceof vscode.CancellationError) {
+      return;
+    }
+    showCommandError("B2: Failed to open file", error);
+  }
 }
 
 /**
@@ -546,44 +603,8 @@ export function registerCommands(services: CommandServices): void {
 
   // ── Open File ───────────────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.openFile", async (item: FileTreeItem) => {
-      if (!getClient()) {
-        vscode.window.showErrorMessage("B2: Not authenticated.");
-        return;
-      }
-
-      // Check cache first
-      const cached = tempFileManager.getCachedPath(item.bucketName, item.file.fileName);
-      if (cached) {
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(cached));
-        return;
-      }
-
-      try {
-        await withCancellableTransferProgress(
-          { title: `Downloading ${item.file.fileName}...` },
-          async ({ progress, signal }) => {
-            const { body } = await item.bucket.download(item.file.fileName, {
-              signal,
-              onProgress: createTransferProgressReporter(progress, item.file.contentLength),
-            });
-            const localPath = await tempFileManager.saveStream(
-              item.bucketName,
-              item.file.fileName,
-              body,
-              {
-                signal,
-              },
-            );
-            await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(localPath));
-          },
-        );
-      } catch (error) {
-        if (error instanceof vscode.CancellationError) {
-          return;
-        }
-        showCommandError("B2: Failed to open file", error);
-      }
-    }),
+    vscode.commands.registerCommand("b2.openFile", (item: FileTreeItem) =>
+      openFileCommand(item, { tempFileManager, getClient }),
+    ),
   );
 }

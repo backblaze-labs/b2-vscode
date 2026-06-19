@@ -33,10 +33,12 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
+  cleanupStaleUnfinishedUploads,
   downloadStreamToFile,
   STREAMING_UPLOAD_PART_SIZE,
   TransferStallTimeoutError,
   uploadFileFromDisk,
+  withTransferStallTimeout,
   type UploadBucketHandle,
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
@@ -756,6 +758,114 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("does not cancel fresh unfinished uploads for the same remote key", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-concurrent-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    const uploaded: number[] = [];
+    let cancelCalls = 0;
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        return {
+          files: [
+            {
+              fileId: largeFileId("fresh-upload"),
+              fileName: "remote/file.bin",
+              fileInfo: { "b2-vscode-upload-started-ms": String(Date.now()) },
+            },
+          ],
+          nextFileId: null,
+        };
+      },
+      async cancelLargeFile() {
+        cancelCalls += 1;
+      },
+      file(fileName: string) {
+        let resolveDone: (value: FileVersion) => void = () => undefined;
+        const done = new Promise<FileVersion>((resolve) => {
+          resolveDone = resolve;
+        });
+
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write(chunk) {
+                  uploaded.push(...chunk);
+                },
+                close() {
+                  resolveDone(fakeFileVersion(fileName, uploaded.length, "uploaded-id"));
+                },
+              }),
+              done,
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
+        unfinishedCleanupMaxAgeMs: 1_000,
+      });
+
+      assert.strictEqual(result.fileId, "uploaded-id");
+      assert.strictEqual(cancelCalls, 0);
+      assert.deepStrictEqual(uploaded, [1, 2, 3]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cancels stale extension-owned unfinished uploads", async () => {
+    const staleId = largeFileId("stale-upload");
+    const freshId = largeFileId("fresh-upload");
+    const unmarkedId = largeFileId("unmarked-upload");
+    const canceled: unknown[] = [];
+    const now = Date.now();
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        return {
+          files: [
+            {
+              fileId: staleId,
+              fileName: "remote/stale.bin",
+              fileInfo: { "b2-vscode-upload-started-ms": String(now - 10_000) },
+            },
+            {
+              fileId: freshId,
+              fileName: "remote/fresh.bin",
+              fileInfo: { "b2-vscode-upload-started-ms": String(now) },
+            },
+            {
+              fileId: unmarkedId,
+              fileName: "remote/unmarked.bin",
+            },
+          ],
+          nextFileId: null,
+        };
+      },
+      async cancelLargeFile(fileId) {
+        canceled.push(fileId);
+      },
+      file() {
+        assert.fail("Expected cleanup test not to open an upload stream");
+      },
+      async upload() {
+        assert.fail("Expected cleanup test not to upload a file");
+      },
+    } satisfies UploadBucketHandle;
+
+    await cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupMaxAgeMs: 1_000 });
+
+    assert.deepStrictEqual(canceled, [staleId]);
+  });
+
   test("uses single-upload path for empty files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-empty-upload-"));
     const localPath = path.join(dir, "empty.bin");
@@ -982,6 +1092,18 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("times out stalled transfer setup requests", async () => {
+    await assert.rejects(
+      () =>
+        withTransferStallTimeout(
+          "request setup",
+          { stallTimeoutMs: 20 },
+          () => new Promise(() => undefined),
+        ),
+      TransferStallTimeoutError,
+    );
   });
 
   test("cleans stale managed transfer temp files", async () => {

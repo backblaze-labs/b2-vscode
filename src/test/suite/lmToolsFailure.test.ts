@@ -144,6 +144,19 @@ function createDirectorySymlink(target: string, linkPath: string): boolean {
   }
 }
 
+function createFileSymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, "file");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 suite("B2 LM tool failure handling", () => {
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
@@ -523,6 +536,39 @@ suite("B2 LM tool failure handling", () => {
           () =>
             uploadFileOperation.execute(
               { bucket: "b", localPath: ".git/config" },
+              { getClient: () => client },
+            ),
+          /control directory/i,
+        );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool rejects symlinks into workspace control directories", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-control-link-"));
+    const controlFile = path.join(workspaceDir, ".git", "config");
+    const linkPath = path.join(workspaceDir, "backup.txt");
+    fs.mkdirSync(path.dirname(controlFile), { recursive: true });
+    fs.writeFileSync(controlFile, "secret");
+    const symlinkCreated = createFileSymlink(controlFile, linkPath);
+    const client = {
+      async getBucket() {
+        assert.fail("Expected realpath control-directory validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: "backup.txt" },
               { getClient: () => client },
             ),
           /control directory/i,

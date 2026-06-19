@@ -8,11 +8,11 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { downloadStreamToFile } from "../../services/fileTransfers";
+import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
 import {
   b2KeyBasename,
+  ensureContainedDirectoryPath,
   findWorkspaceControlDirectory,
-  isPathInsideOrEqual,
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
 import {
@@ -56,58 +56,15 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
   throw new Error(`downloadFile refuses to overwrite existing workspace file: ${destinationPath}`);
 }
 
-async function ensureRealDirectory(directory: string): Promise<void> {
-  let stats: fs.Stats | undefined;
-  try {
-    stats = await fs.promises.lstat(directory);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  if (stats) {
-    if (stats.isSymbolicLink() || !stats.isDirectory()) {
-      throw new Error(
-        `Workspace download directory must be a real directory, not a symlink or special file: ${directory}`,
-      );
-    }
-    return;
-  }
-
-  await fs.promises.mkdir(directory, { recursive: false }).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  });
-  const createdStats = await fs.promises.lstat(directory);
-  if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
-    throw new Error(
-      `Workspace download directory must be a real directory, not a symlink or special file: ${directory}`,
-    );
-  }
-}
-
 async function ensureWorkspaceDestinationDirectory(
   workspaceRoot: string,
   destinationPath: string,
 ): Promise<void> {
-  const root = path.resolve(workspaceRoot);
-  const parent = path.dirname(path.resolve(destinationPath));
-  const workspaceRealPath = await fs.promises.realpath(workspaceRoot);
-  const relative = path.relative(root, parent);
-  let current = root;
-
-  for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
-    current = path.join(current, segment);
-    await ensureRealDirectory(current);
-    const currentRealPath = await fs.promises.realpath(current);
-    if (!isPathInsideOrEqual(workspaceRealPath, currentRealPath)) {
-      throw new Error(
-        `Workspace download directory resolves outside the open workspace: ${current}`,
-      );
-    }
-  }
+  await ensureContainedDirectoryPath(
+    workspaceRoot,
+    path.dirname(path.resolve(destinationPath)),
+    "Workspace download directory",
+  );
 }
 
 async function workspacePath(relativePath: string): Promise<string> {
@@ -123,6 +80,8 @@ async function workspacePath(relativePath: string): Promise<string> {
   assertNoControlDirectoryTarget(workspaceFolder.uri.fsPath, destinationPath);
   await assertDestinationDoesNotExist(destinationPath);
   await ensureWorkspaceDestinationDirectory(workspaceFolder.uri.fsPath, destinationPath);
+  // Re-check after creating parent directories to avoid overwriting a target
+  // that appeared while validation was in progress.
   await assertDestinationDoesNotExist(destinationPath);
   return destinationPath;
 }
@@ -155,10 +114,19 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     const size = await withCancellableTransferProgress(
       { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
       async ({ progress, signal }) => {
-        const { body } = await bucket.download(params.path, {
-          signal,
-          onProgress: createTransferProgressReporter(progress),
-        });
+        const reporter = createTransferProgressReporter(progress);
+        const { body } = await withTransferStallTimeout(
+          `Download request for b2://${params.bucket}/${params.path}`,
+          { signal },
+          (requestSignal, markActivity) =>
+            bucket.download(params.path, {
+              signal: requestSignal,
+              onProgress: (event) => {
+                markActivity();
+                reporter(event);
+              },
+            }),
+        );
 
         return downloadStreamToFile(body, savePath, {
           signal,

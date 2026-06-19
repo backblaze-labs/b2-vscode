@@ -61,6 +61,7 @@ async function workspaceFilePath(relativePath: string): Promise<string> {
     throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
   }
 
+  assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
   return localRealPath;
 }
 

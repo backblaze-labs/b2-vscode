@@ -18,6 +18,7 @@ import {
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
 import { logError } from "../logger";
+import { ensureRealDirectory, pathExistsAsRealDirectory } from "./pathSafety";
 
 export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
 export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
@@ -31,6 +32,9 @@ const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 3;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
+const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_SESSION_STARTED_INFO_KEY = "b2-vscode-upload-started-ms";
+const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 
 const lastCleanupByDirectory = new Map<string, number>();
 
@@ -55,6 +59,7 @@ export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
   readonly partSize?: number;
   readonly unfinishedCleanupMaxPages?: number;
   readonly unfinishedCleanupTimeoutMs?: number;
+  readonly unfinishedCleanupMaxAgeMs?: number;
 }
 
 export interface UploadBucketHandle {
@@ -67,6 +72,7 @@ export interface UploadBucketHandle {
   file(fileName: string): {
     createWriteStream(options?: {
       partSize?: number;
+      fileInfo?: Record<string, string>;
       signal?: AbortSignal;
       onProgress?: ProgressListener;
     }): UploadWriteHandle;
@@ -76,7 +82,11 @@ export interface UploadBucketHandle {
     startFileId?: LargeFileId;
     pageSize?: number;
   }): Promise<{
-    files: readonly { fileId: LargeFileId; fileName: string }[];
+    files: readonly {
+      fileId: LargeFileId;
+      fileName: string;
+      fileInfo?: Record<string, string>;
+    }[];
     nextFileId: LargeFileId | null;
   }>;
   cancelLargeFile?(fileId: LargeFileId): Promise<unknown>;
@@ -157,35 +167,50 @@ function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): 
   throw error;
 }
 
+function abortPromise(signal: AbortSignal): Promise<never> {
+  const abortReason = () => signal.reason ?? new DOMException("Aborted", "AbortError");
+
+  if (signal.aborted) {
+    return Promise.reject(abortReason());
+  }
+
+  return new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(abortReason()), { once: true });
+  });
+}
+
+export async function withTransferStallTimeout<T>(
+  description: string,
+  options: TransferTimeoutOptions,
+  run: (signal: AbortSignal, markActivity: () => void) => Promise<T>,
+): Promise<T> {
+  const activity = createActivityAbortSignal(
+    options.signal,
+    options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+    description,
+  );
+
+  try {
+    return await Promise.race([
+      run(activity.signal, activity.markActivity),
+      abortPromise(activity.signal),
+    ]);
+  } catch (error) {
+    normalizeTransferError(error, activity);
+  } finally {
+    activity.dispose();
+  }
+}
+
 function transferTempDirectory(directory?: string): string {
   return directory ?? path.join(os.tmpdir(), TRANSFER_TEMP_DIR_NAME);
 }
 
-function assertRealDirectory(stats: fs.Stats, directory: string, label: string): void {
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(
-      `${label} must be a real directory, not a symlink or special file: ${directory}`,
-    );
-  }
-}
-
-async function existingRealDirectory(directory: string, label: string): Promise<boolean> {
-  try {
-    assertRealDirectory(await fs.promises.lstat(directory), directory, label);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function ensurePrivateDirectory(directory: string): Promise<void> {
-  if (!(await existingRealDirectory(directory, "Transfer temp directory"))) {
-    await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
-    assertRealDirectory(await fs.promises.lstat(directory), directory, "Transfer temp directory");
-  }
+  await ensureRealDirectory(directory, "Transfer temp directory", {
+    recursive: true,
+    mode: 0o700,
+  });
 
   await fs.promises.chmod(directory, 0o700).catch((error) => {
     logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
@@ -261,7 +286,7 @@ export async function cleanupStaleTransferTempFiles(
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
 
   try {
-    if (!(await existingRealDirectory(directory, "Transfer temp directory"))) {
+    if (!(await pathExistsAsRealDirectory(directory, "Transfer temp directory"))) {
       return;
     }
   } catch (error) {
@@ -306,7 +331,7 @@ export async function cleanupStaleDestinationTempFiles(options: {
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
 
   try {
-    if (!(await existingRealDirectory(directory, "Destination directory"))) {
+    if (!(await pathExistsAsRealDirectory(directory, "Destination directory"))) {
       return;
     }
   } catch (error) {
@@ -518,9 +543,67 @@ async function withTimeout<T>(
   }
 }
 
-async function cancelMatchingUnfinishedUploads(
+interface StaleUnfinishedUploadCleanupOptions extends Pick<
+  UploadFileFromDiskOptions,
+  "unfinishedCleanupMaxAgeMs" | "unfinishedCleanupMaxPages" | "unfinishedCleanupTimeoutMs"
+> {
+  readonly remotePath?: string;
+}
+
+function startedMsFromFileInfo(fileInfo: Record<string, string> | undefined): number | undefined {
+  const startedMs = Number(fileInfo?.[UPLOAD_SESSION_STARTED_INFO_KEY]);
+  return Number.isFinite(startedMs) ? startedMs : undefined;
+}
+
+export async function cleanupStaleUnfinishedUploads(
+  bucket: UploadBucketHandle,
+  options: StaleUnfinishedUploadCleanupOptions = {},
+): Promise<void> {
+  if (!bucket.listUnfinishedLargeFiles || !bucket.cancelLargeFile) {
+    return;
+  }
+
+  let startFileId: LargeFileId | undefined;
+  let pagesScanned = 0;
+  const maxPages = options.unfinishedCleanupMaxPages ?? UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES;
+  const timeoutMs = options.unfinishedCleanupTimeoutMs ?? UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS;
+  const cutoff =
+    Date.now() - (options.unfinishedCleanupMaxAgeMs ?? STALE_UNFINISHED_UPLOAD_MAX_AGE_MS);
+  do {
+    if (pagesScanned >= maxPages) {
+      throw new Error(`Unfinished upload cleanup exceeded ${maxPages} page(s).`);
+    }
+
+    const page = await withTimeout(
+      bucket.listUnfinishedLargeFiles({
+        ...(options.remotePath !== undefined ? { namePrefix: options.remotePath } : {}),
+        pageSize: 100,
+        ...(startFileId !== undefined ? { startFileId } : {}),
+      }),
+      timeoutMs,
+      "Unfinished upload cleanup",
+    );
+    pagesScanned += 1;
+
+    for (const file of page.files) {
+      const startedMs = startedMsFromFileInfo(file.fileInfo);
+      if (
+        startedMs !== undefined &&
+        startedMs <= cutoff &&
+        (options.remotePath === undefined || file.fileName === options.remotePath)
+      ) {
+        await bucket.cancelLargeFile(file.fileId);
+      }
+    }
+
+    startFileId = page.nextFileId ?? undefined;
+  } while (startFileId !== undefined);
+}
+
+async function cleanupOwnedUnfinishedUpload(
   bucket: UploadBucketHandle,
   remotePath: string,
+  uploadSessionId: string,
   options: Pick<
     UploadFileFromDiskOptions,
     "unfinishedCleanupMaxPages" | "unfinishedCleanupTimeoutMs"
@@ -536,7 +619,7 @@ async function cancelMatchingUnfinishedUploads(
   const timeoutMs = options.unfinishedCleanupTimeoutMs ?? UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS;
   do {
     if (pagesScanned >= maxPages) {
-      throw new Error(`Unfinished upload cleanup exceeded ${maxPages} page(s) for ${remotePath}`);
+      throw new Error(`Owned unfinished upload cleanup exceeded ${maxPages} page(s).`);
     }
 
     const page = await withTimeout(
@@ -546,12 +629,15 @@ async function cancelMatchingUnfinishedUploads(
         ...(startFileId !== undefined ? { startFileId } : {}),
       }),
       timeoutMs,
-      `Unfinished upload cleanup for ${remotePath}`,
+      "Owned unfinished upload cleanup",
     );
     pagesScanned += 1;
 
     for (const file of page.files) {
-      if (file.fileName === remotePath) {
+      if (
+        file.fileName === remotePath &&
+        file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
+      ) {
         await bucket.cancelLargeFile(file.fileId);
       }
     }
@@ -577,7 +663,7 @@ export async function uploadFileFromDisk(
     });
   }
 
-  await cancelMatchingUnfinishedUploads(bucket, remotePath, options).catch((cleanupError) => {
+  await cleanupStaleUnfinishedUploads(bucket, { ...options, remotePath }).catch((cleanupError) => {
     logError(`Could not pre-clean unfinished upload for ${remotePath}`, cleanupError);
   });
 
@@ -586,8 +672,13 @@ export async function uploadFileFromDisk(
     options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
     `Upload of ${localPath}`,
   );
+  const uploadSessionId = crypto.randomUUID();
   const { writable, done } = bucket.file(remotePath).createWriteStream({
     partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
+    fileInfo: {
+      [UPLOAD_SESSION_STARTED_INFO_KEY]: String(Date.now()),
+      [UPLOAD_SESSION_ID_INFO_KEY]: uploadSessionId,
+    },
     signal: activity.signal,
     onProgress: withActivityProgress(options.onProgress, activity.markActivity),
   });
@@ -601,9 +692,11 @@ export async function uploadFileFromDisk(
     await readable.pipeTo(writable, { signal: activity.signal });
     return await done;
   } catch (error) {
-    await cancelMatchingUnfinishedUploads(bucket, remotePath, options).catch((cleanupError) => {
-      logError(`Could not clean up unfinished upload for ${remotePath}`, cleanupError);
-    });
+    await cleanupOwnedUnfinishedUpload(bucket, remotePath, uploadSessionId, options).catch(
+      (cleanupError) => {
+        logError(`Could not clean up unfinished upload for ${remotePath}`, cleanupError);
+      },
+    );
     normalizeTransferError(error, activity);
   } finally {
     activity.dispose();
