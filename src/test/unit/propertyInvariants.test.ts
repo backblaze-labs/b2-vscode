@@ -157,7 +157,9 @@ test("private temp roots are unpredictable and owner-only", () => {
     assert.equal(privateRoot.startsWith(`${fixedRoot}-`), true);
     assert.equal(stats.isDirectory(), true);
     assert.equal(stats.isSymbolicLink(), false);
-    assert.equal(mode & 0o077, 0);
+    if (process.platform !== "win32") {
+      assert.equal(mode & 0o077, 0);
+    }
   } finally {
     fs.rmSync(fixedRoot, { recursive: true, force: true });
     fs.rmSync(privateRoot, { recursive: true, force: true });
@@ -172,7 +174,9 @@ test("safe writes create owner-only files and reject final symlinks", async () =
   await writeFileNoFollow(filePath, Buffer.from("content"));
 
   const mode = fs.statSync(filePath).mode & 0o777;
-  assert.equal(mode & 0o077, 0);
+  if (process.platform !== "win32") {
+    assert.equal(mode & 0o077, 0);
+  }
 
   if (process.platform !== "win32") {
     const targetPath = path.join(root, "target.txt");

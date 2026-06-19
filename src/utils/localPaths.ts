@@ -219,7 +219,8 @@ export async function prepareSafeFileWritePath(
 }
 
 /**
- * Write a file after opening the final path with symlink-following disabled.
+ * Write a file after opening the final path with symlink-following disabled
+ * when the platform supports O_NOFOLLOW.
  */
 export async function writeFileNoFollow(
   filePath: string,
