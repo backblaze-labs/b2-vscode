@@ -86,8 +86,8 @@ export function encodeUrlComponent(value: string): string {
 
 export function encodeUrlPathSegment(value: string): string {
   const wellFormed = toWellFormedUnicode(value);
-  if (/^\.+$/.test(wellFormed)) {
-    // Double-encode dot-only segments so URL parsing cannot normalize them as traversal.
+  if (wellFormed === "." || wellFormed === "..") {
+    // Double-encode traversal dot segments so URL parsing cannot normalize them.
     return "%252E".repeat(wellFormed.length);
   }
 

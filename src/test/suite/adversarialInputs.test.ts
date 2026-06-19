@@ -922,6 +922,12 @@ suite("Adversarial untrusted input fuzzing", () => {
       presignExtras("token"),
     );
     assert.strictEqual(new URL(dotBucket.url).pathname, "/file/%252E%252E/file.txt");
+
+    const legitimateDots = await presignUrlOperation.execute(
+      { bucket: "bucket", path: ".../notes.txt" },
+      presignExtras("token"),
+    );
+    assert.strictEqual(new URL(legitimateDots.url).pathname, "/file/bucket/.../notes.txt");
   });
 
   test("pre-signed URL messages do not duplicate the bearer token URL", async () => {
