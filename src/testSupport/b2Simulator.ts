@@ -1,5 +1,5 @@
 import { B2Client, type Bucket } from "@backblaze-labs/b2-sdk";
-// @ts-expect-error Classic moduleResolution does not read this package export map.
+// @ts-expect-error Legacy Node moduleResolution does not read this package export map.
 import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
 
 export const SIMULATOR_BUCKET_NAME = "bucket";
