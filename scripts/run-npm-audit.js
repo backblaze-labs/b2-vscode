@@ -17,6 +17,7 @@ const {
 const { npmCommand } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
+const AUDIT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 function failInfrastructure(message) {
   console.error(`npm audit infrastructure error: ${message}`);
@@ -79,6 +80,7 @@ try {
       cwd: args.directory,
       encoding: "utf8",
       env: { ...process.env, npm_config_ignore_scripts: "true" },
+      maxBuffer: AUDIT_MAX_BUFFER_BYTES,
     },
   );
 
