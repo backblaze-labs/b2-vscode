@@ -57,12 +57,24 @@ function assertNoPlainNpmCi(workflow, workflowName) {
 
 const testWorkflow = readWorkflow(".github/workflows/test.yml");
 const releaseWorkflow = readWorkflow(".github/workflows/release.yml");
+const testRunIndex = testWorkflow.indexOf("- name: Run VS Code tests");
+const testFixtureIndex = testWorkflow.indexOf("- name: Assert audit gate fails closed");
+const testAuditIndex = testWorkflow.indexOf("- name: Audit dependency advisories");
+const testSignatureIndex = testWorkflow.indexOf("- name: Verify dependency signatures");
 const releaseBuildIndex = releaseWorkflow.indexOf("- name: Build extension");
 const releaseAuditIndex = releaseWorkflow.indexOf("- name: Audit dependency advisories");
 const releaseSignatureIndex = releaseWorkflow.indexOf("- name: Verify dependency signatures");
 
 assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
 assert(!testWorkflow.includes("npm run audit:ci"), "CI must not call the PR-mutable audit script.");
+assert(testRunIndex !== -1, "test workflow must still run VS Code tests.");
+for (const [label, index] of [
+  ["audit gate fixture", testFixtureIndex],
+  ["dependency advisory audit", testAuditIndex],
+  ["dependency signature verification", testSignatureIndex],
+]) {
+  assert(index !== -1 && index < testRunIndex, `${label} must run before VS Code tests.`);
+}
 assert(releaseBuildIndex !== -1, "release workflow must still build the extension.");
 assert(
   releaseAuditIndex !== -1 && releaseAuditIndex < releaseBuildIndex,

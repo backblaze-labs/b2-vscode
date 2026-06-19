@@ -17,7 +17,9 @@ function assert(condition, message) {
   }
 }
 
-function parseJsonc(text) {
+// audit-ci accepts JSONC. This guard intentionally supports only the subset
+// used by audit-ci.jsonc today: JSON plus trailing commas.
+function parseAuditPolicyJsonWithTrailingCommas(text) {
   return JSON.parse(text.replace(/,\s*([}\]])/g, "$1"));
 }
 
@@ -36,7 +38,9 @@ function validateAuditPolicy(auditConfig, packageJson) {
 }
 
 function loadCurrentPolicy() {
-  const auditConfig = parseJsonc(fs.readFileSync(path.join(repoRoot, "audit-ci.jsonc"), "utf8"));
+  const auditConfig = parseAuditPolicyJsonWithTrailingCommas(
+    fs.readFileSync(path.join(repoRoot, "audit-ci.jsonc"), "utf8"),
+  );
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
   return { auditConfig, packageJson };
 }
