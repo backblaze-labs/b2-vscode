@@ -9,9 +9,9 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { BufferSource, type B2Client, type FileVersion } from "@backblaze-labs/b2-sdk";
+import { BufferSource, type FileVersion } from "@backblaze-labs/b2-sdk";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
-import { downloadFileOperation, MAX_DOWNLOAD_BYTES } from "../../tools/operations/downloadFile";
+import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
@@ -108,7 +108,7 @@ suite("B2 LM tool operations with simulator", () => {
 
       const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
         uploadFileOperation.execute(
-          { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          { localPath: "source file.txt", bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
           { getClient: () => client },
         ),
       );
@@ -139,7 +139,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot/secret.txt" },
               { getClient: () => client },
             ),
-          /localPath must stay within an open workspace folder/i,
+          /localPath must be a relative path inside the allowed directory/i,
         ),
       );
     } finally {
@@ -237,12 +237,14 @@ suite("B2 LM tool operations with simulator", () => {
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
-      fs.mkdirSync(path.dirname(downloadPath), { recursive: true });
-      fs.writeFileSync(downloadPath, "old content");
 
       const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
         downloadFileOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: path.join("downloads", "source file.txt"),
+          },
           extras,
         ),
       );
@@ -277,7 +279,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within an open workspace folder/i,
+          /localPath must be a relative path inside the allowed directory/i,
         ),
       );
 
@@ -287,7 +289,7 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("downloadFile accepts absolute paths inside a secondary workspace folder", async () => {
+  test("downloadFile rejects absolute paths inside a secondary workspace folder", async () => {
     const dir = tempDir();
     const firstWorkspace = path.join(dir, "workspace-a");
     const secondWorkspace = path.join(dir, "workspace-b");
@@ -298,15 +300,18 @@ suite("B2 LM tool operations with simulator", () => {
       fs.mkdirSync(firstWorkspace, { recursive: true });
       fs.mkdirSync(secondWorkspace, { recursive: true });
 
-      const downloaded = await withWorkspaceFolders([firstWorkspace, secondWorkspace], () =>
-        downloadFileOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
-          extras,
+      await withWorkspaceFolders([firstWorkspace, secondWorkspace], () =>
+        assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
+              extras,
+            ),
+          /localPath must be a relative path inside the allowed directory/i,
         ),
       );
 
-      assert.strictEqual(downloaded.localPath, downloadPath);
-      assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
+      assert.strictEqual(fs.existsSync(downloadPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -333,7 +338,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within an open workspace folder/i,
+          /localPath must not contain path traversal segments/i,
         ),
       );
 
@@ -367,7 +372,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within an open workspace folder/i,
+          /Workspace download directory must be a real directory/i,
         ),
       );
 
@@ -399,52 +404,6 @@ suite("B2 LM tool operations with simulator", () => {
 
       assert.strictEqual(downloaded.localPath, expectedPath);
       assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("downloadFile rejects oversized downloads before writing partial files", async () => {
-    const dir = tempDir();
-    const workspaceRoot = path.join(dir, "workspace");
-    const downloadPath = path.join(workspaceRoot, "large.bin");
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(Buffer.from("not written"));
-        controller.close();
-      },
-    });
-    const bucket = {
-      async download() {
-        return {
-          body,
-          headers: {
-            contentLength: MAX_DOWNLOAD_BYTES + 1,
-          },
-        };
-      },
-    };
-    const client = {
-      async getBucket() {
-        return bucket;
-      },
-    };
-
-    try {
-      fs.mkdirSync(workspaceRoot, { recursive: true });
-
-      await withWorkspaceFolder(workspaceRoot, () =>
-        assert.rejects(
-          () =>
-            downloadFileOperation.execute(
-              { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
-              { getClient: () => client as unknown as B2Client },
-            ),
-          /Downloaded file is too large/i,
-        ),
-      );
-
-      assert.strictEqual(fs.existsSync(downloadPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

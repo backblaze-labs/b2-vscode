@@ -197,6 +197,16 @@ suite("LM Tool Safety", () => {
     assert.match(text, /workspace-relative path downloads\/out\.csv/);
   });
 
+  test("downloadFile default destination names an open workspace folder", async () => {
+    const text = await confirmText(downloadFileTool, {
+      bucket: "my-bucket",
+      path: "data/out.csv",
+    });
+
+    assert.match(text, /open workspace folder/i);
+    assert.doesNotMatch(text, /your local workspace/);
+  });
+
   test("malformed required inputs use a placeholder in confirmations", async () => {
     const text = await confirmText(deleteFileTool, { bucket: "my-bucket" });
 
