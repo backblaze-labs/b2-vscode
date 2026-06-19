@@ -32,7 +32,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Activating Backblaze B2 extension...");
-  await cleanupStaleTransferTempFiles();
+  void cleanupStaleTransferTempFiles().catch((error) => {
+    logError("Could not clean stale transfer temp files during activation", error);
+  });
 
   // 1. Services
   const authService = new AuthService(context.secrets);

@@ -15,6 +15,7 @@ import {
   accountId,
   bucketId,
   fileId,
+  largeFileId,
   type FileVersion,
 } from "@backblaze-labs/b2-sdk";
 // @ts-expect-error Classic moduleResolution does not read this package export map.
@@ -30,6 +31,7 @@ import {
   type B2ApiUrlInspection,
 } from "../../services/b2";
 import {
+  cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
   downloadStreamToFile,
   STREAMING_UPLOAD_PART_SIZE,
@@ -489,7 +491,7 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
-      assert.strictEqual(renameCalls, 3);
+      assert.strictEqual(renameCalls, 2);
       assert.strictEqual(
         fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
         false,
@@ -511,8 +513,17 @@ suite("B2 transfer helpers", () => {
       },
     });
     const originalRename = fs.promises.rename;
+    const originalCopyFile = fs.promises.copyFile;
     let backupPath = "";
     let destinationRenameAttempts = 0;
+    fs.promises.copyFile = async (
+      source: fs.PathLike,
+      destinationCopy: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      backupPath = String(destinationCopy);
+      await originalCopyFile(source, destinationCopy, mode);
+    };
     fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
       const oldResolved = path.resolve(String(oldPath));
       const newResolved = path.resolve(String(newPath));
@@ -524,10 +535,6 @@ suite("B2 transfer helpers", () => {
           throw Object.assign(new Error("destination exists"), { code: "EEXIST" });
         }
         throw new Error("replacement failed");
-      }
-
-      if (oldResolved === path.resolve(destination)) {
-        backupPath = String(newPath);
       }
 
       await originalRename(oldPath, newPath);
@@ -545,6 +552,7 @@ suite("B2 transfer helpers", () => {
       );
     } finally {
       fs.promises.rename = originalRename;
+      fs.promises.copyFile = originalCopyFile;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -675,6 +683,71 @@ suite("B2 transfer helpers", () => {
       assert.deepStrictEqual(uploaded, [9, 8, 7, 6]);
       assert.strictEqual(result.fileId, "uploaded-id");
       assert.strictEqual(result.contentLength, 4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds unfinished upload cleanup before streaming", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-cleanup-bound-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    const uploaded: number[] = [];
+    let listCalls = 0;
+    let cancelCalls = 0;
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        return {
+          files: [
+            {
+              fileId: largeFileId(`unrelated-${listCalls}`),
+              fileName: "remote/file.bin-unrelated",
+            },
+          ],
+          nextFileId: largeFileId(`next-${listCalls}`),
+        };
+      },
+      async cancelLargeFile() {
+        cancelCalls += 1;
+      },
+      file(fileName: string) {
+        let resolveDone: (value: FileVersion) => void = () => undefined;
+        const done = new Promise<FileVersion>((resolve) => {
+          resolveDone = resolve;
+        });
+
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write(chunk) {
+                  uploaded.push(...chunk);
+                },
+                close() {
+                  resolveDone(fakeFileVersion(fileName, uploaded.length, "uploaded-id"));
+                },
+              }),
+              done,
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
+        unfinishedCleanupMaxPages: 2,
+      });
+
+      assert.strictEqual(result.fileId, "uploaded-id");
+      assert.strictEqual(listCalls, 2);
+      assert.strictEqual(cancelCalls, 0);
+      assert.deepStrictEqual(uploaded, [1, 2, 3]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -925,6 +998,40 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(stale), false);
       assert.strictEqual(fs.existsSync(fresh), true);
       assert.strictEqual(fs.existsSync(complete), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans stale destination temp files and restores orphaned backups", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
+    const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
+    const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const completedDestination = path.join(dir, "complete.bin");
+    const completedBackup = path.join(
+      dir,
+      ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp",
+    );
+    const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdef.tmp");
+    fs.writeFileSync(crossDevice, "partial");
+    fs.writeFileSync(orphanedBackup, "original");
+    fs.writeFileSync(completedDestination, "new");
+    fs.writeFileSync(completedBackup, "old");
+    fs.writeFileSync(freshTemp, "active");
+    const oldTime = new Date(Date.now() - 10_000);
+    for (const filePath of [crossDevice, orphanedBackup, completedBackup]) {
+      fs.utimesSync(filePath, oldTime, oldTime);
+    }
+
+    try {
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(crossDevice), false);
+      assert.strictEqual(fs.existsSync(orphanedBackup), false);
+      assert.strictEqual(fs.readFileSync(path.join(dir, "file.bin"), "utf8"), "original");
+      assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
+      assert.strictEqual(fs.existsSync(completedBackup), false);
+      assert.strictEqual(fs.readFileSync(freshTemp, "utf8"), "active");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

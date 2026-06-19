@@ -412,6 +412,76 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool rejects workspace control directories before writing", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-control-"));
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: ".git/hooks/pre-commit" },
+              { getClient: () => client },
+            ),
+          /control directory/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".git")), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool refuses to overwrite existing workspace files", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-existing-"));
+    const existingPath = path.join(workspaceDir, "payload.txt");
+    fs.writeFileSync(existingPath, "keep me");
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "payload.txt" },
+              { getClient: () => client },
+            ),
+          /overwrite existing/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.readFileSync(existingPath, "utf8"), "keep me");
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects workspace path traversal before reading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-policy-"));
     const client = {

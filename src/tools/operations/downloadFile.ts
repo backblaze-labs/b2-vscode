@@ -34,6 +34,34 @@ interface DownloadFileResult {
 
 const WORKSPACE_REQUIRED_MESSAGE =
   "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
+const CONTROL_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
+
+function workspaceRelativeSegments(workspaceRoot: string, destinationPath: string): string[] {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(destinationPath));
+  return relative.split(path.sep).filter((segment) => segment.length > 0);
+}
+
+function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
+  const blocked = workspaceRelativeSegments(workspaceRoot, destinationPath).find((segment) =>
+    CONTROL_DIRECTORIES.has(segment.toLowerCase()),
+  );
+  if (blocked) {
+    throw new Error(`downloadFile refuses to write inside workspace control directory: ${blocked}`);
+  }
+}
+
+async function assertDestinationDoesNotExist(destinationPath: string): Promise<void> {
+  try {
+    await fs.promises.lstat(destinationPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  throw new Error(`downloadFile refuses to overwrite existing workspace file: ${destinationPath}`);
+}
 
 async function ensureRealDirectory(directory: string): Promise<void> {
   let stats: fs.Stats | undefined;
@@ -99,7 +127,10 @@ async function workspacePath(relativePath: string): Promise<string> {
     relativePath,
     "localPath",
   );
+  assertNoControlDirectoryTarget(workspaceFolder.uri.fsPath, destinationPath);
+  await assertDestinationDoesNotExist(destinationPath);
   await ensureWorkspaceDestinationDirectory(workspaceFolder.uri.fsPath, destinationPath);
+  await assertDestinationDoesNotExist(destinationPath);
   return destinationPath;
 }
 
