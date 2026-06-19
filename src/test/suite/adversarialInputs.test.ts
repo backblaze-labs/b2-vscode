@@ -690,6 +690,42 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("stale atomic temp sweep ignores concurrently removed files", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-sweep-race-"));
+    const disappearingTemp = path.join(outputRoot, ".download.bin.1.1.abcdefabcdefabcd.tmp");
+    const freshTemp = path.join(outputRoot, ".download.bin.1.2.abcdefabcdefabce.tmp");
+    const oldDate = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const originalStat = fs.promises.stat;
+    let forcedRace = false;
+
+    try {
+      await fs.promises.writeFile(disappearingTemp, "old");
+      await fs.promises.writeFile(freshTemp, "fresh");
+      await fs.promises.utimes(disappearingTemp, oldDate, oldDate);
+
+      (fs.promises as unknown as { stat: typeof fs.promises.stat }).stat = (async (
+        ...args: Parameters<typeof fs.promises.stat>
+      ) => {
+        if (args[0].toString() === disappearingTemp && !forcedRace) {
+          forcedRace = true;
+          await fs.promises.rm(disappearingTemp, { force: true });
+          const error = new Error("missing temp file") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        }
+        return originalStat(...args);
+      }) as typeof fs.promises.stat;
+
+      await sweepStaleAtomicTempFiles(outputRoot, 60 * 60 * 1000);
+
+      assert.strictEqual(forcedRace, true);
+      assert.strictEqual(fs.existsSync(freshTemp), true);
+    } finally {
+      (fs.promises as unknown as { stat: typeof fs.promises.stat }).stat = originalStat;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("no-follow reads reject symlink-swapped upload targets", async () => {
     if (process.platform === "win32") {
       return;

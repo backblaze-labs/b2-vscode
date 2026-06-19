@@ -318,7 +318,15 @@ export async function sweepStaleAtomicTempFiles(
       .filter((entry) => entry.isFile() && ATOMIC_TEMP_FILE_PATTERN.test(entry.name))
       .map(async (entry) => {
         const tempPath = path.join(directoryPath, entry.name);
-        const stat = await fs.promises.stat(tempPath);
+        let stat: fs.Stats;
+        try {
+          stat = await fs.promises.stat(tempPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return;
+          }
+          throw error;
+        }
         if (stat.mtimeMs < cutoff) {
           await fs.promises.rm(tempPath, { force: true });
         }
@@ -327,8 +335,13 @@ export async function sweepStaleAtomicTempFiles(
 }
 
 export async function readFileNoFollow(filePath: string): Promise<Buffer> {
-  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollow);
+  const stat = await fs.promises.lstat(filePath);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`${filePath} must not be a symbolic link.`);
+  }
+
+  const noFollow = fs.constants.O_NOFOLLOW;
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (noFollow ?? 0));
 
   try {
     return await handle.readFile();
