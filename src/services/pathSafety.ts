@@ -43,7 +43,8 @@ function portableSegments(relativePath: string, label: string): string[] {
 export function isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
   const parent = path.resolve(parentPath);
   const child = path.resolve(childPath);
-  return child === parent || child.startsWith(parent + path.sep);
+  const parentPrefix = parent.endsWith(path.sep) ? parent : parent + path.sep;
+  return child === parent || child.startsWith(parentPrefix);
 }
 
 export function resolveContainedRelativePath(

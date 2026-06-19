@@ -160,15 +160,20 @@ function assertRealDirectory(stats: fs.Stats, directory: string, label: string):
   }
 }
 
-async function ensurePrivateDirectory(directory: string): Promise<void> {
+async function existingRealDirectory(directory: string, label: string): Promise<boolean> {
   try {
-    assertRealDirectory(await fs.promises.lstat(directory), directory, "Transfer temp directory");
+    assertRealDirectory(await fs.promises.lstat(directory), directory, label);
+    return true;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
     }
+    throw error;
+  }
+}
 
+async function ensurePrivateDirectory(directory: string): Promise<void> {
+  if (!(await existingRealDirectory(directory, "Transfer temp directory"))) {
     await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
     assertRealDirectory(await fs.promises.lstat(directory), directory, "Transfer temp directory");
   }
@@ -195,6 +200,15 @@ export async function cleanupStaleTransferTempFiles(
 ): Promise<void> {
   const directory = transferTempDirectory(options.directory);
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
+
+  try {
+    if (!(await existingRealDirectory(directory, "Transfer temp directory"))) {
+      return;
+    }
+  } catch (error) {
+    logError(`Could not inspect transfer temp directory: ${directory}`, error);
+    return;
+  }
 
   let entries: string[];
   try {
@@ -267,8 +281,8 @@ export async function downloadStreamToFile(
   let temporaryPath = "";
 
   try {
-    await cleanupStaleTransferTempFiles({ directory: temporaryDirectory });
     await ensurePrivateDirectory(temporaryDirectory);
+    await cleanupStaleTransferTempFiles({ directory: temporaryDirectory });
     temporaryPath = transferTempPath(temporaryDirectory);
 
     await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });

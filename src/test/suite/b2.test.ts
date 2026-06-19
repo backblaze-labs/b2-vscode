@@ -39,6 +39,8 @@ import {
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
 import { TempFileManager } from "../../services/tempFileManager";
+import { isPathInsideOrEqual } from "../../services/pathSafety";
+import { humanSize } from "../../utils/humanSize";
 import type { B2Credentials } from "../../services/authService";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
@@ -170,6 +172,23 @@ function stubWithProgress(
     mutableWindow.withProgress = originalWithProgress;
   };
 }
+
+suite("B2 utility helpers", () => {
+  test("formats fractional byte values without invalid units", () => {
+    assert.strictEqual(humanSize(0.5), "1 B");
+    assert.doesNotMatch(humanSize(0.5), /undefined/);
+  });
+
+  test("treats filesystem root children as contained", () => {
+    const root = path.parse(process.cwd()).root;
+
+    assert.strictEqual(isPathInsideOrEqual(root, path.join(root, "tmp")), true);
+    assert.strictEqual(
+      isPathInsideOrEqual(path.join(root, "tmp", "base"), path.join(root, "tmp", "base2")),
+      false,
+    );
+  });
+});
 
 suite("B2 API URL configuration", () => {
   test("uses the default B2 API URL", () => {
@@ -483,6 +502,10 @@ suite("B2 transfer helpers", () => {
     const linkPath = path.join(dir, "link");
     const destination = path.join(dir, "download.bin");
     fs.mkdirSync(target);
+    const staleTargetFile = path.join(target, "b2-transfer-1-stale.tmp");
+    fs.writeFileSync(staleTargetFile, "do not delete");
+    const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(staleTargetFile, oldTime, oldTime);
     const symlinkCreated = createDirectorySymlink(target, linkPath);
     if (!symlinkCreated) {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -502,7 +525,8 @@ suite("B2 transfer helpers", () => {
         /real directory|symlink/i,
       );
 
-      assert.deepStrictEqual(fs.readdirSync(target), []);
+      assert.deepStrictEqual(fs.readdirSync(target), ["b2-transfer-1-stale.tmp"]);
+      assert.strictEqual(fs.readFileSync(staleTargetFile, "utf8"), "do not delete");
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
