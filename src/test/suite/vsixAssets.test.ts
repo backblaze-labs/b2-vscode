@@ -20,7 +20,11 @@ import {
 interface VsixAssetAssertions {
   assertDistAssets(
     distDir?: string,
-    options?: { skipSqlJsPackageProvenance?: boolean; retryDelaysMs?: number[] },
+    options?: {
+      allowLocalFallback?: boolean;
+      skipSqlJsPackageProvenance?: boolean;
+      retryDelaysMs?: number[];
+    },
   ): Promise<void>;
   assertSqlJsPackageProvenance(
     fetchPackage?: (url: string) => Promise<Buffer>,
