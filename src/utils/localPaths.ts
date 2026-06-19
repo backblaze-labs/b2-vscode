@@ -7,19 +7,34 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { Buffer } from "buffer";
 import { toWellFormedString } from "./strings";
 
-const FALLBACK_FILE_NAME = "download";
+const ENCODED_SEGMENT_PREFIX = "__b2_";
+const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F<>:"|?*\\/]/;
+const UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS = /[. ]+$/;
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
+function encodeRawLocalPathSegment(segment: string): string {
+  return `${ENCODED_SEGMENT_PREFIX}${segment ? Buffer.from(segment, "utf8").toString("hex") : "empty"}`;
+}
+
 function sanitizeLocalPathSegment(segment: string): string {
-  const sanitized = toWellFormedString(segment)
-    .replace(/[\u0000-\u001F<>:"|?*\\/]/g, "_")
-    .replace(/[. ]+$/g, (trailing) => "_".repeat(trailing.length));
+  const wellFormedSegment = toWellFormedString(segment);
+  const sanitized = wellFormedSegment
+    .replace(UNSAFE_LOCAL_PATH_CHARACTERS, "_")
+    .replace(UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS, (trailing) => "_".repeat(trailing.length));
 
-  const safeSegment = sanitized || FALLBACK_FILE_NAME;
+  if (
+    !wellFormedSegment ||
+    sanitized !== wellFormedSegment ||
+    WINDOWS_RESERVED_NAME.test(sanitized) ||
+    sanitized.startsWith(ENCODED_SEGMENT_PREFIX)
+  ) {
+    return encodeRawLocalPathSegment(wellFormedSegment);
+  }
 
-  return WINDOWS_RESERVED_NAME.test(safeSegment) ? `_${safeSegment}` : safeSegment;
+  return sanitized;
 }
 
 function splitB2Path(fileName: string): string[] {
