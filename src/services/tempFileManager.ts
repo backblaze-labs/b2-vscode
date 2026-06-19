@@ -186,7 +186,15 @@ export class TempFileManager implements vscode.Disposable {
    */
   getCachedPath(bucketName: string, fileName: string): string | undefined {
     const key = `${bucketName}/${fileName}`;
-    return this.cache.get(key);
+    const cachedPath = this.cache.get(key);
+    if (!cachedPath) {
+      return undefined;
+    }
+    if (!fs.existsSync(cachedPath)) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return cachedPath;
   }
 
   /**

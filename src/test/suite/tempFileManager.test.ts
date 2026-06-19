@@ -10,16 +10,25 @@ import * as os from "os";
 import * as path from "path";
 import { TempFileManager } from "../../services/tempFileManager";
 
+function streamFromText(text: string): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(Buffer.from(text));
+      controller.close();
+    },
+  });
+}
+
 suite("TempFileManager", () => {
-  test("saves downloaded files, returns cached paths, and clears cache on cleanup", async () => {
+  test("saves downloaded streams, returns cached paths, and clears cache on cleanup", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
     const manager = new TempFileManager(tempRoot);
 
     try {
-      const localPath = await manager.saveFile(
+      const localPath = await manager.saveStream(
         "bucket",
         "nested/report.txt",
-        Buffer.from("cached content"),
+        streamFromText("cached content"),
       );
       const relativeToTempRoot = path.relative(tempRoot, localPath);
 
@@ -32,6 +41,23 @@ suite("TempFileManager", () => {
 
       assert.strictEqual(manager.getCachedPath("bucket", "nested/report.txt"), undefined);
       assert.strictEqual(fs.existsSync(localPath), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("drops cached paths when the cached file is gone", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      const localPath = await manager.saveStream("bucket", "old.txt", streamFromText("old"));
+      assert.strictEqual(manager.getCachedPath("bucket", "old.txt"), localPath);
+
+      fs.rmSync(localPath, { force: true });
+
+      assert.strictEqual(manager.getCachedPath("bucket", "old.txt"), undefined);
     } finally {
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -51,8 +77,8 @@ suite("TempFileManager", () => {
         const escapePath = path.resolve(tempRoot, bucketName, fileName);
 
         await assert.rejects(
-          () => manager.saveFile(bucketName, fileName, Buffer.from("escape")),
-          /B2 object path must stay within the temp cache/i,
+          () => manager.saveStream(bucketName, fileName, streamFromText("escape")),
+          /B2 .* must not contain path traversal segments/i,
         );
         assert.strictEqual(fs.existsSync(escapePath), false);
       }
@@ -75,8 +101,8 @@ suite("TempFileManager", () => {
       fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
       await assert.rejects(
-        () => manager.saveFile("bucket", path.join("link", "escape.txt"), Buffer.from("escape")),
-        /B2 object path must stay within the temp cache/i,
+        () => manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
+        /Temp file cache directory must be a real directory/i,
       );
       assert.strictEqual(fs.existsSync(escapePath), false);
     } finally {
@@ -98,7 +124,7 @@ suite("TempFileManager", () => {
 
     mutablePromises.mkdir = (async (...args: Parameters<typeof fs.promises.mkdir>) => {
       const targetPath = path.resolve(String(args[0]));
-      if (!symlinkInjected && targetPath.startsWith(symlinkPath)) {
+      if (!symlinkInjected && targetPath === symlinkPath) {
         symlinkInjected = true;
         fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
       }
@@ -110,12 +136,12 @@ suite("TempFileManager", () => {
 
       await assert.rejects(
         () =>
-          manager.saveFile(
+          manager.saveStream(
             "bucket",
             path.join("new", "link", "sub", "escape.txt"),
-            Buffer.from("escape"),
+            streamFromText("escape"),
           ),
-        /B2 object path must stay within the temp cache/i,
+        /EEXIST|real directory|outside the allowed root/i,
       );
       assert.strictEqual(symlinkInjected, true);
       assert.strictEqual(fs.existsSync(outsideSubdir), false);
@@ -127,22 +153,19 @@ suite("TempFileManager", () => {
     }
   });
 
-  test("falls back instead of following a symlinked cache root", async () => {
+  test("rejects a symlinked cache root", () => {
     const tempParent = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-parent-"));
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
     const symlinkRoot = path.join(tempParent, "b2-vscode");
-    const outsidePath = path.join(outsideRoot, "bucket", "file.txt");
-    const manager = new TempFileManager(symlinkRoot);
 
     try {
       fs.symlinkSync(outsideRoot, symlinkRoot, process.platform === "win32" ? "junction" : "dir");
 
-      const localPath = await manager.saveFile("bucket", "file.txt", Buffer.from("cached"));
-
-      assert.strictEqual(fs.existsSync(outsidePath), false);
-      assert.strictEqual(fs.readFileSync(localPath, "utf8"), "cached");
+      assert.throws(
+        () => new TempFileManager(symlinkRoot),
+        /Temp file cache root must be a real directory/i,
+      );
     } finally {
-      manager.dispose();
       fs.rmSync(tempParent, { recursive: true, force: true });
       fs.rmSync(outsideRoot, { recursive: true, force: true });
     }
