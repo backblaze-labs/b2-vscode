@@ -69,6 +69,10 @@ function assertPublishIsReleaseOnly() {
     "publish job must run in the marketplace environment.",
   );
   assert(
+    jobs.publish.permissions?.actions === "read",
+    "publish job must be able to read marketplace environment protection.",
+  );
+  assert(
     jobText("publish").includes("npm exec --no-install -- vsce"),
     "publish job must use the lockfile-installed vsce binary.",
   );

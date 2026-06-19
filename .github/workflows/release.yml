@@ -321,6 +321,7 @@ jobs:
         (github.event_name == 'push' || inputs.publish == true)
       }}
     permissions:
+      actions: read
       contents: read
     environment: marketplace
 
