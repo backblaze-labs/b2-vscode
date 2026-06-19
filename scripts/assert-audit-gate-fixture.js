@@ -53,9 +53,8 @@ try {
   const result = spawnSync(
     "npx",
     [
-      "--yes",
-      "--ignore-scripts",
-      "audit-ci@7.1.0",
+      "--no-install",
+      "audit-ci",
       "--config",
       path.join(repoRoot, "audit-ci.jsonc"),
       "--directory",

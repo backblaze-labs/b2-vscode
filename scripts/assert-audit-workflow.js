@@ -4,8 +4,6 @@ const fs = require("fs");
 const path = require("path");
 
 const repoRoot = path.join(__dirname, "..");
-const workflowPath = path.join(repoRoot, ".github", "workflows", "test.yml");
-const workflow = fs.readFileSync(workflowPath, "utf8");
 
 function fail(message) {
   console.error(`Audit workflow guardrail failed: ${message}`);
@@ -18,41 +16,105 @@ function assert(condition, message) {
   }
 }
 
-const auditStepIndex = workflow.indexOf("- name: Audit dependency advisories");
-const installStepIndex = workflow.indexOf("- name: Install dependencies without lifecycle scripts");
+function readWorkflow(relativePath) {
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+}
 
-assert(auditStepIndex !== -1, "missing the dependency advisory audit step.");
-assert(installStepIndex !== -1, "missing the lifecycle-disabled install step.");
-assert(
-  auditStepIndex < installStepIndex,
-  "the advisory audit must run before dependency lifecycle scripts could run.",
-);
+function getStep(workflow, name) {
+  const marker = `- name: ${name}`;
+  const start = workflow.indexOf(marker);
+  assert(start !== -1, `missing workflow step: ${name}.`);
 
-const auditStep = workflow.slice(auditStepIndex, installStepIndex);
+  const rest = workflow.slice(start + marker.length);
+  const nextStep = rest.search(/\n\s+- name: /);
+  return nextStep === -1
+    ? workflow.slice(start)
+    : workflow.slice(start, start + marker.length + nextStep);
+}
 
+function hasTokens(block, tokens) {
+  const normalized = block.replace(/\s+/g, " ");
+  return tokens.every((token) => normalized.includes(token));
+}
+
+function assertNoPlainNpmCi(workflow, workflowName) {
+  const offenders = workflow
+    .split("\n")
+    .filter((line) => line.includes("npm ci") && !line.includes("--ignore-scripts"));
+
+  assert(
+    offenders.length === 0,
+    `${workflowName} must not run plain npm ci; use npm ci --ignore-scripts.`,
+  );
+}
+
+const testWorkflow = readWorkflow(".github/workflows/test.yml");
+const releaseWorkflow = readWorkflow(".github/workflows/release.yml");
+const releaseBuildIndex = releaseWorkflow.indexOf("- name: Build extension");
+const releaseAuditIndex = releaseWorkflow.indexOf("- name: Audit dependency advisories");
+const releaseSignatureIndex = releaseWorkflow.indexOf("- name: Verify dependency signatures");
+
+assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
+assert(!testWorkflow.includes("npm run audit:ci"), "CI must not call the PR-mutable audit script.");
+assert(releaseBuildIndex !== -1, "release workflow must still build the extension.");
 assert(
-  !workflow.includes("npm run audit:ci"),
-  "CI must not call the repo-controlled audit script.",
+  releaseAuditIndex !== -1 && releaseAuditIndex < releaseBuildIndex,
+  "release workflow must audit dependencies before building.",
 );
 assert(
-  auditStep.includes("npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc"),
-  "CI must call the pinned audit-ci command directly.",
+  releaseSignatureIndex !== -1 && releaseSignatureIndex < releaseBuildIndex,
+  "release workflow must verify dependency signatures before building.",
 );
-assert(
-  auditStep.includes('npm_config_ignore_scripts: "true"'),
-  "the advisory audit step must run with npm lifecycle scripts disabled.",
+assertNoPlainNpmCi(testWorkflow, "test workflow");
+assertNoPlainNpmCi(releaseWorkflow, "release workflow");
+
+const testInstallStep = getStep(testWorkflow, "Install dependencies without lifecycle scripts");
+const testAuditStep = getStep(testWorkflow, "Audit dependency advisories");
+const testSignatureStep = getStep(testWorkflow, "Verify dependency signatures");
+const releaseInstallStep = getStep(
+  releaseWorkflow,
+  "Install dependencies without lifecycle scripts",
 );
-assert(
-  workflow.includes("npm ci --ignore-scripts"),
-  "dependency installation must disable npm lifecycle scripts.",
-);
-assert(
-  !/npm ci(?![^\n]*--ignore-scripts)/.test(workflow),
-  "plain npm ci must not be reintroduced in the required test workflow.",
-);
-assert(
-  workflow.includes("npm audit signatures"),
-  "dependency signature verification must remain in the required check.",
-);
+const releaseAuditStep = getStep(releaseWorkflow, "Audit dependency advisories");
+const releaseSignatureStep = getStep(releaseWorkflow, "Verify dependency signatures");
+
+// CI deliberately inlines the audit command instead of `npm run audit:ci`
+// because package.json is part of the PR-mutable checkout.
+for (const [label, step] of [
+  ["test audit step", testAuditStep],
+  ["release audit step", releaseAuditStep],
+]) {
+  assert(
+    hasTokens(step, [
+      "bash scripts/retry.sh",
+      "npx",
+      "--no-install",
+      "audit-ci",
+      "--config",
+      "audit-ci.jsonc",
+    ]),
+    `${label} must run the pinned local audit-ci binary through the retry helper.`,
+  );
+}
+
+for (const [label, step] of [
+  ["test install step", testInstallStep],
+  ["release install step", releaseInstallStep],
+]) {
+  assert(
+    hasTokens(step, ["bash scripts/retry.sh", "npm", "ci", "--ignore-scripts"]),
+    `${label} must install with lifecycle scripts disabled through the retry helper.`,
+  );
+}
+
+for (const [label, step] of [
+  ["test signature step", testSignatureStep],
+  ["release signature step", releaseSignatureStep],
+]) {
+  assert(
+    hasTokens(step, ["bash scripts/retry.sh", "npm", "audit", "signatures"]),
+    `${label} must verify dependency signatures through the retry helper.`,
+  );
+}
 
 console.log("Audit workflow guardrails verified.");

@@ -97,7 +97,7 @@ npm run check
 # Run Node unit/property tests and VS Code extension tests
 npm test
 
-# Audit the full dependency tree (matches the Security CI gate)
+# Audit the full dependency tree (matches the required VS Code Extension Tests gate)
 npm run audit:ci
 
 # Fix formatting and lint issues
