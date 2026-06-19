@@ -111,7 +111,7 @@ provenance, and rollback are documented in
 Expected test output includes the discovery guard and a nonzero Mocha summary, for example
 `Discovered N compiled test file(s) for M source test file(s).` followed by a nonzero
 `passing` count. If the compiled test files are missing, `npm test` exits nonzero instead of
-reporting `0 passing`.
+reporting `0 passing`; Mocha is also configured to fail zero-test and pending-test runs.
 
 ## Architecture
 

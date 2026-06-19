@@ -2,14 +2,12 @@ import { defineConfig } from "@vscode/test-cli";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compiledTestFilesGlob, mochaOptions } from "./test-harness.config.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
 const launchArgs = ["--disable-extensions", "--disable-workspace-trust"];
-
-export const sourceTestFilesGlob = "src/test/suite/**/*.test.ts";
-export const compiledTestFilesGlob = "out/src/test/suite/**/*.test.js";
 
 if (process.platform === "darwin") {
   launchArgs.push("--use-mock-keychain");
@@ -28,12 +26,7 @@ export default defineConfig([
       HOME: testHome,
       XDG_CONFIG_HOME: testXdgConfig,
     },
-    mocha: {
-      ui: "tdd",
-      timeout: 20000,
-      failZero: true,
-      forbidOnly: true,
-    },
+    mocha: mochaOptions,
     launchArgs,
   },
 ]);
