@@ -6,7 +6,9 @@
 
 import * as assert from "assert";
 import {
+  buildPublicBucketTypedConfirmationValidationMessage,
   buildPublicBucketTypedConfirmationPrompt,
+  buildPublicBucketUnknownStateWarningMessage,
   buildPublicBucketWarningMessage,
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
@@ -62,5 +64,20 @@ suite("Public bucket visibility warnings", () => {
 
     assert.ok(prompt.includes('"public-assets"'));
     assert.ok(prompt.includes("accessible without authorization"));
+  });
+
+  test("typed confirmation validation repeats the bucket name", () => {
+    const message = buildPublicBucketTypedConfirmationValidationMessage("public-assets");
+
+    assert.ok(message.includes('"public-assets"'));
+    assert.ok(message.includes("public access"));
+  });
+
+  test("unknown-state warning tells users the bucket may already be public", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage("change", "public-assets");
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("may already be public"));
+    assert.ok(message.includes("accessible without authorization"));
   });
 });

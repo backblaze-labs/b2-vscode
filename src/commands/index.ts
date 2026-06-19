@@ -22,8 +22,10 @@ import {
 } from "../services/transferProgress";
 import { withTransferStallTimeout } from "../services/fileTransfers";
 import { B2PartialFailureError, formatB2UserMessage } from "../errors";
-import { logError } from "../logger";
+import { log, logError } from "../logger";
 import {
+  buildPublicBucketUnknownStateWarningMessage,
+  buildPublicBucketTypedConfirmationValidationMessage,
   buildPublicBucketWarningMessage,
   buildPublicBucketTypedConfirmationPrompt,
   CONFIRM_PUBLIC_BUCKET_LABEL,
@@ -65,9 +67,11 @@ async function confirmPublicBucketVisibility(
     validateInput: (value) =>
       isPublicBucketNameConfirmationAccepted(bucketName, value)
         ? undefined
-        : `Type "${bucketName}" to confirm public access`,
+        : buildPublicBucketTypedConfirmationValidationMessage(bucketName),
   });
 
+  // Keep this guard authoritative: tests and extension-host edge cases can
+  // bypass validateInput by returning undefined or a stale value.
   return isPublicBucketNameConfirmationAccepted(bucketName, typedBucketName);
 }
 
@@ -139,7 +143,25 @@ export async function openFileCommand(
   }
 }
 
-export async function createBucketCommand(services: CommandServices): Promise<void> {
+export interface BucketCommandServices {
+  treeProvider: Pick<B2TreeProvider, "refresh">;
+  getClient: () => B2Client | null;
+}
+
+async function warnUnknownPublicBucketState(
+  services: BucketCommandServices,
+  action: PublicBucketVisibilityAction,
+  bucketName: string,
+): Promise<void> {
+  services.treeProvider.refresh();
+  await vscode.window.showWarningMessage(
+    buildPublicBucketUnknownStateWarningMessage(action, bucketName),
+  );
+}
+
+// Exported so the public-exposure flows can be tested at command-path level;
+// most commands remain inline in registerCommands until they need similar coverage.
+export async function createBucketCommand(services: BucketCommandServices): Promise<void> {
   const { treeProvider, getClient } = services;
   const client = getClient();
   if (!client) {
@@ -203,23 +225,36 @@ export async function createBucketCommand(services: CommandServices): Promise<vo
   }
 
   try {
-    const bucket = await client.createBucket({
-      bucketName,
-      bucketType: visibility.value,
-    });
+    const bucket = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Creating B2 bucket "${bucketName}"...`,
+        cancellable: true,
+      },
+      () =>
+        client.createBucket({
+          bucketName,
+          bucketType: visibility.value,
+        }),
+    );
     treeProvider.refresh();
+    log(`Bucket "${bucket.name}" created with type ${visibility.value}.`);
     vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
   } catch (error) {
+    if (visibility.value === "allPublic") {
+      await warnUnknownPublicBucketState(services, "create", bucketName);
+    }
     showCommandError("B2: Failed to create bucket", error);
   }
 }
 
 export async function changeBucketVisibilityCommand(
-  services: CommandServices,
+  services: BucketCommandServices,
   item?: BucketTreeItem,
 ): Promise<void> {
   const { treeProvider, getClient } = services;
-  if (!getClient()) {
+  const client = getClient();
+  if (!client) {
     vscode.window.showErrorMessage("B2: Not authenticated.");
     return;
   }
@@ -228,6 +263,8 @@ export async function changeBucketVisibilityCommand(
     return;
   }
 
+  // The tree item is the state the user saw and confirmed. A post-mutation
+  // refresh, including on uncertain public failures, reconciles any out-of-band changes.
   const currentType = item.bucketType;
   const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
   const newLabel = newType === "allPublic" ? "Public" : "Private";
@@ -261,10 +298,21 @@ export async function changeBucketVisibilityCommand(
   }
 
   try {
-    await item.bucket.update({ bucketType: newType });
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Changing "${item.bucketName}" to ${newLabel}...`,
+        cancellable: true,
+      },
+      () => item.bucket.update({ bucketType: newType }),
+    );
     treeProvider.refresh();
+    log(`Bucket "${item.bucketName}" changed to ${newType}.`);
     vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
   } catch (error) {
+    if (newType === "allPublic") {
+      await warnUnknownPublicBucketState(services, "change", item.bucketName);
+    }
     showCommandError("B2: Failed to update bucket", error);
   }
 }

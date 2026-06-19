@@ -8,11 +8,11 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import { B2Client, classifyError, type Bucket, type BucketType } from "@backblaze-labs/b2-sdk";
 import {
+  type BucketCommandServices,
   buildCommandErrorMessage,
   changeBucketVisibilityCommand,
   createBucketCommand,
   openFileCommand,
-  type CommandServices,
 } from "../../commands";
 import { CONFIRM_PUBLIC_BUCKET_LABEL } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError } from "../../errors";
@@ -72,6 +72,7 @@ interface CommandUiCalls {
   readonly inputs: readonly vscode.InputBoxOptions[];
   readonly quickPicks: readonly QuickPickCall[];
   readonly warnings: readonly WarningMessageCall[];
+  readonly progress: readonly vscode.ProgressOptions[];
   readonly errors: readonly string[];
   readonly infos: readonly string[];
 }
@@ -94,24 +95,29 @@ const publicVisibilityPick = {
   value: "allPublic" as const,
 };
 
-const confirmVisibilityPick = {
-  label: "Change visibility",
+const confirmPublicVisibilityPick = {
+  label: "Change to Public",
+  value: true,
+};
+
+const confirmPrivateVisibilityPick = {
+  label: "Change to Private",
   value: true,
 };
 
 function makeCommandServices(client: B2Client | null): {
-  readonly services: CommandServices;
+  readonly services: BucketCommandServices;
   readonly refreshCount: () => number;
 } {
   let refreshes = 0;
-  const services = {
+  const services: BucketCommandServices = {
     treeProvider: {
       refresh() {
         refreshes++;
       },
     },
     getClient: () => client,
-  } as unknown as CommandServices;
+  };
 
   return {
     services,
@@ -187,18 +193,21 @@ async function withCommandUiStubs(
     showWarningMessage: typeof vscode.window.showWarningMessage;
     showErrorMessage: typeof vscode.window.showErrorMessage;
     showInformationMessage: typeof vscode.window.showInformationMessage;
+    withProgress: typeof vscode.window.withProgress;
   };
   const originalShowInputBox = mutableWindow.showInputBox;
   const originalShowQuickPick = mutableWindow.showQuickPick;
   const originalShowWarningMessage = mutableWindow.showWarningMessage;
   const originalShowErrorMessage = mutableWindow.showErrorMessage;
   const originalShowInformationMessage = mutableWindow.showInformationMessage;
+  const originalWithProgress = mutableWindow.withProgress;
   const inputValues = [...(options.inputValues ?? [])];
   const quickPickValues = [...(options.quickPickValues ?? [])];
   const warningValues = [...(options.warningValues ?? [])];
   const inputs: vscode.InputBoxOptions[] = [];
   const quickPicks: QuickPickCall[] = [];
   const warnings: WarningMessageCall[] = [];
+  const progress: vscode.ProgressOptions[] = [];
   const errors: string[] = [];
   const infos: string[] = [];
 
@@ -244,10 +253,27 @@ async function withCommandUiStubs(
     return Promise.resolve(undefined);
   }) as typeof vscode.window.showInformationMessage;
 
+  mutableWindow.withProgress = (async (
+    progressOptions: vscode.ProgressOptions,
+    task: (
+      progress: vscode.Progress<{ message?: string; increment?: number }>,
+      token: vscode.CancellationToken,
+    ) => Thenable<unknown>,
+  ) => {
+    progress.push(progressOptions);
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+      return task({ report() {} }, tokenSource.token);
+    } finally {
+      tokenSource.dispose();
+    }
+  }) as typeof vscode.window.withProgress;
+
   try {
     await callback();
-    return { inputs, quickPicks, warnings, errors, infos };
+    return { inputs, quickPicks, warnings, progress, errors, infos };
   } finally {
+    mutableWindow.withProgress = originalWithProgress;
     mutableWindow.showInformationMessage = originalShowInformationMessage;
     mutableWindow.showErrorMessage = originalShowErrorMessage;
     mutableWindow.showWarningMessage = originalShowWarningMessage;
@@ -331,6 +357,9 @@ suite("B2 public bucket command safety", () => {
     assert.deepStrictEqual(calls, [{ bucketName: "private-bucket", bucketType: "allPrivate" }]);
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.match(ui.progress[0]?.title ?? "", /Creating B2 bucket/);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
 
@@ -354,7 +383,29 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
     assert.strictEqual(ui.inputs.length, 2);
     assert.match(ui.inputs[1]?.prompt ?? "", /Type "public-bucket"/);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
     assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("does not create a public bucket when typed confirmation name mismatches", async () => {
+    const { client, calls } = makeCreateBucketClient();
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket", "wrong-name"],
+        quickPickValues: [publicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.inputs.length, 2);
+    assert.strictEqual(ui.progress.length, 0);
+    assert.strictEqual(commandServices.refreshCount(), 0);
   });
 
   test("changes a private bucket to public only after explicit confirmation", async () => {
@@ -364,7 +415,7 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["photos-public"],
-        quickPickValues: [confirmVisibilityPick],
+        quickPickValues: [confirmPublicVisibilityPick],
         warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
@@ -374,7 +425,30 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
     assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.match(ui.progress[0]?.title ?? "", /Changing "photos-public" to Public/);
     assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("does not change a private bucket to public when typed confirmation is cancelled", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate");
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: [undefined],
+        quickPickValues: [confirmPublicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(ui.progress.length, 0);
+    assert.strictEqual(commandServices.refreshCount(), 0);
   });
 
   test("changes a public bucket to private without a public access warning", async () => {
@@ -383,7 +457,7 @@ suite("B2 public bucket command safety", () => {
 
     const ui = await withCommandUiStubs(
       {
-        quickPickValues: [confirmVisibilityPick],
+        quickPickValues: [confirmPrivateVisibilityPick],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
@@ -391,6 +465,8 @@ suite("B2 public bucket command safety", () => {
     assert.deepStrictEqual(updates, [{ bucketType: "allPrivate" }]);
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 0);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
 
@@ -410,6 +486,7 @@ suite("B2 public bucket command safety", () => {
     assert.deepStrictEqual(calls, []);
     assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.inputs.length, 1);
+    assert.strictEqual(ui.progress.length, 0);
     assert.strictEqual(commandServices.refreshCount(), 0);
   });
 
@@ -429,12 +506,36 @@ suite("B2 public bucket command safety", () => {
 
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.progress.length, 1);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
     assert.match(ui.errors[0] ?? "", /Unexpected error/);
   });
 
-  test("shows an error when visibility update fails", async () => {
+  test("refreshes and warns when public bucket creation has unknown state", async () => {
+    const { client, calls } = makeCreateBucketClient(async () => {
+      throw new Error("lost response");
+    });
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket", "public-bucket"],
+        quickPickValues: [publicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 2);
+    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
+  });
+
+  test("refreshes and warns when public visibility update has unknown state", async () => {
     const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
       throw new Error("access denied");
     });
@@ -443,14 +544,16 @@ suite("B2 public bucket command safety", () => {
     const ui = await withCommandUiStubs(
       {
         inputValues: ["photos-public"],
-        quickPickValues: [confirmVisibilityPick],
-        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+        quickPickValues: [confirmPublicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
       },
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
     assert.strictEqual(updates.length, 1);
-    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 2);
+    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
     assert.match(ui.errors[0] ?? "", /Unexpected error/);
