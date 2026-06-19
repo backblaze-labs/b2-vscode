@@ -346,7 +346,9 @@ suite("Adversarial untrusted input fuzzing", () => {
         streamFromBytes(Buffer.from("ok")),
       );
       assertInside(tempRoot, savedPath);
-      const relativeSegments = path.relative(tempRoot, savedPath).split(path.sep);
+      const relativeSegments = path
+        .relative(realPathForContainment(tempRoot), realPathForContainment(savedPath))
+        .split(path.sep);
       assert.ok(relativeSegments.every((segment) => !segment.endsWith(".")));
       assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "ok");
     } finally {

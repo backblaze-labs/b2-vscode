@@ -444,7 +444,7 @@
             },
             "localPath": {
               "type": "string",
-              "description": "Optional workspace-relative local path inside the first open workspace folder. Absolute paths are rejected. Defaults to that workspace root with the same file name. Existing files are not overwritten."
+              "description": "Optional workspace-relative local path inside the first open workspace folder. Absolute paths are rejected. Defaults to that workspace root with a safe version of the remote file name. Existing files are not overwritten."
             }
           },
           "required": [
