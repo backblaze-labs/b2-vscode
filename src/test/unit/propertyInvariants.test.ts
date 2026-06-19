@@ -166,6 +166,13 @@ test("private temp roots are unpredictable and owner-only", () => {
   }
 });
 
+test("private temp root prefixes must be simple names", () => {
+  assert.throws(() => createPrivateTempRoot(""));
+  assert.throws(() => createPrivateTempRoot("/tmp/b2-vscode"));
+  assert.throws(() => createPrivateTempRoot("nested/prefix"));
+  assert.throws(() => createPrivateTempRoot("nested\\prefix"));
+});
+
 test("safe writes create owner-only files and reject final symlinks", async () => {
   const root = fs.mkdtempSync(path.join(propertyRoot, "safe-write-"));
   const filePath = path.join(root, "nested", "file.txt");
@@ -245,6 +252,22 @@ test("download destinations reject existing directories", async () => {
 
   await assert.rejects(() => resolveDownloadSavePath(workspaceRoot, "safe.txt", directoryPath));
   await assert.rejects(() => assertSafeFileWritePath(workspaceRoot, directoryPath));
+});
+
+test("download destinations reject trailing path separators", async () => {
+  const relativeDirectoryPath = "downloads/";
+  const winRelativeDirectoryPath = "downloads\\";
+  const absoluteDirectoryPath = `${path.join(workspaceRoot, "downloads")}${path.sep}`;
+
+  await assert.rejects(() =>
+    resolveDownloadSavePath(workspaceRoot, "safe.txt", relativeDirectoryPath),
+  );
+  await assert.rejects(() =>
+    resolveDownloadSavePath(workspaceRoot, "safe.txt", winRelativeDirectoryPath),
+  );
+  await assert.rejects(() =>
+    resolveDownloadSavePath(workspaceRoot, "safe.txt", absoluteDirectoryPath),
+  );
 });
 
 test(

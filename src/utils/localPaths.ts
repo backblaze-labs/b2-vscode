@@ -70,6 +70,12 @@ function assertRelativePathInput(relativePath: string): void {
   }
 }
 
+function assertFilePathInput(localPath: string): void {
+  if (/[\\/]/.test(localPath.slice(-1))) {
+    throw new Error("Local path must be a file path, not a directory path.");
+  }
+}
+
 function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
   const relativePath = path.relative(rootPath, candidatePath);
 
@@ -282,6 +288,7 @@ export async function resolveDownloadSavePath(
     return defaultPath;
   }
 
+  assertFilePathInput(localPath);
   assertRelativePathInput(localPath);
   const resolvedPath = resolveInsideRoot(workspaceRoot, localPath);
   await assertSafeFileWritePath(workspaceRoot, resolvedPath);
