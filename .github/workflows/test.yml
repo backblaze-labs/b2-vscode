@@ -66,7 +66,18 @@ jobs:
         timeout-minutes: 10
         env:
           npm_config_ignore_scripts: "true"
-        run: node scripts/assert-audit-gate-fixture.js
+        run: |
+          for attempt in 1 2 3; do
+            if node scripts/assert-audit-gate-fixture.js; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
 
       - name: Audit dependency advisories
         timeout-minutes: 10

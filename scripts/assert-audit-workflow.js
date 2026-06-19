@@ -27,17 +27,20 @@ assert(
   auditStepIndex < installStepIndex,
   "the advisory audit must run before dependency lifecycle scripts could run.",
 );
+
+const auditStep = workflow.slice(auditStepIndex, installStepIndex);
+
 assert(
   !workflow.includes("npm run audit:ci"),
   "CI must not call the repo-controlled audit script.",
 );
 assert(
-  workflow.includes("npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc"),
+  auditStep.includes("npx --yes --ignore-scripts audit-ci@7.1.0 --config audit-ci.jsonc"),
   "CI must call the pinned audit-ci command directly.",
 );
 assert(
-  workflow.includes('npm_config_ignore_scripts: "true"'),
-  "audit-ci must run with npm lifecycle scripts disabled.",
+  auditStep.includes('npm_config_ignore_scripts: "true"'),
+  "the advisory audit step must run with npm lifecycle scripts disabled.",
 );
 assert(
   workflow.includes("npm ci --ignore-scripts"),
