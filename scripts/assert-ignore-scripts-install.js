@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+/**
+ * Verifies lifecycle-disabled installs do not execute dependency scripts.
+ */
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

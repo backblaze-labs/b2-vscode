@@ -12,7 +12,6 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
-      - "security"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -23,4 +22,3 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
-      - "security"

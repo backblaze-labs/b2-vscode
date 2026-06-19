@@ -9,7 +9,7 @@ on:
       - "src/**"
       - "resources/icons/**"
       - "scripts/**"
-      - "audit-ci.jsonc"
+      - "audit-policy.jsonc"
       - "package.json"
       - "package-lock.json"
       - "README.md"
@@ -27,7 +27,7 @@ on:
       - "src/**"
       - "resources/icons/**"
       - "scripts/**"
-      - "audit-ci.jsonc"
+      - "audit-policy.jsonc"
       - "package.json"
       - "package-lock.json"
       - "README.md"
@@ -65,6 +65,8 @@ jobs:
           node-version: "22"
           cache: npm
 
+      # Step names/order in this job are asserted by
+      # scripts/assert-audit-workflow.js; update that guard if they change.
       - name: Assert audit workflow guardrails
         run: node scripts/assert-audit-workflow.js
 
@@ -92,7 +94,7 @@ jobs:
           npm_config_ignore_scripts: "true"
         # Inline this instead of the package script because package.json is
         # PR-mutable; assert-audit-policy.js keeps the local script in sync.
-        run: bash scripts/retry.sh npx --no-install audit-ci --config audit-ci.jsonc
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js
 
       - name: Verify dependency signatures
         timeout-minutes: 10

@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+/**
+ * Verifies workflow structure keeps the required dependency-audit gate enforced.
+ */
+
 const fs = require("fs");
 const path = require("path");
 
@@ -65,12 +69,31 @@ const releaseBuildIndex = releaseWorkflow.indexOf("- name: Build extension");
 const releaseAuditIndex = releaseWorkflow.indexOf("- name: Audit dependency advisories");
 const releaseSignatureIndex = releaseWorkflow.indexOf("- name: Verify dependency signatures");
 const readmePathFilterCount = (testWorkflow.match(/- "README\.md"/g) || []).length;
+const policyPathFilterCount = (testWorkflow.match(/- "audit-policy\.jsonc"/g) || []).length;
+const policyHelperPathFilterCount = (testWorkflow.match(/- "scripts\/audit-policy\.js"/g) || [])
+  .length;
+const auditScriptPathFilterCount = (testWorkflow.match(/- "scripts\/run-npm-audit\.js"/g) || [])
+  .length;
 
 assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
 assert(
   readmePathFilterCount >= 2,
   "test workflow push and pull_request path filters must include README.md.",
 );
+assert(
+  policyPathFilterCount >= 2,
+  "test workflow push and pull_request path filters must include audit-policy.jsonc.",
+);
+assert(
+  policyHelperPathFilterCount >= 2,
+  "test workflow push and pull_request path filters must include scripts/audit-policy.js.",
+);
+assert(
+  auditScriptPathFilterCount >= 2,
+  "test workflow push and pull_request path filters must include scripts/run-npm-audit.js.",
+);
+assert(!testWorkflow.includes("audit-ci"), "test workflow must not execute audit-ci.");
+assert(!releaseWorkflow.includes("audit-ci"), "release workflow must not execute audit-ci.");
 assert(!testWorkflow.includes("npm run audit:ci"), "CI must not call the PR-mutable audit script.");
 assert(testRunIndex !== -1, "test workflow must still run VS Code tests.");
 for (const [label, index] of [
@@ -110,15 +133,8 @@ for (const [label, step] of [
 ]) {
   assertIgnoreScriptsEnv(label, step);
   assert(
-    hasTokens(step, [
-      "bash scripts/retry.sh",
-      "npx",
-      "--no-install",
-      "audit-ci",
-      "--config",
-      "audit-ci.jsonc",
-    ]),
-    `${label} must run the pinned local audit-ci binary through the retry helper.`,
+    hasTokens(step, ["bash scripts/retry.sh", "node", "scripts/run-npm-audit.js"]),
+    `${label} must run the npm audit gate through the retry helper.`,
   );
 }
 
