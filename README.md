@@ -97,6 +97,9 @@ npm run check
 # Run Node unit/property tests and VS Code extension tests
 npm test
 
+# Audit the full dependency tree (matches the Security CI gate)
+npm run audit:ci
+
 # Fix formatting and lint issues
 npm run check:fix
 
@@ -118,6 +121,9 @@ Expected test output includes the discovery guard and a nonzero Mocha summary, f
 `Discovered N compiled test file(s) for M source test file(s).` followed by a nonzero
 `passing` count. If the compiled test files are missing, `npm test` exits nonzero instead of
 reporting `0 passing`; Mocha is also configured to fail zero-test and pending-test runs.
+
+See [SECURITY.md](SECURITY.md) for the dependency audit policy and accepted
+advisory process.
 
 ## Architecture
 

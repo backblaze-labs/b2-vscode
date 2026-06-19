@@ -1,0 +1,8 @@
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "low": true,
+  "package-manager": "npm",
+  "report-type": "important",
+  "retry-count": 3,
+  "allowlist": [],
+}

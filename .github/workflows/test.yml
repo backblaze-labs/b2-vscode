@@ -3,8 +3,36 @@ name: Tests
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/**"
+      - "audit-ci.jsonc"
+      - "package.json"
+      - "package-lock.json"
+      - "SECURITY.md"
+      - "tsconfig*.json"
+      - "webpack.config.js"
+      - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
+      - ".github/dependabot.yml"
+      - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/**"
+      - "audit-ci.jsonc"
+      - "package.json"
+      - "package-lock.json"
+      - "SECURITY.md"
+      - "tsconfig*.json"
+      - "webpack.config.js"
+      - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
+      - ".github/dependabot.yml"
+      - ".github/workflows/test.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,8 +59,61 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Assert audit workflow guardrails
+        run: node scripts/assert-audit-workflow.js
+
+      - name: Assert audit gate fails closed
+        timeout-minutes: 10
+        env:
+          npm_config_ignore_scripts: "true"
+        run: node scripts/assert-audit-gate-fixture.js
+
+      - name: Audit dependency advisories
+        timeout-minutes: 10
+        env:
+          npm_config_ignore_scripts: "true"
+        run: |
+          for attempt in 1 2 3; do
+            if npx --yes audit-ci@7.1.0 --config audit-ci.jsonc; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
+
+      - name: Install dependencies without lifecycle scripts
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci --ignore-scripts; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
+
+      - name: Verify dependency signatures
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            if npm audit signatures; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
 
       - name: Run VS Code tests with discovery guard
         timeout-minutes: 20
