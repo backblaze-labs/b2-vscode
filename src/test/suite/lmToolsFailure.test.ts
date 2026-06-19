@@ -113,6 +113,24 @@ async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<
   }
 }
 
+async function withoutWorkspaceFolder<T>(run: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
+  Object.defineProperty(vscode.workspace, "workspaceFolders", {
+    configurable: true,
+    get: () => undefined,
+  });
+
+  try {
+    return await run();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(vscode.workspace, "workspaceFolders", descriptor);
+    } else {
+      delete (vscode.workspace as unknown as { workspaceFolders?: unknown }).workspaceFolders;
+    }
+  }
+}
+
 suite("B2 LM tool failure handling", () => {
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
@@ -308,6 +326,35 @@ suite("B2 LM tool failure handling", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("download tool requires an open workspace for local writes", async () => {
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    await withoutWorkspaceFolder(async () => {
+      for (const input of [
+        { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
+        { bucket: "b", path: "payload.txt" },
+      ]) {
+        await assert.rejects(
+          () => downloadFileOperation.execute(input, { getClient: () => client }),
+          /requires an open workspace folder.*workspace-relative/i,
+        );
+      }
+    });
+
+    assert.strictEqual(downloadWasCalled, false);
   });
 
   test("upload tool rejects workspace path traversal before reading", async () => {

@@ -152,8 +152,27 @@ function transferTempDirectory(directory?: string): string {
   return directory ?? path.join(os.tmpdir(), TRANSFER_TEMP_DIR_NAME);
 }
 
+function assertRealDirectory(stats: fs.Stats, directory: string, label: string): void {
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(
+      `${label} must be a real directory, not a symlink or special file: ${directory}`,
+    );
+  }
+}
+
 async function ensurePrivateDirectory(directory: string): Promise<void> {
-  await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+  try {
+    assertRealDirectory(await fs.promises.lstat(directory), directory, "Transfer temp directory");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      throw error;
+    }
+
+    await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+    assertRealDirectory(await fs.promises.lstat(directory), directory, "Transfer temp directory");
+  }
+
   await fs.promises.chmod(directory, 0o700).catch((error) => {
     logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
   });

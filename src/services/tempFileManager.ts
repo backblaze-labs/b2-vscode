@@ -22,9 +22,37 @@ export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
 
-  constructor() {
-    this.tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
-    fs.mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 });
+  constructor(tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME)) {
+    this.tempRoot = tempRoot;
+    this.ensurePrivateTempRoot();
+  }
+
+  private ensurePrivateTempRoot(): void {
+    let stats: fs.Stats | undefined;
+    try {
+      stats = fs.lstatSync(this.tempRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    if (stats) {
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(
+          `Temp file cache root must be a real directory, not a symlink or special file: ${this.tempRoot}`,
+        );
+      }
+    } else {
+      fs.mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 });
+      const createdStats = fs.lstatSync(this.tempRoot);
+      if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
+        throw new Error(
+          `Temp file cache root must be a real directory, not a symlink or special file: ${this.tempRoot}`,
+        );
+      }
+    }
+
     try {
       fs.chmodSync(this.tempRoot, 0o700);
     } catch {

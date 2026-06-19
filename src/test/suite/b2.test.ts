@@ -66,6 +66,19 @@ function fakeFileVersion(fileName: string, contentLength: number, id: string): F
   };
 }
 
+function createDirectorySymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 interface WarningMessageCall {
   readonly message: string;
   readonly options: vscode.MessageOptions | undefined;
@@ -464,6 +477,38 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects symlinked transfer temp directories", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-symlink-"));
+    const target = path.join(dir, "target");
+    const linkPath = path.join(dir, "link");
+    const destination = path.join(dir, "download.bin");
+    fs.mkdirSync(target);
+    const symlinkCreated = createDirectorySymlink(target, linkPath);
+    if (!symlinkCreated) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    }
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { temporaryDirectory: linkPath }),
+        /real directory|symlink/i,
+      );
+
+      assert.deepStrictEqual(fs.readdirSync(target), []);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("streams non-empty uploads through the SDK write stream", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-"));
     const localPath = path.join(dir, "file.bin");
@@ -653,6 +698,25 @@ suite("B2 transfer helpers", () => {
     } finally {
       manager.dispose();
       fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
+    }
+  });
+
+  test("rejects symlinked temp cache roots", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-symlink-"));
+    const target = path.join(dir, "target");
+    const linkPath = path.join(dir, "link");
+    fs.mkdirSync(target);
+    const symlinkCreated = createDirectorySymlink(target, linkPath);
+    if (!symlinkCreated) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    }
+
+    try {
+      assert.throws(() => new TempFileManager(linkPath), /real directory|symlink/i);
+      assert.deepStrictEqual(fs.readdirSync(target), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

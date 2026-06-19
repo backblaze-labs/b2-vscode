@@ -26,10 +26,13 @@ interface DownloadFileResult {
   message: string;
 }
 
-function workspacePath(relativePath: string, missingWorkspaceMessage: string): string {
+const WORKSPACE_REQUIRED_MESSAGE =
+  "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
+
+function workspacePath(relativePath: string): string {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
-    throw new Error(missingWorkspaceMessage);
+    throw new Error(WORKSPACE_REQUIRED_MESSAGE);
   }
   return resolveContainedRelativePath(workspaceFolder.uri.fsPath, relativePath, "localPath");
 }
@@ -53,13 +56,10 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     // Determine local save path
     let savePath: string;
     if (params.localPath) {
-      savePath = workspacePath(
-        params.localPath,
-        "No workspace folder open. Please omit localPath or use a workspace-relative localPath.",
-      );
+      savePath = workspacePath(params.localPath);
     } else {
       const fileName = b2KeyBasename(params.path);
-      savePath = workspacePath(fileName, "No workspace folder open. Please specify a localPath.");
+      savePath = workspacePath(fileName);
     }
 
     const size = await withCancellableTransferProgress(
