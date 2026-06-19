@@ -61,7 +61,11 @@ async function loadHarnessConfig(configPath) {
 function relativeToRoot(repoRoot, testRoot, fileName) {
   const relativePath = path.relative(path.join(repoRoot, testRoot), path.join(repoRoot, fileName));
 
-  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
     throw new Error(`${fileName} is outside configured test root ${testRoot}.`);
   }
 

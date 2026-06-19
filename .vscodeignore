@@ -17,4 +17,5 @@ typedoc.json
 webpack.config.js
 eslint.config.mjs
 .vscode-test.mjs
+test-harness.config.mjs
 DEVELOPMENT.md

@@ -55,6 +55,31 @@ async function main() {
       compiledTestCount: 1,
       sourceTestCount: 1,
     });
+
+    const dotPrefixRoots = {
+      compiledTestGlobs: [`${harnessConfig.compiledTestRoot}/..prefix/*.test.js`],
+      compiledTestRoot: harnessConfig.compiledTestRoot,
+      sourceTestGlobs: [`${harnessConfig.sourceTestRoot}/..prefix/*.test.ts`],
+      sourceTestRoot: harnessConfig.sourceTestRoot,
+    };
+    writeFile(
+      path.join(tempRoot, harnessConfig.sourceTestRoot, "..prefix", "example.test.ts"),
+      "export {};\n",
+    );
+    writeFile(
+      path.join(tempRoot, harnessConfig.compiledTestRoot, "..prefix", "example.test.js"),
+      "",
+    );
+    const dotPrefixResult = await runDiscoveryCheck({
+      harnessConfig: dotPrefixRoots,
+      repoRoot: tempRoot,
+      log: () => {},
+    });
+
+    assert.deepStrictEqual(dotPrefixResult, {
+      compiledTestCount: 1,
+      sourceTestCount: 1,
+    });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
