@@ -6,7 +6,7 @@ on:
     paths:
       - "src/**"
       - "resources/icons/**"
-      - "scripts/build-icons.js"
+      - "scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig*.json"
@@ -18,7 +18,7 @@ on:
     paths:
       - "src/**"
       - "resources/icons/**"
-      - "scripts/build-icons.js"
+      - "scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig*.json"

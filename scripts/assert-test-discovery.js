@@ -6,10 +6,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
-const repoRoot = path.join(__dirname, "..");
-const sourceSuiteDir = path.join(repoRoot, "src", "test", "suite");
-const compiledSuiteDir = path.join(repoRoot, "out", "src", "test", "suite");
+const defaultRepoRoot = path.join(__dirname, "..");
+const defaultConfigPath = path.join(defaultRepoRoot, ".vscode-test.mjs");
 
 function findFiles(root, predicate, base = root) {
   if (!fs.existsSync(root)) {
@@ -31,28 +31,87 @@ function findFiles(root, predicate, base = root) {
   return files.sort();
 }
 
-function fail(message) {
-  console.error(`Test discovery failed: ${message}`);
-  process.exit(1);
+function suiteDirFromGlob(glob, extension) {
+  const suffix = `/**/*.test.${extension}`;
+  if (typeof glob !== "string" || !glob.endsWith(suffix)) {
+    throw new Error(`unsupported test discovery glob: ${String(glob)}`);
+  }
+
+  return glob.slice(0, -suffix.length);
 }
 
-const sourceTests = findFiles(sourceSuiteDir, (name) => name.endsWith(".test.ts"));
-if (sourceTests.length === 0) {
-  fail("no source tests were found under src/test/suite.");
+async function loadConfiguredGlobs(configPath) {
+  const config = await import(pathToFileURL(configPath).href);
+  const { sourceTestFilesGlob, compiledTestFilesGlob } = config;
+
+  if (typeof sourceTestFilesGlob !== "string") {
+    throw new Error(".vscode-test.mjs must export sourceTestFilesGlob.");
+  }
+  if (typeof compiledTestFilesGlob !== "string") {
+    throw new Error(".vscode-test.mjs must export compiledTestFilesGlob.");
+  }
+
+  return { sourceTestFilesGlob, compiledTestFilesGlob };
 }
 
-const compiledTests = findFiles(compiledSuiteDir, (name) => name.endsWith(".test.js"));
-if (compiledTests.length === 0) {
-  fail("no compiled tests were found under out/src/test/suite.");
+async function runDiscoveryCheck(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const configPath = options.configPath ?? path.join(repoRoot, ".vscode-test.mjs");
+  const log = options.log ?? console.log;
+  const configuredGlobs =
+    options.sourceTestFilesGlob && options.compiledTestFilesGlob
+      ? {
+          sourceTestFilesGlob: options.sourceTestFilesGlob,
+          compiledTestFilesGlob: options.compiledTestFilesGlob,
+        }
+      : await loadConfiguredGlobs(configPath);
+
+  const sourceSuiteDir = path.join(
+    repoRoot,
+    suiteDirFromGlob(configuredGlobs.sourceTestFilesGlob, "ts"),
+  );
+  const compiledSuiteDir = path.join(
+    repoRoot,
+    suiteDirFromGlob(configuredGlobs.compiledTestFilesGlob, "js"),
+  );
+
+  const sourceTests = findFiles(sourceSuiteDir, (name) => name.endsWith(".test.ts"));
+  if (sourceTests.length === 0) {
+    throw new Error(`no source tests were found for ${configuredGlobs.sourceTestFilesGlob}.`);
+  }
+
+  const compiledTests = findFiles(compiledSuiteDir, (name) => name.endsWith(".test.js"));
+  if (compiledTests.length === 0) {
+    throw new Error(`no compiled tests were found for ${configuredGlobs.compiledTestFilesGlob}.`);
+  }
+
+  const expectedCompiledTests = sourceTests.map((fileName) => fileName.replace(/\.ts$/, ".js"));
+  const missingTests = expectedCompiledTests.filter(
+    (fileName) => !compiledTests.includes(fileName),
+  );
+
+  if (missingTests.length > 0) {
+    throw new Error(`missing compiled test file(s): ${missingTests.join(", ")}.`);
+  }
+
+  log(
+    `Discovered ${compiledTests.length} compiled test file(s) for ${sourceTests.length} source test file(s).`,
+  );
+
+  return {
+    compiledTestCount: compiledTests.length,
+    sourceTestCount: sourceTests.length,
+  };
 }
 
-const expectedCompiledTests = sourceTests.map((fileName) => fileName.replace(/\.ts$/, ".js"));
-const missingTests = expectedCompiledTests.filter((fileName) => !compiledTests.includes(fileName));
-
-if (missingTests.length > 0) {
-  fail(`missing compiled test file(s): ${missingTests.join(", ")}.`);
+if (require.main === module) {
+  runDiscoveryCheck({ configPath: defaultConfigPath }).catch((error) => {
+    console.error(`Test discovery failed: ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  });
 }
 
-console.log(
-  `Discovered ${compiledTests.length} compiled test file(s) for ${sourceTests.length} source test file(s).`,
-);
+module.exports = {
+  runDiscoveryCheck,
+  suiteDirFromGlob,
+};

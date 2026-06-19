@@ -8,6 +8,9 @@ const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
 const launchArgs = ["--disable-extensions", "--disable-workspace-trust"];
 
+export const sourceTestFilesGlob = "src/test/suite/**/*.test.ts";
+export const compiledTestFilesGlob = "out/src/test/suite/**/*.test.js";
+
 if (process.platform === "darwin") {
   launchArgs.push("--use-mock-keychain");
 }
@@ -17,7 +20,7 @@ mkdirSync(testXdgConfig, { recursive: true });
 
 export default defineConfig([
   {
-    files: "out/src/test/suite/**/*.test.js",
+    files: compiledTestFilesGlob,
     version: "stable",
     env: {
       B2_APPLICATION_KEY_ID: "",
