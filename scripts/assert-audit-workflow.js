@@ -74,6 +74,7 @@ const policyHelperPathFilterCount = (testWorkflow.match(/- "scripts\/audit-polic
   .length;
 const auditScriptPathFilterCount = (testWorkflow.match(/- "scripts\/run-npm-audit\.js"/g) || [])
   .length;
+const npmCommandPathFilterCount = (testWorkflow.match(/- "scripts\/npm-command\.js"/g) || []).length;
 
 assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
 assert(
@@ -91,6 +92,10 @@ assert(
 assert(
   auditScriptPathFilterCount >= 2,
   "test workflow push and pull_request path filters must include scripts/run-npm-audit.js.",
+);
+assert(
+  npmCommandPathFilterCount >= 2,
+  "test workflow push and pull_request path filters must include scripts/npm-command.js.",
 );
 assert(!testWorkflow.includes("audit-ci"), "test workflow must not execute audit-ci.");
 assert(!releaseWorkflow.includes("audit-ci"), "release workflow must not execute audit-ci.");
