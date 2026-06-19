@@ -10,7 +10,11 @@ import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import { uploadFileFromDisk } from "../../services/fileTransfers";
-import { isPathInsideOrEqual, resolveContainedRelativePath } from "../../services/pathSafety";
+import {
+  findWorkspaceControlDirectory,
+  isPathInsideOrEqual,
+  resolveContainedRelativePath,
+} from "../../services/pathSafety";
 import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
@@ -29,6 +33,13 @@ interface UploadFileResult {
   message: string;
 }
 
+function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string): void {
+  const blocked = findWorkspaceControlDirectory(workspaceRoot, localPath);
+  if (blocked) {
+    throw new Error(`uploadFile refuses to read inside workspace control directory: ${blocked}`);
+  }
+}
+
 async function workspaceFilePath(relativePath: string): Promise<string> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
@@ -40,6 +51,7 @@ async function workspaceFilePath(relativePath: string): Promise<string> {
     relativePath,
     "localPath",
   );
+  assertNoControlDirectoryRead(workspaceFolder.uri.fsPath, lexicalPath);
   const [workspaceRealPath, localRealPath] = await Promise.all([
     fs.promises.realpath(workspaceFolder.uri.fsPath),
     fs.promises.realpath(lexicalPath),

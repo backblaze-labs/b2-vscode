@@ -40,11 +40,24 @@ function portableSegments(relativePath: string, label: string): string[] {
   return segments;
 }
 
+const WORKSPACE_CONTROL_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
+
 export function isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
   const parent = path.resolve(parentPath);
   const child = path.resolve(childPath);
   const parentPrefix = parent.endsWith(path.sep) ? parent : parent + path.sep;
   return child === parent || child.startsWith(parentPrefix);
+}
+
+export function findWorkspaceControlDirectory(
+  workspaceRoot: string,
+  candidatePath: string,
+): string | undefined {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  return relative
+    .split(path.sep)
+    .filter((segment) => segment.length > 0)
+    .find((segment) => WORKSPACE_CONTROL_DIRECTORIES.has(segment.toLowerCase()));
 }
 
 export function resolveContainedRelativePath(

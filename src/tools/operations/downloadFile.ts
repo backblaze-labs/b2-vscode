@@ -11,6 +11,7 @@ import type { B2ToolOperation, ToolExtras } from "../types";
 import { downloadStreamToFile } from "../../services/fileTransfers";
 import {
   b2KeyBasename,
+  findWorkspaceControlDirectory,
   isPathInsideOrEqual,
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
@@ -34,17 +35,9 @@ interface DownloadFileResult {
 
 const WORKSPACE_REQUIRED_MESSAGE =
   "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
-const CONTROL_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
-
-function workspaceRelativeSegments(workspaceRoot: string, destinationPath: string): string[] {
-  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(destinationPath));
-  return relative.split(path.sep).filter((segment) => segment.length > 0);
-}
 
 function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
-  const blocked = workspaceRelativeSegments(workspaceRoot, destinationPath).find((segment) =>
-    CONTROL_DIRECTORIES.has(segment.toLowerCase()),
-  );
+  const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
   if (blocked) {
     throw new Error(`downloadFile refuses to write inside workspace control directory: ${blocked}`);
   }

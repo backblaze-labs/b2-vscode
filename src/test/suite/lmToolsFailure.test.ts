@@ -506,6 +506,33 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("upload tool rejects workspace control directories before reading", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-control-"));
+    const controlFile = path.join(workspaceDir, ".git", "config");
+    fs.mkdirSync(path.dirname(controlFile), { recursive: true });
+    fs.writeFileSync(controlFile, "secret");
+    const client = {
+      async getBucket() {
+        assert.fail("Expected control-directory validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: ".git/config" },
+              { getClient: () => client },
+            ),
+          /control directory/i,
+        );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects symlink escapes before reading", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-outside-"));
