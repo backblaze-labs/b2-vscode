@@ -387,6 +387,15 @@ suite("Adversarial untrusted input fuzzing", () => {
     );
   });
 
+  test("absolute local path resolution preserves non-containment errors", () => {
+    const tooLongPath = path.join(os.tmpdir(), "x".repeat(300), "download.bin");
+
+    assert.throws(
+      () => resolveToolLocalPath(tooLongPath, "workspace required"),
+      /localPath is too long/,
+    );
+  });
+
   test("default download names are safe workspace-relative file names", () => {
     fc.assert(
       fc.property(hostilePath, (remotePath) => {

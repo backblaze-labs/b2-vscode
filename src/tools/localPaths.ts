@@ -36,16 +36,30 @@ function currentWorkspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
+function isContainmentError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(" must stay within ");
+}
+
 function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
-  const allowedRoots = [workspaceRoot, os.tmpdir()].filter(
-    (candidate): candidate is string => candidate !== undefined,
+  const allowedRoots = [
+    workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
+    { root: os.tmpdir(), description: "the system temporary directory" },
+  ].filter(
+    (candidate): candidate is { root: string; description: string } => candidate !== undefined,
   );
 
   for (const allowedRoot of allowedRoots) {
     try {
-      return resolvePathInsideReal(allowedRoot, absolutePath);
-    } catch {
-      // Try the next allow-listed root.
+      return resolvePathInsideReal(
+        allowedRoot.root,
+        absolutePath,
+        "localPath",
+        allowedRoot.description,
+      );
+    } catch (error) {
+      if (!isContainmentError(error)) {
+        throw error;
+      }
     }
   }
 
