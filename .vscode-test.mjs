@@ -1,5 +1,5 @@
 import { defineConfig } from "@vscode/test-cli";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,10 @@ const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
 const testProfileRoot = mkdtempSync(join(tmpdir(), "b2-vscode-test-profile-"));
+process.once("exit", () => {
+  rmSync(testProfileRoot, { recursive: true, force: true });
+});
+
 const launchArgs = [
   "--disable-extensions",
   "--disable-workspace-trust",

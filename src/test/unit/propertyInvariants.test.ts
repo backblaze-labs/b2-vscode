@@ -199,6 +199,14 @@ test("presigned URL encoding preserves slash separators for nested object names"
   assert.equal(encodeB2FileNameForUrl("reports/q4 final #1.pdf"), "reports/q4%20final%20%231.pdf");
 });
 
+test("presigned URL encoding rejects empty path segments", () => {
+  assert.throws(() => encodeB2FileNameForUrl("photos//img.jpg"), /empty path segments/);
+  assert.throws(
+    () => buildB2DownloadUrl("https://download.example.com", "bucket", "/img.jpg", "token"),
+    /empty path segments/,
+  );
+});
+
 test("presigned URL file-name encoding is per-segment reversible", () => {
   fc.assert(
     fc.property(b2SegmentedPath, (fileName) => {
