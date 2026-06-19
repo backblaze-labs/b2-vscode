@@ -370,6 +370,48 @@ suite("B2 LM tool failure handling", () => {
     assert.strictEqual(downloadWasCalled, false);
   });
 
+  test("download tool rejects symlinked workspace destinations before writing", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-symlink-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-outside-"));
+    const linkPath = path.join(workspaceDir, "downloads");
+    const symlinkCreated = createDirectorySymlink(outsideDir, linkPath);
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
+              { getClient: () => client },
+            ),
+          /real directory|symlink/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(outsideDir, "payload.txt")), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects workspace path traversal before reading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-policy-"));
     const client = {
