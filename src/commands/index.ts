@@ -10,7 +10,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
+import type { B2Client, Bucket, BucketType, FileId } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
@@ -209,6 +209,28 @@ async function withBucketMutationTimeout<T>(
     if (timer) {
       clearTimeout(timer);
     }
+  }
+}
+
+export async function renameFileVersion(
+  bucket: Pick<Bucket, "copyFile" | "deleteFileVersion">,
+  oldPath: string,
+  fileId: FileId,
+  newPath: string,
+): Promise<void> {
+  let copyCompleted = false;
+  try {
+    await bucket.copyFile({ sourceFileId: fileId, fileName: newPath });
+    copyCompleted = true;
+    await bucket.deleteFileVersion(oldPath, fileId);
+  } catch (error) {
+    if (copyCompleted) {
+      throw new B2PartialFailureError(
+        `Rename incomplete. Copied "${oldPath}" to "${newPath}", but failed to delete the original. Both B2 objects may exist. ${formatB2UserMessage(error)}`,
+        error,
+      );
+    }
+    throw error;
   }
 }
 
@@ -772,25 +794,9 @@ export function registerCommands(services: CommandServices): void {
       const newPath = `${prefixWithSlash}${newName}`;
 
       try {
-        let copyCompleted = false;
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: `Renaming to "${newName}"...` },
-          async () => {
-            // Server-side copy then delete the original
-            try {
-              await item.bucket.copyFile({ sourceFileId: item.file.fileId, fileName: newPath });
-              copyCompleted = true;
-              await item.bucket.deleteFileVersion(oldPath, item.file.fileId);
-            } catch (error) {
-              if (copyCompleted) {
-                throw new B2PartialFailureError(
-                  `Rename incomplete. Copied "${oldPath}" to "${newPath}", but failed to delete the original. Both B2 objects may exist. ${formatB2UserMessage(error)}`,
-                  error,
-                );
-              }
-              throw error;
-            }
-          },
+          () => renameFileVersion(item.bucket, oldPath, item.file.fileId, newPath),
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Renamed to "${newName}".`);

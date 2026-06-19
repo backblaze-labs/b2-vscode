@@ -25,6 +25,8 @@ for (const entry of readdirSync(tmpdir())) {
 }
 
 const testProfileRoot = mkdtempSync(join(tmpdir(), testProfilePrefix));
+const testUserDataDir = join(testProfileRoot, "user-data");
+const testExtensionsDir = join(testProfileRoot, "extensions");
 process.once("exit", () => {
   try {
     rmSync(testProfileRoot, { recursive: true, force: true });
@@ -36,8 +38,8 @@ process.once("exit", () => {
 const launchArgs = [
   "--disable-extensions",
   "--disable-workspace-trust",
-  `--user-data-dir=${join(testProfileRoot, "user-data")}`,
-  `--extensions-dir=${join(testProfileRoot, "extensions")}`,
+  `--user-data-dir=${testUserDataDir}`,
+  `--extensions-dir=${testExtensionsDir}`,
 ];
 
 if (process.platform === "darwin") {
@@ -46,6 +48,8 @@ if (process.platform === "darwin") {
 
 mkdirSync(join(testHome, ".vscode"), { recursive: true });
 mkdirSync(testXdgConfig, { recursive: true });
+mkdirSync(testUserDataDir, { recursive: true });
+mkdirSync(testExtensionsDir, { recursive: true });
 
 export default defineConfig([
   {

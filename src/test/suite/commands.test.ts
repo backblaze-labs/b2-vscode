@@ -8,11 +8,15 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import {
   B2Client,
+  BufferSource,
   classifyError,
+  fileId,
   NetworkError,
   type Bucket,
   type BucketType,
 } from "@backblaze-labs/b2-sdk";
+// @ts-expect-error Classic moduleResolution does not read this package export map.
+import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
 import {
   type BucketCreationClient,
   type BucketCommandServices,
@@ -21,12 +25,14 @@ import {
   changeBucketVisibilityCommand,
   createBucketCommand,
   openFileCommand,
+  renameFileVersion,
 } from "../../commands";
 import {
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketNameConfirmationAccepted,
 } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "../../errors";
+import { streamToBuffer } from "../../services/b2";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
 import { withWindowUiStubs } from "./windowStubs";
@@ -138,6 +144,18 @@ function assertAbortSignalIsEnumerable(options: { readonly signal?: AbortSignal 
   assert.ok(options.signal);
   assert.strictEqual(Object.prototype.propertyIsEnumerable.call(options, "signal"), true);
   assert.strictEqual({ ...options }.signal, options.signal);
+}
+
+async function createSimulatorBucket(): Promise<Bucket> {
+  const sim = new B2Simulator();
+  const client = new B2Client({
+    applicationKeyId: "test-key-id",
+    applicationKey: "test-application-key",
+    transport: sim.transport(),
+  });
+
+  await client.authorize();
+  return client.createBucket({ bucketName: "bucket", bucketType: "allPrivate" });
 }
 
 suite("B2 commands error handling", () => {
@@ -1130,5 +1148,41 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
+  });
+
+  test("rename helper copies the file and deletes the original version", async () => {
+    const bucket = await createSimulatorBucket();
+    const content = Buffer.from("rename me");
+    const uploaded = await bucket.upload({
+      fileName: "folder/original.txt",
+      source: new BufferSource(content),
+    });
+
+    await renameFileVersion(bucket, uploaded.fileName, uploaded.fileId, "folder/renamed.txt");
+
+    assert.strictEqual(await bucket.getFileInfoByName("folder/original.txt"), null);
+    const renamed = await bucket.download("folder/renamed.txt");
+    assert.deepStrictEqual(await streamToBuffer(renamed.body), content);
+  });
+
+  test("rename helper reports partial failure when copy succeeds and delete fails", async () => {
+    const bucket = {
+      async copyFile() {
+        return {};
+      },
+      async deleteFileVersion() {
+        throw new Error("delete denied");
+      },
+    } as unknown as Pick<Bucket, "copyFile" | "deleteFileVersion">;
+
+    await assert.rejects(
+      () => renameFileVersion(bucket, "old.txt", fileId("file-id"), "new.txt"),
+      (error) => {
+        assert.ok(error instanceof B2PartialFailureError);
+        assert.match(error.message, /Copied "old\.txt" to "new\.txt"/);
+        assert.match(error.message, /Both B2 objects may exist/);
+        return true;
+      },
+    );
   });
 });

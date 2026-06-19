@@ -3,30 +3,8 @@ name: Tests
 on:
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "resources/icons/**"
-      - "scripts/**"
-      - "package.json"
-      - "package-lock.json"
-      - "tsconfig*.json"
-      - "webpack.config.js"
-      - ".vscode-test.mjs"
-      - "test-harness.config.mjs"
-      - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "resources/icons/**"
-      - "scripts/**"
-      - "package.json"
-      - "package-lock.json"
-      - "tsconfig*.json"
-      - "webpack.config.js"
-      - ".vscode-test.mjs"
-      - "test-harness.config.mjs"
-      - ".github/workflows/test.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
