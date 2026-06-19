@@ -229,7 +229,7 @@ export async function createBucketCommand(services: BucketCommandServices): Prom
       {
         location: vscode.ProgressLocation.Notification,
         title: `Creating B2 bucket "${bucketName}"...`,
-        cancellable: true,
+        cancellable: false,
       },
       () =>
         client.createBucket({
@@ -301,7 +301,7 @@ export async function changeBucketVisibilityCommand(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Changing "${item.bucketName}" to ${newLabel}...`,
-        cancellable: true,
+        cancellable: false,
       },
       () => item.bucket.update({ bucketType: newType }),
     );

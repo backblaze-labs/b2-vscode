@@ -364,7 +364,7 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 1);
     assert.strictEqual(ui.progress.length, 1);
-    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[0]?.cancellable, false);
     assert.match(ui.progress[0]?.title ?? "", /Creating B2 bucket/);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
@@ -390,7 +390,7 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.inputs.length, 2);
     assert.match(ui.inputs[1]?.prompt ?? "", /Type "public-bucket"/);
     assert.strictEqual(ui.progress.length, 1);
-    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[0]?.cancellable, false);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
 
@@ -432,7 +432,7 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
     assert.strictEqual(ui.inputs.length, 1);
     assert.strictEqual(ui.progress.length, 1);
-    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[0]?.cancellable, false);
     assert.match(ui.progress[0]?.title ?? "", /Changing "photos-public" to Public/);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
@@ -472,7 +472,7 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 0);
     assert.strictEqual(ui.progress.length, 1);
-    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[0]?.cancellable, false);
     assert.strictEqual(commandServices.refreshCount(), 1);
   });
 

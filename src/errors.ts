@@ -297,8 +297,8 @@ function isTransientServiceFailure(error: unknown): boolean {
 }
 
 /**
- * Whether a mutation may have reached B2 even though the client did not get a
- * reliable final response.
+ * Whether a mutation's final state is uncertain because the client saw a
+ * network failure or a transient B2 service failure.
  */
 export function isB2MutationStateAmbiguous(error: unknown): boolean {
   return isNetworkFailure(error) || isTransientServiceFailure(error);
