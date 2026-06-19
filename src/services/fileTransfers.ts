@@ -218,7 +218,14 @@ async function moveIntoPlace(sourcePath: string, destinationPath: string): Promi
   try {
     await fs.promises.rename(sourcePath, destinationPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "EPERM") {
+      await fs.promises.rm(destinationPath, { force: true });
+      await fs.promises.rename(sourcePath, destinationPath);
+      return;
+    }
+
+    if (code !== "EXDEV") {
       throw error;
     }
 

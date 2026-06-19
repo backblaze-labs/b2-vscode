@@ -431,6 +431,39 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("overwrites existing destinations when rename reports EEXIST", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-overwrite-"));
+    const destination = path.join(dir, "file.bin");
+    fs.writeFileSync(destination, Buffer.from([1, 2, 3]));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    let renameCalls = 0;
+    fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      renameCalls += 1;
+      if (renameCalls === 1 && path.resolve(String(newPath)) === path.resolve(destination)) {
+        throw Object.assign(new Error("destination exists"), { code: "EEXIST" });
+      }
+
+      await originalRename(oldPath, newPath);
+    };
+
+    try {
+      const size = await downloadStreamToFile(stream, destination);
+
+      assert.strictEqual(size, 3);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
+      assert.strictEqual(renameCalls, 2);
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("streams non-empty uploads through the SDK write stream", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-"));
     const localPath = path.join(dir, "file.bin");
