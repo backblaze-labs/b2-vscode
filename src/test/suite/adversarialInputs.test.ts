@@ -437,6 +437,46 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("atomic stream writes retry short file writes", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-short-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const originalOpen = fs.promises.open;
+    let writeCalls = 0;
+
+    try {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async (
+        ...args: Parameters<typeof fs.promises.open>
+      ) => {
+        const handle = await originalOpen(...args);
+        const originalWrite = handle.write.bind(handle);
+
+        (handle as unknown as { write: typeof handle.write }).write = (async (
+          buffer: Buffer,
+          offset?: number,
+          length?: number,
+          position?: number,
+        ) => {
+          const requested = length ?? buffer.byteLength - (offset ?? 0);
+          const forcedLength = requested > 1 ? Math.ceil(requested / 2) : requested;
+          writeCalls++;
+          return originalWrite(buffer, offset, forcedLength, position);
+        }) as typeof handle.write;
+
+        return handle;
+      }) as typeof fs.promises.open;
+
+      const size = await writeReadableStreamAtomically(targetPath, streamFromBytes(bytes));
+
+      assert.strictEqual(size, bytes.byteLength);
+      assert.deepStrictEqual(await fs.promises.readFile(targetPath), Buffer.from(bytes));
+      assert.ok(writeCalls > 1);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("tool operations tolerate hostile bucket and path strings", async () => {
     const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-tools-"));
     let downloadIndex = 0;

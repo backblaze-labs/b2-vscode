@@ -237,12 +237,36 @@ async function publishTempFile(
   overwrite: boolean,
 ): Promise<void> {
   if (overwrite) {
-    await fs.promises.rename(tempPath, destinationPath);
+    try {
+      await fs.promises.rename(tempPath, destinationPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || !["EACCES", "EEXIST", "EPERM"].includes(code ?? "")) {
+        throw error;
+      }
+      await fs.promises.rm(destinationPath, { force: true });
+      await fs.promises.rename(tempPath, destinationPath);
+    }
     return;
   }
 
   await fs.promises.link(tempPath, destinationPath);
   await fs.promises.unlink(tempPath);
+}
+
+async function writeChunkFully(handle: fs.promises.FileHandle, chunk: Uint8Array): Promise<number> {
+  const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  let written = 0;
+
+  while (written < buffer.length) {
+    const result = await handle.write(buffer, written, buffer.length - written);
+    if (result.bytesWritten === 0) {
+      throw new Error("File write made no progress.");
+    }
+    written += result.bytesWritten;
+  }
+
+  return written;
 }
 
 export async function writeBufferAtomically(
@@ -282,8 +306,7 @@ export async function writeReadableStreamAtomically(
         break;
       }
       if (value) {
-        await handle.write(value);
-        size += value.byteLength;
+        size += await writeChunkFully(handle, value);
       }
     }
 
