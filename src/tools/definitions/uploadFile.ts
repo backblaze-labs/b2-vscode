@@ -20,7 +20,7 @@ export const uploadFileTool: B2ToolDefinition = {
   name: "b2_uploadFile",
   displayName: "B2: Upload File",
   description:
-    "Uploads a local file to a B2 bucket. Returns the uploaded file info including file ID and size.",
+    "Uploads a file from the open workspace to a B2 bucket. Returns the uploaded file info including file ID and size.",
   parameters: {
     type: "object",
     properties: {

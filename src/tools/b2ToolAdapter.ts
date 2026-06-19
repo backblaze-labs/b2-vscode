@@ -73,9 +73,15 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
         parts.push(
           `Warning: this will ${formatInlineCode(effect ?? "expose data outside the local workspace or B2 account")}.`,
         );
-        parts.push(
-          "This can make data available outside VS Code. If the target bucket is public or a link is shared, others may be able to download it with no Backblaze login required.",
-        );
+        if (this.definition.name === "b2_presignUrl") {
+          parts.push(
+            "Anyone who obtains the link can download authorized B2 objects until it expires, with no Backblaze login required.",
+          );
+        } else {
+          parts.push(
+            "This can expose local file contents outside your machine. Only continue if you intended to share this data.",
+          );
+        }
         break;
       case "write":
         parts.push(

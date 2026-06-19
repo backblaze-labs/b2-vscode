@@ -9,9 +9,9 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { BufferSource, type FileVersion } from "@backblaze-labs/b2-sdk";
+import { BufferSource, type B2Client, type FileVersion } from "@backblaze-labs/b2-sdk";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
-import { downloadFileOperation } from "../../tools/operations/downloadFile";
+import { downloadFileOperation, MAX_DOWNLOAD_BYTES } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
@@ -53,18 +53,19 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-lm-tools-"));
 }
 
-async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
+async function withWorkspaceFolders<T>(
+  workspacePaths: string[],
+  run: () => Promise<T>,
+): Promise<T> {
   const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
   const mutableWorkspace = vscode.workspace as unknown as Record<string, unknown>;
   Object.defineProperty(vscode.workspace, "workspaceFolders", {
     configurable: true,
-    value: [
-      {
-        uri: vscode.Uri.file(workspacePath),
-        name: "workspace",
-        index: 0,
-      },
-    ],
+    value: workspacePaths.map((workspacePath, index) => ({
+      uri: vscode.Uri.file(workspacePath),
+      name: `workspace-${index}`,
+      index,
+    })),
   });
 
   try {
@@ -76,6 +77,10 @@ async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<
       delete mutableWorkspace.workspaceFolders;
     }
   }
+}
+
+async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
+  return withWorkspaceFolders([workspacePath], run);
 }
 
 suite("B2 LM tool operations with simulator", () => {
@@ -93,19 +98,104 @@ suite("B2 LM tool operations with simulator", () => {
 
   test("uploadFile uploads a local file to B2", async () => {
     const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
     const { client } = await createSimulatorBucket();
-    const localPath = path.join(dir, "source file.txt");
+    const localPath = path.join(workspaceRoot, "source file.txt");
 
     try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
       fs.writeFileSync(localPath, CONTENT);
 
-      const uploaded = await uploadFileOperation.execute(
-        { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
-        { getClient: () => client },
+      const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
+        uploadFileOperation.execute(
+          { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          { getClient: () => client },
+        ),
       );
 
       assert.strictEqual(uploaded.fileName, REMOTE_PATH);
       assert.strictEqual(uploaded.size, Buffer.byteLength(CONTENT));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile rejects absolute paths outside the workspace", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const outsideRoot = path.join(dir, "outside");
+    const localPath = path.join(outsideRoot, "secret.txt");
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(outsideRoot, { recursive: true });
+      fs.writeFileSync(localPath, "secret");
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot/secret.txt" },
+              { getClient: () => client },
+            ),
+          /localPath must stay within an open workspace folder/i,
+        ),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile rejects workspace-relative traversal outside the workspace", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const localPath = path.join(dir, "secret.txt");
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.writeFileSync(localPath, "secret");
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { localPath: "../secret.txt", bucket: SIMULATOR_BUCKET_NAME },
+              { getClient: () => client },
+            ),
+          /localPath must stay within an open workspace folder/i,
+        ),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile rejects workspace-relative paths through workspace symlinks", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const outsideRoot = path.join(dir, "outside");
+    const symlinkPath = path.join(workspaceRoot, "link");
+    const localPath = path.join(outsideRoot, "secret.txt");
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(outsideRoot, { recursive: true });
+      fs.writeFileSync(localPath, "secret");
+      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { localPath: path.join("link", "secret.txt"), bucket: SIMULATOR_BUCKET_NAME },
+              { getClient: () => client },
+            ),
+          /localPath must stay within an open workspace folder/i,
+        ),
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -185,11 +275,36 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within the workspace folder/i,
+          /localPath must stay within an open workspace folder/i,
         ),
       );
 
       assert.strictEqual(fs.existsSync(escapePath), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile accepts absolute paths inside a secondary workspace folder", async () => {
+    const dir = tempDir();
+    const firstWorkspace = path.join(dir, "workspace-a");
+    const secondWorkspace = path.join(dir, "workspace-b");
+    const downloadPath = path.join(secondWorkspace, "downloads", "source file.txt");
+    const { extras } = await createUploadedToolFixture();
+
+    try {
+      fs.mkdirSync(firstWorkspace, { recursive: true });
+      fs.mkdirSync(secondWorkspace, { recursive: true });
+
+      const downloaded = await withWorkspaceFolders([firstWorkspace, secondWorkspace], () =>
+        downloadFileOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, downloadPath);
+      assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -216,7 +331,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within the workspace folder/i,
+          /localPath must stay within an open workspace folder/i,
         ),
       );
 
@@ -250,7 +365,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must stay within the workspace folder/i,
+          /localPath must stay within an open workspace folder/i,
         ),
       );
 
@@ -287,7 +402,53 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("presignUrl returns an encoded URL with an authorization query parameter", async () => {
+  test("downloadFile rejects oversized downloads before writing partial files", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const downloadPath = path.join(workspaceRoot, "large.bin");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("not written"));
+        controller.close();
+      },
+    });
+    const bucket = {
+      async download() {
+        return {
+          body,
+          headers: {
+            contentLength: MAX_DOWNLOAD_BYTES + 1,
+          },
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    };
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
+              { getClient: () => client as unknown as B2Client },
+            ),
+          /Downloaded file is too large/i,
+        ),
+      );
+
+      assert.strictEqual(fs.existsSync(downloadPath), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("presignUrl returns an encoded prefix URL with an authorization query parameter", async () => {
     const { extras } = await createUploadedToolFixture();
 
     const presigned = await presignUrlOperation.execute(
@@ -299,6 +460,7 @@ suite("B2 LM tool operations with simulator", () => {
     assert.strictEqual(presigned.expiresIn, 123);
     assert.strictEqual(url.pathname, `/file/${SIMULATOR_BUCKET_NAME}/folder/source%20file.txt`);
     assert.ok(url.searchParams.get("Authorization"));
+    assert.match(presigned.message, /current and future objects whose names start/i);
   });
 
   test("presignUrl rejects bucket and folder prefix authorizations", async () => {
@@ -311,26 +473,37 @@ suite("B2 LM tool operations with simulator", () => {
             { bucket: SIMULATOR_BUCKET_NAME, path: unsafePath, expiresIn: 123 },
             extras,
           ),
-        /path must name a single file/i,
+        /path must not be empty or a folder prefix/i,
       );
     }
   });
 
-  test("presignUrl rejects paths that authorize additional object prefixes", async () => {
-    const { bucket, extras } = await createUploadedToolFixture();
+  test("presignUrl documents prefix reachability for later sibling objects", async () => {
+    const { sim, bucket, extras } = await createUploadedToolFixture();
+    const presigned = await presignUrlOperation.execute(
+      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+      extras,
+    );
+    const url = new URL(presigned.url);
+    const authorization = url.searchParams.get("Authorization");
+    assert.ok(authorization);
+
     await bucket.upload({
       fileName: `${REMOTE_PATH}.copy`,
       source: new BufferSource(Buffer.from("copy")),
     });
 
-    await assert.rejects(
-      () =>
-        presignUrlOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
-          extras,
-        ),
-      /without also authorizing other files/i,
+    const siblingPath = `${REMOTE_PATH}.copy`.split("/").map(encodeURIComponent).join("/");
+    const siblingDownload = sim.handleDownload(
+      `/file/${SIMULATOR_BUCKET_NAME}/${siblingPath}?Authorization=${encodeURIComponent(
+        authorization,
+      )}`,
+      { authorization },
     );
+
+    assert.strictEqual(siblingDownload.status, 200);
+    assert.strictEqual(Buffer.from(siblingDownload.data ?? []).toString(), "copy");
+    assert.match(presigned.message, /current and future objects whose names start/i);
   });
 
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {

@@ -160,4 +160,27 @@ suite("B2 Extension Test Suite", () => {
     assert.strictEqual(expiresIn.minimum, 1);
     assert.strictEqual(expiresIn.maximum, 604800);
   });
+
+  test("download and upload package contributions require workspace-contained paths", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const tools = extension.packageJSON.contributes
+      .languageModelTools as LanguageModelToolContribution[];
+    const downloadFile = tools.find((tool) => tool.name === "b2_downloadFile");
+    const uploadFile = tools.find((tool) => tool.name === "b2_uploadFile");
+    assert.ok(downloadFile, "b2_downloadFile contribution should exist");
+    assert.ok(uploadFile, "b2_uploadFile contribution should exist");
+
+    const downloadLocalPath = downloadFile.inputSchema.properties.localPath as Record<
+      string,
+      unknown
+    >;
+    const uploadLocalPath = uploadFile.inputSchema.properties.localPath as Record<string, unknown>;
+
+    assert.match(String(downloadLocalPath.description), /open workspace folder/i);
+    assert.match(String(uploadLocalPath.description), /open workspace folder/i);
+    assert.doesNotMatch(String(downloadLocalPath.description), /absolute or workspace-relative/i);
+    assert.doesNotMatch(String(uploadLocalPath.description), /absolute or workspace-relative/i);
+  });
 });
