@@ -9,6 +9,8 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+import { B2ToolInputError } from "./errors";
+
 const HASH_LENGTH = 16;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const STALE_ATOMIC_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -339,7 +341,7 @@ export async function sweepStaleAtomicTempFiles(
 export async function readFileNoFollow(filePath: string): Promise<Buffer> {
   const stat = await fs.promises.lstat(filePath);
   if (stat.isSymbolicLink()) {
-    throw new Error(`${filePath} must not be a symbolic link.`);
+    throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
   }
 
   const noFollow = fs.constants.O_NOFOLLOW;

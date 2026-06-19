@@ -844,7 +844,13 @@ suite("Adversarial untrusted input fuzzing", () => {
       await fs.promises.writeFile(outsideFile, "secret");
       await fs.promises.symlink(outsideFile, linkPath);
 
-      await assert.rejects(() => readFileNoFollow(linkPath), /ELOOP|symbolic link/i);
+      await assert.rejects(
+        () => readFileNoFollow(linkPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("symbolic link") &&
+          (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
+      );
     } finally {
       await fs.promises.rm(outputRoot, { recursive: true, force: true });
     }
