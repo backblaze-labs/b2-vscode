@@ -6,8 +6,12 @@ on:
     paths:
       - "src/**"
       - "resources/icons/**"
+      - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
+      - "scripts/assert-vsix-assets.js"
+      - "scripts/smoke-install-vsix.js"
       - "package.json"
+      - "package-lock.json"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
   pull_request:
@@ -15,8 +19,12 @@ on:
     paths:
       - "src/**"
       - "resources/icons/**"
+      - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
+      - "scripts/assert-vsix-assets.js"
+      - "scripts/smoke-install-vsix.js"
       - "package.json"
+      - "package-lock.json"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
 
@@ -74,12 +82,27 @@ jobs:
           retention-days: 30
 
   test-installation:
-    name: Verify VSIX
+    name: Verify Packaged VSIX
     needs: build
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -94,12 +117,12 @@ jobs:
             exit 1
           fi
           echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
-          unzip -t "$VSIX_FILE" > /dev/null 2>&1 || { echo "Invalid ZIP"; exit 1; }
-          echo "VSIX validation passed"
+          npm run assert:vsix-assets -- "$VSIX_FILE"
+          xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
 
   post-pr-comment:
     name: PR Comment
-    needs: build
+    needs: test-installation
     if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     permissions:

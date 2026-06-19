@@ -74,16 +74,28 @@ function createFixtureDist(dir: string, entries: Record<string, Buffer | string>
   return distDir;
 }
 
+function packageManifestFixture(overrides: Record<string, unknown> = {}): string {
+  const packageMetadata = require(path.join(process.cwd(), "package.json")) as Record<
+    string,
+    unknown
+  >;
+
+  return JSON.stringify({ ...packageMetadata, ...overrides });
+}
+
 function baseEntries(
   extensionSource: string,
   runtimeContent: Buffer,
   wasmContent: Buffer,
 ): Record<string, Buffer | string> {
   return {
-    [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: "{}",
+    [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: packageManifestFixture(),
     [SQL_JS_RUNTIME_ASSETS.extensionBundleEntry]: extensionSource,
     [SQL_JS_RUNTIME_ASSETS.packagedRuntimeEntry]: runtimeContent,
     [SQL_JS_RUNTIME_ASSETS.packagedWasmEntry]: wasmContent,
+    "extension/resources/b2-icon.png": "png",
+    "extension/resources/b2-icon.svg": "<svg />",
+    "extension/resources/b2-icons.woff": "woff",
   };
 }
 
@@ -119,6 +131,32 @@ suite("VSIX runtime asset assertions", () => {
       );
 
       await assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a VSIX with missing contribution manifest commands", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const packageMetadata = require(path.join(process.cwd(), "package.json")) as {
+        contributes: Record<string, unknown>;
+      };
+      const entries = {
+        ...baseEntries("module.exports = {};", runtime, wasm),
+        [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: packageManifestFixture({
+          contributes: { ...packageMetadata.contributes, commands: [] },
+        }),
+      };
+      const vsixPath = await createFixtureVsix(dir, entries);
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /contributes\.commands/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

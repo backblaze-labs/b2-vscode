@@ -101,6 +101,10 @@ npm run vsix
 npm run vsix:install
 ```
 
+Release and Marketplace publishing ownership, preflight, secret scope, artifact
+provenance, and rollback are documented in
+[`docs/release.md`](docs/release.md).
+
 ## Architecture
 
 ```

@@ -11,7 +11,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/backblaze-demos/b2-vscode.git"
+    "url": "https://github.com/backblaze-labs/b2-vscode.git"
   },
   "engines": {
     "vscode": "^1.101.0",
@@ -34,12 +34,14 @@
     "check": "npm run format:check && npm run lint && npm run type-check",
     "check:fix": "npm run format && npm run lint:fix && npm run type-check",
     "type-check": "tsc --noEmit",
+    "audit:release": "npm audit --audit-level=high",
     "pretest": "npm run compile-tests && npm run compile && npm run compile:bundled-smoke && npm run lint",
     "test": "vscode-test",
     "clean": "rm -rf dist out *.vsix",
     "clean:vsix": "rm -rf *.vsix",
     "assert:vsix-assets": "node scripts/assert-vsix-assets.js",
     "assert:dist-assets": "node scripts/assert-vsix-assets.js --dist",
+    "smoke:vsix-install": "node scripts/smoke-install-vsix.js",
     "docs": "typedoc",
     "vsix": "npm run clean:vsix && npm run package && npx @vscode/vsce package --no-yarn --no-dependencies && npm run assert:vsix-assets",
     "vsix:install": "code --install-extension ./b2-vscode-*.vsix --force",
