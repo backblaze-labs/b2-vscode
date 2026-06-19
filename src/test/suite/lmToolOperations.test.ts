@@ -189,6 +189,40 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("downloadFile rejects workspace-relative paths through workspace symlinks", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const outsideRoot = path.join(dir, "outside");
+    const symlinkPath = path.join(workspaceRoot, "link");
+    const escapePath = path.join(outsideRoot, "outside.txt");
+    const { extras } = await createUploadedToolFixture();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(outsideRoot, { recursive: true });
+      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              {
+                bucket: SIMULATOR_BUCKET_NAME,
+                path: REMOTE_PATH,
+                localPath: path.join("link", "outside.txt"),
+              },
+              extras,
+            ),
+          /localPath must stay within the workspace folder/i,
+        ),
+      );
+
+      assert.strictEqual(fs.existsSync(escapePath), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("downloadFile allows in-workspace names that start with two dots", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
