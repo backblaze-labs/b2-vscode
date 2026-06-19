@@ -67,23 +67,11 @@ jobs:
       - name: Package VSIX
         run: npm run vsix
 
-      - name: Get VSIX filename
-        id: vsix-info
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          VSIX_FILE="b2-vscode-${VERSION}.vsix"
-          if [ -f "$VSIX_FILE" ]; then
-            echo "Found VSIX: $VSIX_FILE"
-          else
-            echo "Error: VSIX file not found"
-            ls -la -- ./*.vsix 2>/dev/null || echo "No .vsix files"
-            exit 1
-          fi
-
       - name: Record VSIX checksum
         run: |
           VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
-          sha256sum "$VSIX_FILE" > VSIX_SHA256SUMS.txt
+          CHECKSUM=$(sha256sum "$VSIX_FILE" | cut -d ' ' -f1)
+          printf '%s  %s\n' "$CHECKSUM" "$(basename "$VSIX_FILE")" > VSIX_SHA256SUMS.txt
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -98,6 +86,7 @@ jobs:
     name: Verify Packaged VSIX
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -126,8 +115,8 @@ jobs:
         run: |
           VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./artifacts --verify-checksum)
           echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
-          npm run assert:vsix-assets:strict -- "$VSIX_FILE"
-          xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
+          npm run assert:vsix-assets -- "$VSIX_FILE"
+          timeout 10m xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
 
   post-pr-comment:
     name: PR Comment

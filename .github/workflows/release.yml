@@ -190,7 +190,8 @@ jobs:
       - name: Record VSIX checksum
         run: |
           VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
-          sha256sum "$VSIX_FILE" > VSIX_SHA256SUMS.txt
+          CHECKSUM=$(sha256sum "$VSIX_FILE" | cut -d ' ' -f1)
+          printf '%s  %s\n' "$CHECKSUM" "$(basename "$VSIX_FILE")" > VSIX_SHA256SUMS.txt
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -323,6 +324,7 @@ jobs:
       }}
     permissions:
       actions: read # Read marketplace environment protection rules.
+      attestations: read # Verify VSIX build provenance before publishing.
       contents: read
     environment: marketplace
 
@@ -366,6 +368,22 @@ jobs:
       - name: Resolve and verify VSIX artifact
         id: vsix
         run: echo "path=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VSIX build provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VSIX_FILE: ${{ steps.vsix.outputs.path }}
+        run: |
+          for attempt in 1 2 3; do
+            if gh attestation verify "$VSIX_FILE" --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 10))
+          done
 
       - name: Verify Marketplace publisher token
         env:

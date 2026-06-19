@@ -35,6 +35,11 @@ interface VsixAssetAssertions {
     },
   ): Promise<void>;
   fetchBuffer(url: string, redirectsRemaining?: number, timeoutMs?: number): Promise<Buffer>;
+  parseCliArgs(args: string[]): {
+    allowLocalFallback: boolean;
+    skipSqlJsPackageProvenance: boolean;
+    strictProvenance: boolean;
+  };
 }
 
 interface VsixArtifactResolver {
@@ -716,6 +721,30 @@ suite("VSIX runtime asset assertions", () => {
       ),
       /registry unavailable/i,
     );
+  });
+
+  test("strict SQL.js provenance rejects skip overrides", () => {
+    const assertions = loadVsixAssetAssertions();
+    const envName = "B2_VSCODE_SKIP_SQLJS_PROVENANCE_FETCH";
+    const originalValue = process.env[envName];
+    process.env[envName] = "1";
+
+    try {
+      assert.throws(
+        () => assertions.parseCliArgs(["--strict-provenance"]),
+        /strict-provenance cannot be combined/i,
+      );
+      assert.throws(
+        () => assertions.parseCliArgs(["--skip-sqljs-provenance-fetch", "--strict-provenance"]),
+        /strict-provenance cannot be combined/i,
+      );
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = originalValue;
+      }
+    }
   });
 
   test("still fails on SQL.js tarball integrity mismatches", async () => {

@@ -6,7 +6,8 @@
  * These values intentionally freeze sensitive published surfaces. If a command,
  * language model tool, menu, view, activation event, or other Marketplace-facing
  * contribution changes, update this contract in the same PR and explain why the
- * new surface is safe to publish.
+ * new surface is safe to publish. Run `npm run contract:hash` after reviewing
+ * package.json contributes changes to regenerate contributesSha256.
  */
 
 const crypto = require("crypto");

@@ -512,11 +512,13 @@ async function assertDistAssets(
 }
 
 function parseCliArgs(args) {
+  const envSkipSqlJsPackageProvenance = process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1";
   const parsed = {
     mode: "vsix",
     path: undefined,
-    skipSqlJsPackageProvenance: process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1",
+    skipSqlJsPackageProvenance: envSkipSqlJsPackageProvenance,
     allowLocalFallback: true,
+    strictProvenance: false,
   };
 
   for (const arg of args) {
@@ -530,6 +532,7 @@ function parseCliArgs(args) {
     }
     if (arg === "--strict-provenance") {
       parsed.allowLocalFallback = false;
+      parsed.strictProvenance = true;
       continue;
     }
     if (arg.startsWith("-")) {
@@ -539,6 +542,12 @@ function parseCliArgs(args) {
       throw new Error(`Unexpected extra path argument: ${arg}`);
     }
     parsed.path = arg;
+  }
+
+  if (parsed.strictProvenance && parsed.skipSqlJsPackageProvenance) {
+    throw new Error(
+      `--strict-provenance cannot be combined with --skip-sqljs-provenance-fetch or ${SKIP_SQL_JS_PROVENANCE_ENV}=1.`,
+    );
   }
 
   return parsed;

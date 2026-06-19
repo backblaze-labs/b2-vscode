@@ -15,6 +15,8 @@ const workflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
 const workflowText = fs.readFileSync(workflowPath, "utf8");
 const workflow = yaml.load(workflowText);
 const jobs = workflow.jobs ?? {};
+const marketplaceSecretPattern =
+  /(?:secrets\s*(?:\.\s*VSCE_KEY|\[\s*["']VSCE_KEY["']\s*\])|\bVSCE_(?:KEY|PAT)\b)/;
 
 function assert(condition, message) {
   if (!condition) {
@@ -22,8 +24,12 @@ function assert(condition, message) {
   }
 }
 
-function jobText(jobName) {
-  return JSON.stringify(jobs[jobName] ?? {});
+function stringify(value) {
+  return JSON.stringify(value ?? {});
+}
+
+function jobText(jobName, jobsToCheck = jobs) {
+  return stringify(jobsToCheck[jobName]);
 }
 
 function jobIf(jobName) {
@@ -42,14 +48,56 @@ function assertTimeout(jobName) {
   );
 }
 
-function assertMarketplaceSecretOnlyInPublish() {
-  for (const jobName of Object.keys(jobs)) {
-    if (jobText(jobName).includes("secrets.VSCE_KEY")) {
-      assert(
-        jobName === "publish",
-        `secrets.VSCE_KEY must only be read by the publish job; found in ${jobName}.`,
-      );
+function jobSteps(jobName) {
+  assertJobExists(jobName);
+  const steps = jobs[jobName].steps;
+  assert(Array.isArray(steps), `${jobName} must declare steps.`);
+  return steps;
+}
+
+function stepByName(jobName, stepName) {
+  const step = jobSteps(jobName).find((candidate) => candidate.name === stepName);
+  assert(step, `${jobName} must include step: ${stepName}.`);
+  return step;
+}
+
+function stepRun(jobName, stepName) {
+  const run = stepByName(jobName, stepName).run;
+  assert(typeof run === "string", `${jobName} step ${stepName} must be a run step.`);
+  return run;
+}
+
+function normalizedCommand(command) {
+  return command.replace(/\s+/g, " ").trim();
+}
+
+function jobNeeds(jobName) {
+  const needs = jobs[jobName]?.needs ?? [];
+  return Array.isArray(needs) ? needs : [needs];
+}
+
+function allRunCommands() {
+  return Object.keys(jobs).flatMap((jobName) =>
+    (jobs[jobName].steps ?? []).map((step) => step.run).filter((run) => typeof run === "string"),
+  );
+}
+
+function assertMarketplaceSecretOnlyInPublish(workflowToCheck = workflow) {
+  const workflowWithoutJobs = { ...workflowToCheck };
+  delete workflowWithoutJobs.jobs;
+  assert(
+    !marketplaceSecretPattern.test(stringify(workflowWithoutJobs)),
+    "VSCE_KEY and VSCE_PAT must not be referenced outside jobs.",
+  );
+
+  for (const [jobName, job] of Object.entries(workflowToCheck.jobs ?? {})) {
+    if (jobName === "publish") {
+      continue;
     }
+    assert(
+      !marketplaceSecretPattern.test(stringify(job)),
+      `VSCE_KEY and VSCE_PAT must only be read by the publish job; found in ${jobName}.`,
+    );
   }
 }
 
@@ -72,24 +120,36 @@ function assertPublishIsReleaseOnly() {
     jobs.publish.permissions?.actions === "read",
     "publish job must be able to read marketplace environment protection.",
   );
+
+  const verifyPatRun = normalizedCommand(stepRun("publish", "Verify Marketplace publisher token"));
   assert(
-    jobText("publish").includes("npm exec --no-install -- vsce"),
-    "publish job must use the lockfile-installed vsce binary.",
+    /\bnpm\s+exec\s+--no-install\s+--\s+vsce\s+verify-pat\b/.test(verifyPatRun),
+    "publish job must verify the Marketplace token with the lockfile-installed vsce binary.",
+  );
+
+  const publishRun = normalizedCommand(stepRun("publish", "Publish to VS Code Marketplace"));
+  assert(
+    /\bnpm\s+exec\s+--no-install\s+--\s+vsce\s+publish\b/.test(publishRun),
+    "publish job must publish with the lockfile-installed vsce binary.",
   );
   assert(
-    jobText("publish").includes("--skip-duplicate"),
+    /--skip-duplicate\b/.test(publishRun),
     "publish job must tolerate already-published versions.",
   );
 }
 
 function assertReleaseSourceGate() {
   assertJobExists("verify-release-source");
+  const sourceGateRun = normalizedCommand(
+    stepRun("verify-release-source", "Verify tag is reachable from main"),
+  );
   assert(
-    jobText("verify-release-source").includes("git merge-base --is-ancestor"),
+    /\bgit\s+merge-base\s+--is-ancestor\b/.test(sourceGateRun) &&
+      sourceGateRun.includes("origin/main"),
     "verify-release-source must reject tags outside origin/main.",
   );
   assert(
-    (jobs.build.needs ?? []).includes("verify-release-source"),
+    jobNeeds("build").includes("verify-release-source"),
     "build must depend on verify-release-source.",
   );
 }
@@ -105,7 +165,7 @@ function assertAttestIsReleaseOnly() {
 function assertReleaseAfterPublish() {
   assertJobExists("release");
   assert(
-    (jobs.release.needs ?? []).includes("publish"),
+    jobNeeds("release").includes("publish"),
     "GitHub Release creation must depend on Marketplace publish.",
   );
   assert(
@@ -114,18 +174,35 @@ function assertReleaseAfterPublish() {
   );
 }
 
-function assertArtifactResolverUsage() {
+function assertPublishVerifiesAttestation() {
+  const attestationRun = normalizedCommand(
+    stepRun("publish", "Verify VSIX build provenance attestation"),
+  );
   assert(
-    workflowText.includes("scripts/resolve-vsix-artifact.js"),
+    /\bgh\s+attestation\s+verify\b/.test(attestationRun),
+    "publish job must verify the VSIX build provenance attestation before publishing.",
+  );
+  assert(
+    jobs.publish.permissions?.attestations === "read",
+    "publish job must be able to read build provenance attestations.",
+  );
+}
+
+function assertArtifactResolverUsage() {
+  const runCommands = allRunCommands();
+  assert(
+    runCommands.some((command) => command.includes("scripts/resolve-vsix-artifact.js")),
     "release workflow must use the deterministic VSIX resolver.",
   );
   assert(
-    !workflowText.includes('find ./vsix-artifacts -name "*.vsix"'),
+    !runCommands.some((command) =>
+      /find\s+\.\/vsix-artifacts[\s\S]*-name[\s\S]*\.vsix/.test(command),
+    ),
     "release workflow must not select VSIX artifacts with find | head.",
   );
   assert(
-    workflowText.includes("--verify-checksum"),
-    "release workflow must verify VSIX checksums downstream.",
+    runCommands.some((command) => command.includes("--verify-checksum")),
+    "release workflow must verify VSIX transport checksums before downstream use.",
   );
 }
 
@@ -151,6 +228,7 @@ function main() {
   assertReleaseSourceGate();
   assertAttestIsReleaseOnly();
   assertReleaseAfterPublish();
+  assertPublishVerifiesAttestation();
   assertArtifactResolverUsage();
 }
 
@@ -163,3 +241,9 @@ if (require.main === module) {
     process.exit(1);
   }
 }
+
+module.exports = {
+  assertMarketplaceSecretOnlyInPublish,
+  main,
+  marketplaceSecretPattern,
+};

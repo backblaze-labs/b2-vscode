@@ -9,9 +9,9 @@ GitHub Actions workflow.
   maintainers with write access to `backblaze-labs/b2-vscode`.
 - Stable Marketplace publishes should be reviewed by a maintainer who can also
   confirm the GitHub Release notes and VSIX artifact checksums.
-- The `marketplace` GitHub environment is the intended place for any required
-  reviewer protection on the final publish job. The release workflow blocks the
-  publish job unless that environment has required reviewers configured.
+- The `marketplace` GitHub environment must have required reviewer protection on
+  the final publish job. The release workflow blocks the publish job unless that
+  environment has required reviewers configured.
 
 ## Secrets
 
@@ -31,11 +31,21 @@ That path runs quality, behavioral test, dependency audit, CodeQL SAST, strict
 VSIX validation, and installed-VSIX smoke without reading `VSCE_KEY`. Provenance
 attestation and Marketplace publishing only run for `v*.*.*` tag refs.
 
+The dependency audit gate is scoped to runtime dependencies with
+`npm audit --omit=dev --audit-level=moderate`, so a release is not blocked by a
+new advisory in build-only tooling. Dev dependency advisories should still be
+reviewed before release when they affect workflow code execution or packaging.
+
+When changing Marketplace contributions in `package.json`, review the new
+commands, views, menus, language model tools, and activation surface, then run
+`npm run contract:hash` and update `manifestContract.contributesSha256` in the
+same PR.
+
 For a stable release:
 
 1. Land the reviewed release commit on `main`.
 2. Ensure `package.json` has the intended version.
-3. Create and push a `vX.Y.Z` tag that matches `package.json`.
+3. Create and push a protected `vX.Y.Z` tag that matches `package.json`.
 4. Let the `Release` workflow verify that the tag commit is reachable from
    `origin/main`, run all gates, attest the exact checksummed VSIX, and publish
    to the Marketplace from the protected `marketplace` environment.
