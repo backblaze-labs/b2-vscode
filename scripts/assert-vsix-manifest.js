@@ -24,12 +24,28 @@ function assertObject(value, label) {
   return value;
 }
 
+function assertString(value, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string.`);
+  }
+
+  return value;
+}
+
 function assertExactArray(actual, expected, label) {
   try {
     assert.deepStrictEqual(actual, expected);
   } catch {
     throw new Error(`${label} must exactly match the release contract.`);
   }
+}
+
+function assertArrayOfObjects(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array.`);
+  }
+
+  return value.map((item, index) => assertObject(item, `${label}[${index}]`));
 }
 
 function assertAbsent(manifest, fieldName) {
@@ -58,22 +74,23 @@ function assertContributionManifest(manifest) {
   assertEqual(repository.url, manifestContract.repository.url, "package repository URL");
 
   const contributes = assertObject(manifest.contributes, "package contributes");
-  const commands = contributes.commands;
-  if (!Array.isArray(commands)) {
-    throw new Error("package contributes.commands must be an array.");
-  }
+  const commands = assertArrayOfObjects(contributes.commands, "package contributes.commands");
   assertExactArray(
-    commands.map((command) => command.command),
+    commands.map((command, index) =>
+      assertString(command.command, `package contributes.commands[${index}].command`),
+    ),
     manifestContract.commandIds,
     "package contributes.commands",
   );
 
-  const languageModelTools = contributes.languageModelTools;
-  if (!Array.isArray(languageModelTools)) {
-    throw new Error("package contributes.languageModelTools must be an array.");
-  }
+  const languageModelTools = assertArrayOfObjects(
+    contributes.languageModelTools,
+    "package contributes.languageModelTools",
+  );
   assertExactArray(
-    languageModelTools.map((tool) => tool.name),
+    languageModelTools.map((tool, index) =>
+      assertString(tool.name, `package contributes.languageModelTools[${index}].name`),
+    ),
     manifestContract.languageModelToolNames,
     "package contributes.languageModelTools",
   );

@@ -35,7 +35,11 @@ function assertInstalledFile(installedExtensionPath, relativePath) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Installed extension is missing ${relativePath}`);
   }
-  if (fs.statSync(filePath).size === 0) {
+  const fileStat = fs.statSync(filePath);
+  if (!fileStat.isFile()) {
+    throw new Error(`Installed extension path is not a file: ${relativePath}`);
+  }
+  if (fileStat.size === 0) {
     throw new Error(`Installed extension file is empty: ${relativePath}`);
   }
 }
@@ -121,7 +125,14 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  assertInstalledFile,
+  resolveVsixPath,
+};

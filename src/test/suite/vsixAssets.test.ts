@@ -36,6 +36,15 @@ interface VsixAssetAssertions {
   fetchBuffer(url: string, redirectsRemaining?: number, timeoutMs?: number): Promise<Buffer>;
 }
 
+interface VsixArtifactResolver {
+  collectVsixFiles(rootDir: string): string[];
+  parseArgs(argv: string[]): { rootDir: string; verifyChecksum: boolean };
+}
+
+interface SmokeInstallAssertions {
+  assertInstalledFile(installedExtensionPath: string, relativePath: string): void;
+}
+
 interface FakeRequest extends EventEmitter {
   destroy(error: Error): FakeRequest;
   setTimeout(timeoutMs: number, callback: () => void): FakeRequest;
@@ -47,6 +56,18 @@ const FIXTURE_ASSERT_OPTIONS = { skipSqlJsPackageProvenance: true };
 
 function loadVsixAssetAssertions(): VsixAssetAssertions {
   return require(path.join(process.cwd(), "scripts/assert-vsix-assets.js")) as VsixAssetAssertions;
+}
+
+function loadVsixArtifactResolver(): VsixArtifactResolver {
+  return require(
+    path.join(process.cwd(), "scripts/resolve-vsix-artifact.js"),
+  ) as VsixArtifactResolver;
+}
+
+function loadSmokeInstallAssertions(): SmokeInstallAssertions {
+  return require(
+    path.join(process.cwd(), "scripts/smoke-install-vsix.js"),
+  ) as SmokeInstallAssertions;
 }
 
 function tempDir(): string {
@@ -329,6 +350,32 @@ suite("VSIX runtime asset assertions", () => {
     }
   });
 
+  test("rejects malformed command contribution entries with targeted errors", async () => {
+    const dir = tempDir();
+    const assertions = loadVsixAssetAssertions();
+
+    try {
+      const { runtime, wasm } = baseRuntimeAndWasm();
+      const packageMetadata = require(path.join(process.cwd(), "package.json")) as {
+        contributes: Record<string, unknown>;
+      };
+      const entries = {
+        ...baseEntries("module.exports = {};", runtime, wasm),
+        [SQL_JS_RUNTIME_ASSETS.packageJsonEntry]: packageManifestFixture({
+          contributes: { ...packageMetadata.contributes, commands: [null] },
+        }),
+      };
+      const vsixPath = await createFixtureVsix(dir, entries);
+
+      await assert.rejects(
+        assertions.assertVsixAssets(vsixPath, FIXTURE_ASSERT_OPTIONS),
+        /contributes\.commands\[0\]/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("accepts packaged dist assets for the publish preflight gate", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();
@@ -352,6 +399,46 @@ suite("VSIX runtime asset assertions", () => {
     };
 
     assert.match(packageMetadata.scripts["vscode:prepublish"], /assert:dist-assets/);
+  });
+
+  test("VSIX resolver skips large generated directories", () => {
+    const dir = tempDir();
+    const resolver = loadVsixArtifactResolver();
+
+    try {
+      fs.mkdirSync(path.join(dir, "node_modules", "stale"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "node_modules", "stale", "ignored.vsix"), "ignored");
+      fs.writeFileSync(path.join(dir, "fixture.vsix"), "vsix");
+
+      assert.deepStrictEqual(resolver.collectVsixFiles(dir), [path.join(dir, "fixture.vsix")]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("VSIX resolver rejects multiple positional paths", () => {
+    const resolver = loadVsixArtifactResolver();
+
+    assert.throws(
+      () => resolver.parseArgs(["./first", "./second"]),
+      /Usage: resolve-vsix-artifact\.js/i,
+    );
+  });
+
+  test("installed VSIX smoke rejects required paths that are directories", () => {
+    const dir = tempDir();
+    const smokeAssertions = loadSmokeInstallAssertions();
+
+    try {
+      fs.mkdirSync(path.join(dir, "resources", "b2-icon.png"), { recursive: true });
+
+      assert.throws(
+        () => smokeAssertions.assertInstalledFile(dir, "resources/b2-icon.png"),
+        /not a file/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("rejects an empty packaged sql.js WASM asset", async () => {

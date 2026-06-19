@@ -10,12 +10,23 @@ const fs = require("fs");
 const path = require("path");
 
 const CHECKSUM_FILE = "VSIX_SHA256SUMS.txt";
+const SKIPPED_DIRECTORIES = new Set([
+  ".git",
+  ".vscode-test",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+]);
 
 function collectVsixFiles(rootDir) {
   const found = [];
   for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
+      if (SKIPPED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
       found.push(...collectVsixFiles(entryPath));
     } else if (entry.isFile() && entry.name.endsWith(".vsix")) {
       found.push(entryPath);
@@ -65,6 +76,7 @@ function verifyChecksum(rootDir, vsixPath) {
 
 function parseArgs(argv) {
   const parsed = { rootDir: ".", verifyChecksum: false };
+  let sawRootDir = false;
   for (const arg of argv) {
     if (arg === "--verify-checksum") {
       parsed.verifyChecksum = true;
@@ -73,7 +85,11 @@ function parseArgs(argv) {
     if (arg.startsWith("-")) {
       throw new Error(`Unknown option: ${arg}`);
     }
+    if (sawRootDir) {
+      throw new Error("Usage: resolve-vsix-artifact.js [root-dir] [--verify-checksum]");
+    }
     parsed.rootDir = arg;
+    sawRootDir = true;
   }
 
   return parsed;
@@ -106,5 +122,6 @@ if (require.main === module) {
 module.exports = {
   collectVsixFiles,
   parseArgs,
+  SKIPPED_DIRECTORIES,
   verifyChecksum,
 };
