@@ -298,9 +298,10 @@ export async function cleanupStaleTransferTempFiles(
   }
 }
 
-export async function cleanupStaleDestinationTempFiles(
-  options: { directory: string; maxAgeMs?: number },
-): Promise<void> {
+export async function cleanupStaleDestinationTempFiles(options: {
+  directory: string;
+  maxAgeMs?: number;
+}): Promise<void> {
   const directory = options.directory;
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
 
@@ -532,8 +533,7 @@ async function cancelMatchingUnfinishedUploads(
   let startFileId: LargeFileId | undefined;
   let pagesScanned = 0;
   const maxPages = options.unfinishedCleanupMaxPages ?? UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES;
-  const timeoutMs =
-    options.unfinishedCleanupTimeoutMs ?? UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS;
+  const timeoutMs = options.unfinishedCleanupTimeoutMs ?? UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS;
   do {
     if (pagesScanned >= maxPages) {
       throw new Error(`Unfinished upload cleanup exceeded ${maxPages} page(s) for ${remotePath}`);

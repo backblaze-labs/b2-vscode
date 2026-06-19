@@ -1011,10 +1011,7 @@ suite("B2 transfer helpers", () => {
     const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
     const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
     const completedDestination = path.join(dir, "complete.bin");
-    const completedBackup = path.join(
-      dir,
-      ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp",
-    );
+    const completedBackup = path.join(dir, ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp");
     const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdef.tmp");
     fs.writeFileSync(crossDevice, "partial");
     fs.writeFileSync(orphanedBackup, "original");
