@@ -237,6 +237,8 @@ suite("B2 LM tool operations with simulator", () => {
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(path.dirname(downloadPath), { recursive: true });
+      fs.writeFileSync(downloadPath, "old content");
 
       const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
         downloadFileOperation.execute(
