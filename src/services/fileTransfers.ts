@@ -52,6 +52,7 @@ export interface TransferTimeoutOptions {
 
 export interface DownloadStreamToFileOptions extends TransferTimeoutOptions {
   readonly temporaryDirectory?: string;
+  readonly overwrite?: boolean;
 }
 
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
@@ -431,12 +432,23 @@ async function replaceExistingDestination(
   await removeTempFile(backupPath);
 }
 
-async function renameIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
+interface MoveIntoPlaceOptions {
+  readonly overwrite?: boolean;
+}
+
+async function renameIntoPlace(
+  sourcePath: string,
+  destinationPath: string,
+  options: MoveIntoPlaceOptions = {},
+): Promise<void> {
   try {
     await fs.promises.rename(sourcePath, destinationPath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST" || code === "EPERM") {
+      if (options.overwrite === false) {
+        throw error;
+      }
       await replaceExistingDestination(sourcePath, destinationPath);
       return;
     }
@@ -445,9 +457,13 @@ async function renameIntoPlace(sourcePath: string, destinationPath: string): Pro
   }
 }
 
-async function moveIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
+async function moveIntoPlaceWithoutOverwrite(
+  sourcePath: string,
+  destinationPath: string,
+): Promise<void> {
   try {
-    await renameIntoPlace(sourcePath, destinationPath);
+    await fs.promises.link(sourcePath, destinationPath);
+    await removeTempFile(sourcePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
       throw error;
@@ -456,7 +472,37 @@ async function moveIntoPlace(sourcePath: string, destinationPath: string): Promi
     const destinationTempPath = destinationMoveTempPath(destinationPath);
     try {
       await fs.promises.copyFile(sourcePath, destinationTempPath, fs.constants.COPYFILE_EXCL);
-      await renameIntoPlace(destinationTempPath, destinationPath);
+      await fs.promises.link(destinationTempPath, destinationPath);
+      await removeTempFile(sourcePath);
+      await removeTempFile(destinationTempPath);
+    } catch (copyError) {
+      await removeTempFile(destinationTempPath);
+      throw copyError;
+    }
+  }
+}
+
+async function moveIntoPlace(
+  sourcePath: string,
+  destinationPath: string,
+  options: MoveIntoPlaceOptions = {},
+): Promise<void> {
+  if (options.overwrite === false) {
+    await moveIntoPlaceWithoutOverwrite(sourcePath, destinationPath);
+    return;
+  }
+
+  try {
+    await renameIntoPlace(sourcePath, destinationPath, options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+      throw error;
+    }
+
+    const destinationTempPath = destinationMoveTempPath(destinationPath);
+    try {
+      await fs.promises.copyFile(sourcePath, destinationTempPath, fs.constants.COPYFILE_EXCL);
+      await renameIntoPlace(destinationTempPath, destinationPath, options);
       await removeTempFile(sourcePath);
     } catch (copyError) {
       await removeTempFile(destinationTempPath);
@@ -494,7 +540,11 @@ export async function downloadStreamToFile(
     });
 
     const stats = await fs.promises.stat(temporaryPath);
-    await moveIntoPlace(temporaryPath, destinationPath);
+    await moveIntoPlace(
+      temporaryPath,
+      destinationPath,
+      options.overwrite !== undefined ? { overwrite: options.overwrite } : {},
+    );
     temporaryPath = "";
     return stats.size;
   } catch (error) {

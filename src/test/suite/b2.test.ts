@@ -470,6 +470,29 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("refuses existing destinations when overwrite is disabled", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-no-overwrite-"));
+    const destination = path.join(dir, "file.bin");
+    fs.writeFileSync(destination, Buffer.from([1, 2, 3]));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { overwrite: false }),
+        /EEXIST|file already exists/i,
+      );
+
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("overwrites existing destinations when rename reports EEXIST", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-overwrite-"));
     const destination = path.join(dir, "file.bin");

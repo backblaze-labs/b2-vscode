@@ -130,6 +130,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
 
         return downloadStreamToFile(body, savePath, {
           signal,
+          overwrite: false,
         });
       },
     );

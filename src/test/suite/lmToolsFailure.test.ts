@@ -495,6 +495,49 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool refuses destinations created during transfer", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-race-"));
+    const destinationPath = path.join(workspaceDir, "payload.txt");
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        fs.writeFileSync(destinationPath, "keep me");
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("replace me"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "payload.txt" },
+              { getClient: () => client },
+            ),
+          /EEXIST|file already exists/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, true);
+      assert.strictEqual(fs.readFileSync(destinationPath, "utf8"), "keep me");
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects workspace path traversal before reading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-policy-"));
     const client = {
