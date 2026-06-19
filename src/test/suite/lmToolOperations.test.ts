@@ -164,7 +164,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: "../secret.txt", bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath must stay within an open workspace folder/i,
+          /localPath must not contain path traversal segments/i,
         ),
       );
     } finally {
@@ -193,7 +193,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: path.join("link", "secret.txt"), bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath must stay within an open workspace folder/i,
+          /localPath resolves outside the open workspace/i,
         ),
       );
     } finally {
