@@ -23,12 +23,11 @@ function sanitizeLocalPathSegment(segment: string): string {
 }
 
 function splitB2Path(fileName: string): string[] {
-  return fileName.split("/").filter((segment) => segment.length > 0);
+  return fileName.split("/");
 }
 
 function safeB2FileSegments(fileName: string): string[] {
-  const segments = splitB2Path(fileName).map(sanitizeLocalPathSegment);
-  return segments.length > 0 ? segments : [FALLBACK_FILE_NAME];
+  return splitB2Path(fileName).map(sanitizeLocalPathSegment);
 }
 
 function assertNoNulPath(value: string): void {

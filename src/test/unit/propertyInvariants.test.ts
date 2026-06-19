@@ -113,6 +113,15 @@ test("natural B2 basenames are preserved for default download and temp paths", (
   assert.deepEqual(bucketPathSegments, ["bucket_with_slash", "safe.txt"]);
 });
 
+test("empty B2 path segments are preserved in temp cache paths", () => {
+  const collapsedPath = buildTempFilePath(tempRoot, "bucket", "a/b.txt");
+  const emptySegmentPath = buildTempFilePath(tempRoot, "bucket", "a//b.txt");
+  const emptySegmentPathSegments = path.relative(tempRoot, emptySegmentPath).split(path.sep);
+
+  assert.notEqual(emptySegmentPath, collapsedPath);
+  assert.deepEqual(emptySegmentPathSegments, ["bucket", "a", "download", "b.txt"]);
+});
+
 test("download default paths stay inside the workspace for arbitrary B2 names", () => {
   fc.assert(
     fc.property(b2Name, (fileName) => {
