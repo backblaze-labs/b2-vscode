@@ -496,6 +496,54 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("keeps existing destinations intact when EXDEV fallback copy fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-exdev-"));
+    const destination = path.join(dir, "file.bin");
+    fs.writeFileSync(destination, Buffer.from([1, 2, 3]));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    const originalCopyFile = fs.promises.copyFile;
+    let renameCalls = 0;
+    let destinationTempPath = "";
+    fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      renameCalls += 1;
+      if (renameCalls === 1 && path.resolve(String(newPath)) === path.resolve(destination)) {
+        throw Object.assign(new Error("cross-device move"), { code: "EXDEV" });
+      }
+
+      await originalRename(oldPath, newPath);
+    };
+    fs.promises.copyFile = async (
+      _source: fs.PathLike,
+      destinationCopy: fs.PathLike,
+      _mode?: number,
+    ): Promise<void> => {
+      destinationTempPath = String(destinationCopy);
+      fs.writeFileSync(destinationTempPath, Buffer.from([9]));
+      throw new Error("copy interrupted");
+    };
+
+    try {
+      await assert.rejects(() => downloadStreamToFile(stream, destination), /copy interrupted/i);
+
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+      assert.strictEqual(fs.existsSync(destinationTempPath), false);
+      assert.strictEqual(
+        fs.readdirSync(dir).some((name) => name.startsWith(".b2-cross-device-")),
+        false,
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.promises.copyFile = originalCopyFile;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects symlinked transfer temp directories", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-symlink-"));
     const target = path.join(dir, "target");
@@ -742,6 +790,15 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("rejects temp cache roots outside system temp", () => {
+    const unsafeRoot = path.parse(os.tmpdir()).root;
+
+    assert.throws(
+      () => new TempFileManager(unsafeRoot),
+      /dedicated directory inside the system temp directory/i,
+    );
   });
 
   test("rejects symlinked bucket cache directories", async () => {

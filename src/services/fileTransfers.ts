@@ -25,6 +25,7 @@ export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
+const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export class TransferStallTimeoutError extends Error {
@@ -191,6 +192,15 @@ function transferTempPath(directory: string): string {
   );
 }
 
+function destinationMoveTempPath(destinationPath: string): string {
+  const random = crypto.randomBytes(12).toString("hex");
+  const parsed = path.parse(destinationPath);
+  return path.join(
+    parsed.dir,
+    `${CROSS_DEVICE_MOVE_TEMP_PREFIX}${parsed.base}-${process.pid}-${random}${TRANSFER_TEMP_SUFFIX}`,
+  );
+}
+
 function isTransferTempFile(name: string): boolean {
   return name.startsWith(TRANSFER_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
 }
@@ -247,7 +257,7 @@ async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
-async function moveIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
+async function renameIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
   try {
     await fs.promises.rename(sourcePath, destinationPath);
   } catch (error) {
@@ -262,8 +272,27 @@ async function moveIntoPlace(sourcePath: string, destinationPath: string): Promi
       throw error;
     }
 
-    await fs.promises.copyFile(sourcePath, destinationPath);
-    await fs.promises.rm(sourcePath, { force: true });
+    throw error;
+  }
+}
+
+async function moveIntoPlace(sourcePath: string, destinationPath: string): Promise<void> {
+  try {
+    await renameIntoPlace(sourcePath, destinationPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+      throw error;
+    }
+
+    const destinationTempPath = destinationMoveTempPath(destinationPath);
+    try {
+      await fs.promises.copyFile(sourcePath, destinationTempPath, fs.constants.COPYFILE_EXCL);
+      await renameIntoPlace(destinationTempPath, destinationPath);
+      await removeTempFile(sourcePath);
+    } catch (copyError) {
+      await removeTempFile(destinationTempPath);
+      throw copyError;
+    }
   }
 }
 

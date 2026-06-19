@@ -23,8 +23,18 @@ export class TempFileManager implements vscode.Disposable {
   private readonly cache = new Map<string, string>();
 
   constructor(tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME)) {
-    this.tempRoot = tempRoot;
+    this.tempRoot = path.resolve(tempRoot);
+    this.ensureManagedTempRoot();
     this.ensurePrivateTempRoot();
+  }
+
+  private ensureManagedTempRoot(): void {
+    const systemTemp = path.resolve(os.tmpdir());
+    if (this.tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, this.tempRoot)) {
+      throw new Error(
+        `Temp file cache root must be a dedicated directory inside the system temp directory: ${this.tempRoot}`,
+      );
+    }
   }
 
   private ensurePrivateTempRoot(): void {
