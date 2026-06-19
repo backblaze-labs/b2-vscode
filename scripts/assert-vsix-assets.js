@@ -569,7 +569,10 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  main();
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
 }
 
 module.exports = {

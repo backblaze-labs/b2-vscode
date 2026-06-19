@@ -8,6 +8,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { spawnSync } from "child_process";
 import { EventEmitter } from "events";
 import JSZip from "jszip";
 import {
@@ -439,6 +440,17 @@ suite("VSIX runtime asset assertions", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("VSIX asset CLI reports argument errors cleanly", () => {
+    const result = spawnSync(process.execPath, ["scripts/assert-vsix-assets.js", "--unknown"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+
+    assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /Unknown option: --unknown/);
+    assert.doesNotMatch(result.stderr, /UnhandledPromiseRejection|unhandled/i);
   });
 
   test("rejects an empty packaged sql.js WASM asset", async () => {
