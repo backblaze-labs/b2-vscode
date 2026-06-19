@@ -10,7 +10,7 @@ import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import { uploadFileFromDisk } from "../../services/fileTransfers";
-import { resolveContainedRelativePath } from "../../services/pathSafety";
+import { isPathInsideOrEqual, resolveContainedRelativePath } from "../../services/pathSafety";
 import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
@@ -29,13 +29,27 @@ interface UploadFileResult {
   message: string;
 }
 
-function workspaceFilePath(relativePath: string): string {
+async function workspaceFilePath(relativePath: string): Promise<string> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error("No workspace folder open. The uploadFile tool only reads workspace files.");
   }
 
-  return resolveContainedRelativePath(workspaceFolder.uri.fsPath, relativePath, "localPath");
+  const lexicalPath = resolveContainedRelativePath(
+    workspaceFolder.uri.fsPath,
+    relativePath,
+    "localPath",
+  );
+  const [workspaceRealPath, localRealPath] = await Promise.all([
+    fs.promises.realpath(workspaceFolder.uri.fsPath),
+    fs.promises.realpath(lexicalPath),
+  ]);
+
+  if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
+    throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+  }
+
+  return localRealPath;
 }
 
 export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileResult> = {
@@ -49,7 +63,7 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const localPath = workspaceFilePath(params.localPath);
+    const localPath = await workspaceFilePath(params.localPath);
 
     await fs.promises.access(localPath, fs.constants.R_OK);
     const stats = await fs.promises.stat(localPath);

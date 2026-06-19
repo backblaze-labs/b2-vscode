@@ -13,7 +13,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
 import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
-import { resolveContainedRelativePath } from "./pathSafety";
+import { isPathInsideOrEqual, resolveContainedRelativePath } from "./pathSafety";
 
 /**
  * Manages a temp directory for caching B2 file downloads.
@@ -60,6 +60,53 @@ export class TempFileManager implements vscode.Disposable {
     }
   }
 
+  private async ensureRealCacheDirectory(directory: string): Promise<void> {
+    let stats: fs.Stats | undefined;
+    try {
+      stats = await fs.promises.lstat(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    if (stats) {
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(
+          `Temp file cache directory must be a real directory, not a symlink or special file: ${directory}`,
+        );
+      }
+      return;
+    }
+
+    await fs.promises.mkdir(directory, { recursive: false, mode: 0o700 }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    });
+    const createdStats = await fs.promises.lstat(directory);
+    if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
+      throw new Error(
+        `Temp file cache directory must be a real directory, not a symlink or special file: ${directory}`,
+      );
+    }
+  }
+
+  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
+    const root = path.resolve(this.tempRoot);
+    const target = path.resolve(directory);
+    if (!isPathInsideOrEqual(root, target)) {
+      throw new Error(`Temp file cache directory resolves outside the cache root: ${directory}`);
+    }
+
+    const relative = path.relative(root, target);
+    let current = root;
+    for (const segment of relative.split(path.sep).filter((part) => part.length > 0)) {
+      current = path.join(current, segment);
+      await this.ensureRealCacheDirectory(current);
+    }
+  }
+
   dispose(): void {
     this.cleanup();
   }
@@ -83,6 +130,7 @@ export class TempFileManager implements vscode.Disposable {
   ): Promise<string> {
     const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
     const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
+    await this.ensureCacheDirectoryPath(path.dirname(localPath));
 
     await downloadStreamToFile(stream, localPath, options);
 

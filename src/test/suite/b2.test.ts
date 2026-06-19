@@ -744,6 +744,44 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects symlinked bucket cache directories", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-bucket-symlink-"));
+    const tempRoot = path.join(dir, "cache");
+    const target = path.join(dir, "target");
+    const bucketLink = path.join(tempRoot, "bucket");
+    fs.mkdirSync(tempRoot);
+    fs.mkdirSync(target);
+    const symlinkCreated = createDirectorySymlink(target, bucketLink);
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await assert.rejects(
+        () =>
+          manager.saveStream(
+            "bucket",
+            "file.txt",
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.close();
+              },
+            }),
+          ),
+        /real directory|symlink/i,
+      );
+
+      assert.deepStrictEqual(fs.readdirSync(target), []);
+      assert.strictEqual(manager.getCachedPath("bucket", "file.txt"), undefined);
+    } finally {
+      manager.dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("times out stalled downloads and leaves no destination", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-stall-"));
     const destination = path.join(dir, "stalled.bin");

@@ -131,6 +131,19 @@ async function withoutWorkspaceFolder<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+function createDirectorySymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 suite("B2 LM tool failure handling", () => {
   test("all tool adapters map injected B2 failures to friendly messages", async () => {
     const injected = classifyError(
@@ -378,6 +391,40 @@ suite("B2 LM tool failure handling", () => {
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool rejects symlink escapes before reading", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-outside-"));
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    const linkPath = path.join(workspaceDir, "link");
+    fs.writeFileSync(outsideFile, "secret");
+    const symlinkCreated = createDirectorySymlink(outsideDir, linkPath);
+    const client = {
+      async getBucket() {
+        assert.fail("Expected realpath validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: "link/secret.txt" },
+              { getClient: () => client },
+            ),
+          /outside the open workspace/i,
+        );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
     }
   });
 });
