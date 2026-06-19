@@ -23,9 +23,33 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  verify-release-source:
+    name: Verify Release Source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag is reachable from main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release tag ${GITHUB_REF_NAME} must point to a commit reachable from origin/main."
+            exit 1
+          fi
+
   quality:
     name: Format, Lint & Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
@@ -50,6 +74,7 @@ jobs:
   test:
     name: Behavioral Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
 
@@ -74,6 +99,7 @@ jobs:
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
@@ -98,6 +124,7 @@ jobs:
   sast:
     name: CodeQL SAST
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -133,8 +160,9 @@ jobs:
 
   build:
     name: Build VSIX
-    needs: [quality, test, audit, sast]
+    needs: [verify-release-source, quality, test, audit, sast]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -156,8 +184,13 @@ jobs:
       - name: Package VSIX
         run: npm run vsix
 
+      - name: Run strict VSIX provenance gate
+        run: npm run assert:vsix-assets:strict
+
       - name: Record VSIX checksum
-        run: sha256sum ./*.vsix > VSIX_SHA256SUMS.txt
+        run: |
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
+          sha256sum "$VSIX_FILE" > VSIX_SHA256SUMS.txt
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -172,6 +205,7 @@ jobs:
     name: Installed VSIX Smoke
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
 
@@ -198,40 +232,180 @@ jobs:
 
       - name: Verify installed VSIX
         run: |
-          VSIX_FILE=$(find ./vsix-artifacts -name "*.vsix" -type f | head -1)
-          if [ -z "$VSIX_FILE" ]; then
-            echo "Error: No .vsix file found"
-            exit 1
-          fi
-          npm run assert:vsix-assets -- "$VSIX_FILE"
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)
+          npm run assert:vsix-assets:strict -- "$VSIX_FILE"
           xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
 
-  attest:
-    name: Attest VSIX Provenance
+  publish-preflight:
+    name: Marketplace Preflight
     needs: [build, package-install-smoke]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')) }}
     permissions:
       contents: read
-      id-token: write
-      attestations: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: vsix
           path: ./vsix-artifacts
 
+      - name: Generate Marketplace manifest
+        run: |
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)
+          npm exec --no-install -- vsce generate-manifest --packagePath "$VSIX_FILE" --out marketplace.manifest
+          test -s marketplace.manifest
+
+  attest:
+    name: Attest VSIX Provenance
+    needs: [build, package-install-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vsix
+          path: ./vsix-artifacts
+
+      - name: Resolve and verify VSIX artifact
+        id: vsix
+        run: echo "path=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)" >> "$GITHUB_OUTPUT"
+
       - name: Generate build provenance attestation
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: ./vsix-artifacts/**/*.vsix
+          subject-path: ${{ steps.vsix.outputs.path }}
+
+  publish:
+    name: Publish to Marketplace
+    needs: [publish-preflight, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        !contains(github.ref_name, '-') &&
+        (github.event_name == 'push' || inputs.publish == true)
+      }}
+    permissions:
+      contents: read
+    environment: marketplace
+
+    steps:
+      - name: Verify marketplace environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ENV_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/environments/marketplace")
+          printf '%s' "$ENV_JSON" | node -e '
+            const fs = require("fs");
+            const env = JSON.parse(fs.readFileSync(0, "utf8"));
+            const rules = Array.isArray(env.protection_rules) ? env.protection_rules : [];
+            if (!rules.some((rule) => rule.type === "required_reviewers")) {
+              console.error("The marketplace environment must have required reviewers before publishing.");
+              process.exit(1);
+            }
+          '
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vsix
+          path: ./vsix-artifacts
+
+      - name: Resolve and verify VSIX artifact
+        id: vsix
+        run: echo "path=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Marketplace publisher token
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_KEY }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_KEY is not available in the marketplace environment."
+            exit 1
+          fi
+          npm exec --no-install -- vsce verify-pat backblaze
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_KEY }}
+          VSIX_FILE: ${{ steps.vsix.outputs.path }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "Publishing: $VSIX_FILE (attempt ${attempt})"
+            if npm exec --no-install -- vsce publish --skip-duplicate --packagePath "$VSIX_FILE"; then
+              exit 0
+            fi
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 30))
+          done
 
   release:
     name: Create GitHub Release
-    needs: [build, package-install-smoke, attest]
+    needs: [build, package-install-smoke, attest, publish]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 10
+    if: >-
+      ${{
+        always() &&
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.build.result == 'success' &&
+        needs.package-install-smoke.result == 'success' &&
+        needs.attest.result == 'success' &&
+        (contains(github.ref_name, '-') || needs.publish.result == 'success')
+      }}
     permissions:
       contents: write
 
@@ -242,11 +416,19 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: vsix
           path: ./vsix-artifacts
+
+      - name: Resolve and verify VSIX artifact
+        run: node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum
 
       - name: Extract version
         id: version
@@ -287,109 +469,3 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
-
-  publish-preflight:
-    name: Stable Marketplace Preflight
-    needs: [build, package-install-smoke, attest]
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-') }}
-    permissions:
-      contents: read
-    outputs:
-      has_secret: ${{ steps.check-creds.outputs.has_secret }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check marketplace credentials
-        id: check-creds
-        env:
-          VSCE_KEY: ${{ secrets.VSCE_KEY }}
-        run: |
-          if [ -n "${VSCE_KEY}" ]; then
-            echo "has_secret=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_secret=false" >> "$GITHUB_OUTPUT"
-            echo "VSCE_KEY not set - Marketplace publish will be skipped"
-          fi
-
-      - name: Download VSIX artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: vsix
-          path: ./vsix-artifacts
-
-      - name: Generate Marketplace manifest
-        run: |
-          VSIX_FILE=$(find ./vsix-artifacts -name "*.vsix" -type f | head -1)
-          if [ -z "$VSIX_FILE" ]; then
-            echo "Error: No .vsix file found"
-            exit 1
-          fi
-          npx @vscode/vsce generate-manifest --packagePath "$VSIX_FILE" --out marketplace.manifest
-          test -s marketplace.manifest
-
-      - name: Verify Marketplace publisher token
-        if: steps.check-creds.outputs.has_secret == 'true'
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_KEY }}
-        run: npx @vscode/vsce verify-pat backblaze
-
-  publish:
-    name: Publish to Marketplace
-    needs: publish-preflight
-    runs-on: ubuntu-latest
-    if: >-
-      ${{
-        startsWith(github.ref, 'refs/tags/v') &&
-        !contains(github.ref_name, '-') &&
-        needs.publish-preflight.outputs.has_secret == 'true' &&
-        (github.event_name == 'push' || inputs.publish == true)
-      }}
-    permissions: {}
-    environment: marketplace
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download VSIX artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: vsix
-          path: ./vsix-artifacts
-
-      - name: Publish to VS Code Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_KEY }}
-        run: |
-          VSIX_FILE=$(find ./vsix-artifacts -name "*.vsix" -type f | head -1)
-          if [ -z "$VSIX_FILE" ]; then
-            echo "Error: No .vsix file found"
-            exit 1
-          fi
-          echo "Publishing: $VSIX_FILE"
-          npx @vscode/vsce publish --packagePath "$VSIX_FILE"

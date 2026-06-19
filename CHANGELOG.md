@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Marketplace package metadata now points to the canonical
+  `backblaze-labs/b2-vscode` repository URL.
 - Packaged CLI credential auto-detection now loads copied SQL.js runtime assets
   from the extension runtime directory (`dist/sql-wasm.js` and
   `dist/sql-wasm.wasm`). VSIX packaging now verifies pinned SQL.js runtime and

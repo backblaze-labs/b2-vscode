@@ -9,6 +9,9 @@ on:
       - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
       - "scripts/assert-vsix-assets.js"
+      - "scripts/assert-vsix-manifest.js"
+      - "scripts/release-contract.js"
+      - "scripts/resolve-vsix-artifact.js"
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
@@ -22,6 +25,9 @@ on:
       - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
       - "scripts/assert-vsix-assets.js"
+      - "scripts/assert-vsix-manifest.js"
+      - "scripts/release-contract.js"
+      - "scripts/resolve-vsix-artifact.js"
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
@@ -74,11 +80,18 @@ jobs:
             exit 1
           fi
 
+      - name: Record VSIX checksum
+        run: |
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
+          sha256sum "$VSIX_FILE" > VSIX_SHA256SUMS.txt
+
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vsix
-          path: "*.vsix"
+          path: |
+            *.vsix
+            VSIX_SHA256SUMS.txt
           retention-days: 30
 
   test-installation:
@@ -111,18 +124,14 @@ jobs:
 
       - name: Verify extension package
         run: |
-          VSIX_FILE=$(find ./artifacts -name "*.vsix" -type f | head -1)
-          if [ -z "$VSIX_FILE" ]; then
-            echo "Error: No .vsix file found"
-            exit 1
-          fi
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./artifacts --verify-checksum)
           echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
-          npm run assert:vsix-assets -- "$VSIX_FILE"
+          npm run assert:vsix-assets:strict -- "$VSIX_FILE"
           xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
 
   post-pr-comment:
     name: PR Comment
-    needs: test-installation
+    needs: build
     if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     permissions:

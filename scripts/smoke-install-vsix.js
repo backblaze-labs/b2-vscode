@@ -9,6 +9,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { runVSCodeCommand } = require("@vscode/test-electron");
+const { manifestContract } = require("./release-contract");
 
 const repoRoot = path.join(__dirname, "..");
 const packageJson = require(path.join(repoRoot, "package.json"));
@@ -102,9 +103,9 @@ async function main(argv = process.argv.slice(2)) {
       throw new Error(`Installed package version mismatch: ${installedManifest.version}`);
     }
 
-    assertInstalledFile(installedExtensionPath, "dist/extension.js");
-    assertInstalledFile(installedExtensionPath, "resources/b2-icon.png");
-    assertInstalledFile(installedExtensionPath, "resources/b2-icons.woff");
+    for (const requiredFile of manifestContract.requiredInstalledFiles) {
+      assertInstalledFile(installedExtensionPath, requiredFile);
+    }
     assertInstalledFile(
       installedExtensionPath,
       path.join(sqlJsRuntimeAssets.packagedDistDir, sqlJsRuntimeAssets.runtimeFilename),

@@ -16,6 +16,8 @@ const crypto = require("crypto");
 const https = require("https");
 const zlib = require("zlib");
 const JSZip = require("jszip");
+const { assertContributionManifest } = require("./assert-vsix-manifest");
+const { manifestContract } = require("./release-contract");
 
 const repoRoot = path.join(__dirname, "..");
 const packageJson = require(path.join(repoRoot, "package.json"));
@@ -51,47 +53,12 @@ const requiredEntries = [
   sqlJsRuntimeAssets.packagedWasmEntry,
 ];
 
-const requiredPackageEntries = [
-  "extension/resources/b2-icon.png",
-  "extension/resources/b2-icon.svg",
-  "extension/resources/b2-icons.woff",
-];
-
-const requiredVsixEntries = [...requiredEntries, ...requiredPackageEntries];
+const requiredVsixEntries = [...requiredEntries, ...manifestContract.requiredPackageEntries];
 
 const requiredDistFiles = [
   sqlJsRuntimeAssets.runtimeFilename,
   sqlJsRuntimeAssets.wasmFilename,
   path.basename(sqlJsRuntimeAssets.extensionBundleEntry),
-];
-
-const expectedRepositoryUrl = "https://github.com/backblaze-labs/b2-vscode.git";
-
-const requiredCommands = [
-  "b2.authenticate",
-  "b2.logout",
-  "b2.refresh",
-  "b2.loadMore",
-  "b2.copyPath",
-  "b2.copyFileId",
-  "b2.openFile",
-  "b2.createBucket",
-  "b2.changeBucketVisibility",
-  "b2.createFolder",
-  "b2.deleteBucket",
-  "b2.deleteFolder",
-  "b2.deleteFile",
-  "b2.renameFile",
-];
-
-const requiredLanguageModelTools = [
-  "b2_listBuckets",
-  "b2_listFiles",
-  "b2_getFileInfo",
-  "b2_downloadFile",
-  "b2_uploadFile",
-  "b2_deleteFile",
-  "b2_presignUrl",
 ];
 
 function sha256(buffer) {
@@ -151,34 +118,6 @@ function assertNoExternalSqlJsImport(extensionSource) {
   }
 }
 
-function assertEqual(actual, expected, label) {
-  if (actual !== expected) {
-    throw new Error(
-      `${label} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`,
-    );
-  }
-}
-
-function assertArrayIncludesValues(values, requiredValues, label) {
-  if (!Array.isArray(values)) {
-    throw new Error(`${label} must be an array.`);
-  }
-
-  const availableValues = new Set(values);
-  const missingValues = requiredValues.filter((value) => !availableValues.has(value));
-  if (missingValues.length > 0) {
-    throw new Error(`${label} missing required value(s): ${missingValues.join(", ")}`);
-  }
-}
-
-function assertObject(value, label) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object.`);
-  }
-
-  return value;
-}
-
 function parseJsonBuffer(buffer, label) {
   try {
     return JSON.parse(buffer.toString("utf8"));
@@ -186,82 +125,6 @@ function parseJsonBuffer(buffer, label) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`${label} is not valid JSON: ${detail}`);
   }
-}
-
-function assertContributionManifest(manifest) {
-  assertEqual(manifest.name, packageJson.name, "package name");
-  assertEqual(manifest.publisher, packageJson.publisher, "package publisher");
-  assertEqual(manifest.version, packageJson.version, "package version");
-  assertEqual(manifest.main, "./dist/extension.js", "package main");
-  assertEqual(manifest.icon, "resources/b2-icon.png", "package icon");
-
-  const repository = assertObject(manifest.repository, "package repository");
-  assertEqual(repository.type, "git", "package repository type");
-  assertEqual(repository.url, expectedRepositoryUrl, "package repository URL");
-
-  const contributes = assertObject(manifest.contributes, "package contributes");
-  const icons = assertObject(contributes.icons, "package contributes.icons");
-  const flameIcon = assertObject(icons["backblaze-flame"], "backblaze-flame icon contribution");
-  const flameIconDefault = assertObject(
-    flameIcon.default,
-    "backblaze-flame default icon contribution",
-  );
-  assertEqual(flameIconDefault.fontPath, "./resources/b2-icons.woff", "backblaze-flame fontPath");
-
-  const viewsContainers = assertObject(
-    contributes.viewsContainers,
-    "package contributes.viewsContainers",
-  );
-  const activityBarContainers = viewsContainers.activitybar;
-  if (!Array.isArray(activityBarContainers)) {
-    throw new Error("package contributes.viewsContainers.activitybar must be an array.");
-  }
-  if (!activityBarContainers.some((container) => container.id === "b2Explorer")) {
-    throw new Error("package contributes.viewsContainers.activitybar missing b2Explorer.");
-  }
-
-  const views = assertObject(contributes.views, "package contributes.views");
-  const b2ExplorerViews = views.b2Explorer;
-  if (!Array.isArray(b2ExplorerViews)) {
-    throw new Error("package contributes.views.b2Explorer must be an array.");
-  }
-  if (!b2ExplorerViews.some((view) => view.id === "b2Buckets")) {
-    throw new Error("package contributes.views.b2Explorer missing b2Buckets.");
-  }
-
-  const commands = contributes.commands;
-  if (!Array.isArray(commands)) {
-    throw new Error("package contributes.commands must be an array.");
-  }
-  const commandIds = commands.map((command) => command.command);
-  assertArrayIncludesValues(commandIds, requiredCommands, "package contributes.commands");
-
-  const menus = assertObject(contributes.menus, "package contributes.menus");
-  if (!Array.isArray(menus["view/title"]) || !Array.isArray(menus["view/item/context"])) {
-    throw new Error("package contributes.menus missing required tree view menu arrays.");
-  }
-
-  const configuration = assertObject(contributes.configuration, "package contributes.configuration");
-  const configurationProperties = assertObject(
-    configuration.properties,
-    "package contributes.configuration.properties",
-  );
-  const apiUrlConfig = assertObject(
-    configurationProperties["b2.apiUrl"],
-    "b2.apiUrl configuration contribution",
-  );
-  assertEqual(apiUrlConfig.scope, "application", "b2.apiUrl configuration scope");
-
-  const languageModelTools = contributes.languageModelTools;
-  if (!Array.isArray(languageModelTools)) {
-    throw new Error("package contributes.languageModelTools must be an array.");
-  }
-  const toolIds = languageModelTools.map((tool) => tool.name);
-  assertArrayIncludesValues(
-    toolIds,
-    requiredLanguageModelTools,
-    "package contributes.languageModelTools",
-  );
 }
 
 function assertNoForbiddenSmokeHooks(entryName, content) {
@@ -569,6 +432,7 @@ async function assertPackageProvenance(options = {}) {
   if (!options.skipSqlJsPackageProvenance) {
     await assertSqlJsPackageProvenance(options.fetchSqlJsPackage, {
       retryDelaysMs: options.retryDelaysMs,
+      allowLocalFallback: options.allowLocalFallback,
     });
   }
   assertLocalSqlJsAssetPins();
@@ -652,6 +516,7 @@ function parseCliArgs(args) {
     mode: "vsix",
     path: undefined,
     skipSqlJsPackageProvenance: process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1",
+    allowLocalFallback: true,
   };
 
   for (const arg of args) {
@@ -661,6 +526,10 @@ function parseCliArgs(args) {
     }
     if (arg === "--skip-sqljs-provenance-fetch") {
       parsed.skipSqlJsPackageProvenance = true;
+      continue;
+    }
+    if (arg === "--strict-provenance") {
+      parsed.allowLocalFallback = false;
       continue;
     }
     if (arg.startsWith("-")) {
@@ -678,6 +547,7 @@ function parseCliArgs(args) {
 async function main(argv = process.argv.slice(2)) {
   const cliOptions = parseCliArgs(argv);
   const assertionOptions = {
+    allowLocalFallback: cliOptions.allowLocalFallback,
     skipSqlJsPackageProvenance: cliOptions.skipSqlJsPackageProvenance,
   };
 
