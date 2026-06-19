@@ -11,6 +11,8 @@
   retry with backoff, and an SSRF guard.
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
+- Download and temp-open paths now preserve natural B2 object basenames while
+  sanitizing traversal and platform-unsafe path segments before writing locally.
 
 ### Fixed
 
@@ -50,6 +52,8 @@
   size cap, abort oversized streams, and remove partial local files.
 - Interactive open-file downloads now stream with the same 5-minute stall
   timeout as other local transfer paths.
+- Copilot download tools now reject absolute or symlinked destinations that
+  would write outside the active workspace.
 - LM `downloadFile` writes only to workspace-relative paths and refuses to
   overwrite existing workspace files. LM `uploadFile` reads only
   workspace-relative files.

@@ -1,5 +1,5 @@
 import { defineConfig } from "@vscode/test-cli";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { compiledTestFilesGlob, mochaOptions } from "./test-harness.config.mjs";
 const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
 const testXdgConfig = join(root, ".vscode-test", "xdg-config");
-const testProfileRoot = join(tmpdir(), "b2-vscode-test-profile");
+const testProfileRoot = mkdtempSync(join(tmpdir(), "b2-vscode-test-profile-"));
 const launchArgs = [
   "--disable-extensions",
   "--disable-workspace-trust",
@@ -22,7 +22,6 @@ if (process.platform === "darwin") {
 
 mkdirSync(join(testHome, ".vscode"), { recursive: true });
 mkdirSync(testXdgConfig, { recursive: true });
-mkdirSync(testProfileRoot, { recursive: true });
 
 export default defineConfig([
   {

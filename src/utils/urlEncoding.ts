@@ -4,26 +4,21 @@
  * @module utils/urlEncoding
  */
 
-function toWellFormedUtf8(value: string): string {
-  return value.replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-    "\uFFFD",
-  );
-}
+import { toWellFormedString } from "./strings";
 
 /**
  * RFC 3986 component encoding. encodeURIComponent leaves a few reserved
  * sub-delimiters untouched, so encode them explicitly.
  */
 export function encodeUrlComponent(value: string): string {
-  return encodeURIComponent(toWellFormedUtf8(value)).replace(
+  return encodeURIComponent(toWellFormedString(value)).replace(
     /[!'()*]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 }
 
 export function encodeB2FileNameForUrl(fileName: string): string {
-  return encodeUrlComponent(fileName);
+  return fileName.split("/").map(encodeUrlComponent).join("/");
 }
 
 export function buildB2DownloadUrl(
@@ -33,5 +28,5 @@ export function buildB2DownloadUrl(
   authorizationToken: string,
 ): string {
   const baseUrl = downloadUrl.replace(/\/+$/, "");
-  return `${baseUrl}/file/${encodeUrlComponent(bucketName)}/${encodeB2FileNameForUrl(fileName)}?Authorization=${encodeUrlComponent(authorizationToken)}`;
+  return `${baseUrl}/file/${bucketName}/${encodeB2FileNameForUrl(fileName)}?Authorization=${encodeUrlComponent(authorizationToken)}`;
 }

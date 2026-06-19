@@ -20,7 +20,7 @@ import {
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
 } from "./pathSafety";
-import { buildTempFilePath } from "../utils/localPaths";
+import { assertSafeWritePath, buildTempFilePath } from "../utils/localPaths";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
@@ -210,7 +210,9 @@ export class TempFileManager implements vscode.Disposable {
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    assertSafeWritePath(this.tempRoot, localPath);
     await this.ensureCacheDirectoryPath(path.dirname(localPath));
+    assertSafeWritePath(this.tempRoot, localPath);
 
     await downloadStreamToFile(stream, localPath, options);
 

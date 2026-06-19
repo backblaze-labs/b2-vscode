@@ -94,8 +94,11 @@ npm run watch
 # Run all quality checks
 npm run check
 
-# Run VS Code extension tests
+# Run property/unit tests and VS Code extension tests
 npm test
+
+# Run only Node unit/property tests after compile-tests
+npm run test:unit
 
 # Fix formatting and lint issues
 npm run check:fix
@@ -132,6 +135,7 @@ src/
 │   ├── authService.ts        # Credential resolution (4-tier)
 │   ├── b2.ts                 # B2 SDK client factory + stream helper
 │   └── tempFileManager.ts    # Downloaded file cache
+├── utils/                    # Pure path, URL, and formatting helpers
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider
 ├── models/
@@ -143,6 +147,9 @@ src/
 │   ├── b2ToolAdapter.ts
 │   ├── definitions/          # Tool schemas
 │   └── operations/           # Tool implementations
+├── test/
+│   ├── suite/                # VS Code extension-host tests
+│   └── unit/                 # Node property/unit tests
 └── ui/
     └── statusBar.ts          # Status bar integration
 ```

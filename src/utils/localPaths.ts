@@ -1,47 +1,51 @@
 /**
- * Pure helpers for turning B2 object names and workspace-relative input into
- * local filesystem paths without allowing path traversal.
+ * Helpers for turning B2 object names and workspace-relative input into local
+ * filesystem paths without allowing path traversal.
  *
  * @module utils/localPaths
  */
 
+import * as fs from "fs";
 import * as path from "path";
+import { toWellFormedString } from "./strings";
 
 const FALLBACK_FILE_NAME = "download";
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
-function toWellFormedUtf8(value: string): string {
-  return value.replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-    "\uFFFD",
-  );
-}
+function sanitizeLocalPathSegment(segment: string): string {
+  const sanitized = toWellFormedString(segment)
+    .replace(/[\u0000-\u001F<>:"|?*\\]/g, "_")
+    .replace(/[. ]+$/g, (trailing) => "_".repeat(trailing.length));
 
-function encodeLocalPathSegment(segment: string): string {
-  const encoded = encodeURIComponent(toWellFormedUtf8(segment)).replace(
-    /[!'()*]/g,
-    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-
-  if (!encoded || encoded === "." || encoded === "..") {
-    return `_${encoded.replace(/\./g, "%2E") || FALLBACK_FILE_NAME}`;
+  let safeSegment = sanitized;
+  if (safeSegment === ".") {
+    safeSegment = "_";
+  } else if (safeSegment === "..") {
+    safeSegment = "__";
+  } else if (!safeSegment) {
+    safeSegment = FALLBACK_FILE_NAME;
   }
 
-  return encoded;
+  return WINDOWS_RESERVED_NAME.test(safeSegment) ? `_${safeSegment}` : safeSegment;
 }
 
 function splitB2Path(fileName: string): string[] {
-  return fileName.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  return fileName.split("/").filter((segment) => segment.length > 0);
 }
 
 function safeB2FileSegments(fileName: string): string[] {
-  const segments = splitB2Path(fileName).map(encodeLocalPathSegment);
+  const segments = splitB2Path(fileName).map(sanitizeLocalPathSegment);
   return segments.length > 0 ? segments : [FALLBACK_FILE_NAME];
 }
 
-function assertRelativePathInput(relativePath: string): void {
-  if (relativePath.includes("\0")) {
+function assertNoNulPath(value: string): void {
+  if (value.includes("\0")) {
     throw new Error("Local path must not contain NUL bytes.");
   }
+}
+
+function assertRelativePathInput(relativePath: string): void {
+  assertNoNulPath(relativePath);
 
   if (path.posix.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)) {
     throw new Error("Local path must be relative to the workspace.");
@@ -63,13 +67,8 @@ function assertRelativePathInput(relativePath: string): void {
   }
 }
 
-/**
- * Return true when `candidatePath` resolves to `rootPath` or a child of it.
- */
-export function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
-  const resolvedRoot = path.resolve(rootPath);
-  const resolvedCandidate = path.resolve(candidatePath);
-  const relativePath = path.relative(resolvedRoot, resolvedCandidate);
+function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(rootPath, candidatePath);
 
   return (
     relativePath === "" ||
@@ -80,18 +79,61 @@ export function isPathInsideRoot(rootPath: string, candidatePath: string): boole
   );
 }
 
-/**
- * Resolve path segments below `rootPath`, rejecting any result outside it.
- */
-export function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
+function assertLexicallyInsideRoot(rootPath: string, candidatePath: string): void {
+  if (!isPathInsideRoot(path.resolve(rootPath), path.resolve(candidatePath))) {
+    throw new Error("Resolved path escapes the destination directory.");
+  }
+}
+
+function nearestExistingPath(candidatePath: string): string {
+  let currentPath = candidatePath;
+  for (;;) {
+    if (fs.existsSync(currentPath)) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return currentPath;
+    }
+    currentPath = parentPath;
+  }
+}
+
+function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
   const resolvedRoot = path.resolve(rootPath);
   const resolvedPath = path.resolve(resolvedRoot, ...segments);
 
-  if (!isPathInsideRoot(resolvedRoot, resolvedPath)) {
-    throw new Error("Resolved path escapes the destination directory.");
+  assertLexicallyInsideRoot(resolvedRoot, resolvedPath);
+  return resolvedPath;
+}
+
+/**
+ * Verify that a path to be written cannot escape `rootPath`, including through
+ * existing symlinks in the path prefix. Call this immediately before writes.
+ */
+export function assertSafeWritePath(rootPath: string, candidatePath: string): void {
+  assertNoNulPath(rootPath);
+  assertNoNulPath(candidatePath);
+
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedCandidate = path.resolve(candidatePath);
+  assertLexicallyInsideRoot(resolvedRoot, resolvedCandidate);
+
+  const realRoot = fs.realpathSync.native(resolvedRoot);
+  const existingPath = nearestExistingPath(resolvedCandidate);
+  const realExistingPath = fs.realpathSync.native(existingPath);
+
+  if (!isPathInsideRoot(realRoot, realExistingPath)) {
+    throw new Error("Resolved path escapes the destination directory through a symlink.");
   }
 
-  return resolvedPath;
+  if (fs.existsSync(resolvedCandidate)) {
+    const candidateStats = fs.lstatSync(resolvedCandidate);
+    if (candidateStats.isSymbolicLink()) {
+      throw new Error("Destination path must not be a symlink.");
+    }
+  }
 }
 
 /**
@@ -100,15 +142,12 @@ export function resolveInsideRoot(rootPath: string, ...segments: string[]): stri
 export function buildTempFilePath(tempRoot: string, bucketName: string, fileName: string): string {
   return resolveInsideRoot(
     tempRoot,
-    encodeLocalPathSegment(bucketName),
+    sanitizeLocalPathSegment(bucketName),
     ...safeB2FileSegments(fileName),
   );
 }
 
-/**
- * Derive a safe default filename for a B2 object downloaded into a workspace.
- */
-export function buildDefaultDownloadFilePath(workspaceRoot: string, fileName: string): string {
+function buildDefaultDownloadFilePath(workspaceRoot: string, fileName: string): string {
   const segments = safeB2FileSegments(fileName);
   return resolveInsideRoot(workspaceRoot, segments[segments.length - 1]);
 }
@@ -123,9 +162,13 @@ export function resolveDownloadSavePath(
   localPath?: string,
 ): string {
   if (!localPath) {
-    return buildDefaultDownloadFilePath(workspaceRoot, remotePath);
+    const defaultPath = buildDefaultDownloadFilePath(workspaceRoot, remotePath);
+    assertSafeWritePath(workspaceRoot, defaultPath);
+    return defaultPath;
   }
 
   assertRelativePathInput(localPath);
-  return resolveInsideRoot(workspaceRoot, localPath);
+  const resolvedPath = resolveInsideRoot(workspaceRoot, localPath);
+  assertSafeWritePath(workspaceRoot, resolvedPath);
+  return resolvedPath;
 }
