@@ -67,6 +67,18 @@ function runGate(args = []) {
   ]);
 }
 
+function assertInvalidCliArgs(args, expectedMessage) {
+  const result = run("node", [path.join(repoRoot, "scripts/run-npm-audit.js"), ...args]);
+  if (result.status === 0) {
+    throw new Error(`audit gate accepted invalid CLI arguments: ${args.join(" ")}`);
+  }
+  if (!result.output.includes(expectedMessage)) {
+    throw new Error(
+      `audit gate rejected invalid CLI arguments with an unexpected message:\n${result.output}`,
+    );
+  }
+}
+
 function loadFixtureFindings() {
   const result = run("npm", ["audit", "--json", "--audit-level=moderate"], {
     cwd: tempRoot,
@@ -99,6 +111,9 @@ function loadFixtureFindings() {
 }
 
 try {
+  assertInvalidCliArgs(["--directory"], "--directory requires a path value.");
+  assertInvalidCliArgs(["--policy", "--directory"], "--policy requires a path value.");
+
   fs.writeFileSync(
     path.join(tempRoot, "package.json"),
     `${JSON.stringify(packageJson, null, 2)}\n`,

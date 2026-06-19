@@ -28,12 +28,22 @@ function parseArgs(argv) {
     policy: path.join(repoRoot, AUDIT_POLICY_FILE),
   };
 
+  function readPathArgument(index, flag) {
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error(`${flag} requires a path value.`);
+    }
+    return path.resolve(value);
+  }
+
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--directory") {
-      args.directory = path.resolve(argv[++index]);
+      args.directory = readPathArgument(index, arg);
+      index += 1;
     } else if (arg === "--policy") {
-      args.policy = path.resolve(argv[++index]);
+      args.policy = readPathArgument(index, arg);
+      index += 1;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }

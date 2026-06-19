@@ -206,7 +206,7 @@ function isAcceptedFinding(finding, acceptedAdvisories) {
     const pathsMatch =
       entry.paths === undefined ||
       entry.paths.length === 0 ||
-      entry.paths.some((acceptedPath) => finding.paths.includes(acceptedPath));
+      finding.paths.every((findingPath) => entry.paths.includes(findingPath));
 
     return entry.id.toLowerCase() === finding.id.toLowerCase() && packageMatches && pathsMatch;
   });
