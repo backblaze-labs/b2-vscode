@@ -38,7 +38,13 @@ if (process.platform === "darwin") {
   launchArgs.push("--use-mock-keychain");
 }
 
-chmodSync(testRunRoot, 0o700);
+if (process.platform !== "win32") {
+  try {
+    chmodSync(testRunRoot, 0o700);
+  } catch {
+    // mkdtempSync already creates a private POSIX directory; chmod is best-effort.
+  }
+}
 mkdirSync(join(testHome, ".vscode"), { recursive: true });
 mkdirSync(testXdgConfig, { recursive: true });
 mkdirSync(testUserDataDir, { recursive: true });
