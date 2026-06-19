@@ -14,7 +14,7 @@ const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
 function sanitizeLocalPathSegment(segment: string): string {
   const sanitized = toWellFormedString(segment)
-    .replace(/[\u0000-\u001F<>:"|?*\\]/g, "_")
+    .replace(/[\u0000-\u001F<>:"|?*\\/]/g, "_")
     .replace(/[. ]+$/g, (trailing) => "_".repeat(trailing.length));
 
   let safeSegment = sanitized;

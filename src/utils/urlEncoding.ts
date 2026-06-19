@@ -28,5 +28,5 @@ export function buildB2DownloadUrl(
   authorizationToken: string,
 ): string {
   const baseUrl = downloadUrl.replace(/\/+$/, "");
-  return `${baseUrl}/file/${bucketName}/${encodeB2FileNameForUrl(fileName)}?Authorization=${encodeUrlComponent(authorizationToken)}`;
+  return `${baseUrl}/file/${encodeUrlComponent(bucketName)}/${encodeB2FileNameForUrl(fileName)}?Authorization=${encodeUrlComponent(authorizationToken)}`;
 }
