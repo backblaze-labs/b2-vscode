@@ -16,6 +16,8 @@ const crypto = require("crypto");
 const https = require("https");
 const zlib = require("zlib");
 const JSZip = require("jszip");
+const { assertContributionManifest } = require("./assert-vsix-manifest");
+const { manifestContract } = require("./release-contract");
 
 const repoRoot = path.join(__dirname, "..");
 const packageJson = require(path.join(repoRoot, "package.json"));
@@ -50,6 +52,8 @@ const requiredEntries = [
   sqlJsRuntimeAssets.packagedRuntimeEntry,
   sqlJsRuntimeAssets.packagedWasmEntry,
 ];
+
+const requiredVsixEntries = [...requiredEntries, ...manifestContract.requiredPackageEntries];
 
 const requiredDistFiles = [
   sqlJsRuntimeAssets.runtimeFilename,
@@ -111,6 +115,15 @@ function assertNoExternalSqlJsImport(extensionSource) {
         "VSIX package contains an unresolved sql.js import; sql.js must be bundled into extension/dist/extension.js",
       );
     }
+  }
+}
+
+function parseJsonBuffer(buffer, label) {
+  try {
+    return JSON.parse(buffer.toString("utf8"));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} is not valid JSON: ${detail}`);
   }
 }
 
@@ -419,6 +432,7 @@ async function assertPackageProvenance(options = {}) {
   if (!options.skipSqlJsPackageProvenance) {
     await assertSqlJsPackageProvenance(options.fetchSqlJsPackage, {
       retryDelaysMs: options.retryDelaysMs,
+      allowLocalFallback: options.allowLocalFallback,
     });
   }
   assertLocalSqlJsAssetPins();
@@ -432,10 +446,19 @@ async function assertVsixAssets(packagePath = defaultVsixPath, options = {}) {
 
   const zip = await JSZip.loadAsync(fs.readFileSync(packagePath));
   const packagedEntries = await Promise.all(
-    requiredEntries.map(async (entryName) => [entryName, await readRequiredEntry(zip, entryName)]),
+    requiredVsixEntries.map(async (entryName) => [
+      entryName,
+      await readRequiredEntry(zip, entryName),
+    ]),
   );
   const packagedContent = new Map(packagedEntries);
   await assertNoTestOnlySmokeArtifacts(zip);
+
+  const manifest = parseJsonBuffer(
+    packagedContent.get(sqlJsRuntimeAssets.packageJsonEntry),
+    sqlJsRuntimeAssets.packageJsonEntry,
+  );
+  assertContributionManifest(manifest);
 
   const packagedRuntime = packagedContent.get(sqlJsRuntimeAssets.packagedRuntimeEntry);
   if (!packagedRuntime) {
@@ -489,10 +512,13 @@ async function assertDistAssets(
 }
 
 function parseCliArgs(args) {
+  const envSkipSqlJsPackageProvenance = process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1";
   const parsed = {
     mode: "vsix",
     path: undefined,
-    skipSqlJsPackageProvenance: process.env[SKIP_SQL_JS_PROVENANCE_ENV] === "1",
+    skipSqlJsPackageProvenance: envSkipSqlJsPackageProvenance,
+    allowLocalFallback: true,
+    strictProvenance: false,
   };
 
   for (const arg of args) {
@@ -504,6 +530,11 @@ function parseCliArgs(args) {
       parsed.skipSqlJsPackageProvenance = true;
       continue;
     }
+    if (arg === "--strict-provenance") {
+      parsed.allowLocalFallback = false;
+      parsed.strictProvenance = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -513,12 +544,19 @@ function parseCliArgs(args) {
     parsed.path = arg;
   }
 
+  if (parsed.strictProvenance && parsed.skipSqlJsPackageProvenance) {
+    throw new Error(
+      `--strict-provenance cannot be combined with --skip-sqljs-provenance-fetch or ${SKIP_SQL_JS_PROVENANCE_ENV}=1.`,
+    );
+  }
+
   return parsed;
 }
 
 async function main(argv = process.argv.slice(2)) {
   const cliOptions = parseCliArgs(argv);
   const assertionOptions = {
+    allowLocalFallback: cliOptions.allowLocalFallback,
     skipSqlJsPackageProvenance: cliOptions.skipSqlJsPackageProvenance,
   };
 
@@ -535,12 +573,15 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   const verifiedEntries =
-    cliOptions.mode === "dist" ? requiredDistFiles.join(", ") : requiredEntries.join(", ");
+    cliOptions.mode === "dist" ? requiredDistFiles.join(", ") : requiredVsixEntries.join(", ");
   console.log(`Packaged runtime assets verified: ${verifiedEntries}`);
 }
 
 if (require.main === module) {
-  main();
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
 }
 
 module.exports = {
@@ -550,4 +591,5 @@ module.exports = {
   fetchBuffer,
   parseCliArgs,
   requiredEntries,
+  requiredVsixEntries,
 };
