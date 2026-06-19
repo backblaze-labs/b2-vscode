@@ -21,7 +21,7 @@ import {
   withCancellableTransferProgress,
 } from "../services/transferProgress";
 import { withTransferStallTimeout } from "../services/fileTransfers";
-import { B2PartialFailureError, formatB2UserMessage } from "../errors";
+import { B2PartialFailureError, formatB2UserMessage, isB2MutationStateAmbiguous } from "../errors";
 import { log, logError } from "../logger";
 import {
   buildPublicBucketUnknownStateWarningMessage,
@@ -241,7 +241,7 @@ export async function createBucketCommand(services: BucketCommandServices): Prom
     log(`Bucket "${bucket.name}" created with type ${visibility.value}.`);
     vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
   } catch (error) {
-    if (visibility.value === "allPublic") {
+    if (visibility.value === "allPublic" && isB2MutationStateAmbiguous(error)) {
       await warnUnknownPublicBucketState(services, "create", bucketName);
     }
     showCommandError("B2: Failed to create bucket", error);
@@ -253,8 +253,7 @@ export async function changeBucketVisibilityCommand(
   item?: BucketTreeItem,
 ): Promise<void> {
   const { treeProvider, getClient } = services;
-  const client = getClient();
-  if (!client) {
+  if (!getClient()) {
     vscode.window.showErrorMessage("B2: Not authenticated.");
     return;
   }
@@ -310,7 +309,7 @@ export async function changeBucketVisibilityCommand(
     log(`Bucket "${item.bucketName}" changed to ${newType}.`);
     vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
   } catch (error) {
-    if (newType === "allPublic") {
+    if (newType === "allPublic" && isB2MutationStateAmbiguous(error)) {
       await warnUnknownPublicBucketState(services, "change", item.bucketName);
     }
     showCommandError("B2: Failed to update bucket", error);

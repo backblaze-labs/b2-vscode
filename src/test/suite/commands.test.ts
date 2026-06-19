@@ -6,7 +6,13 @@
 
 import * as assert from "assert";
 import * as vscode from "vscode";
-import { B2Client, classifyError, type Bucket, type BucketType } from "@backblaze-labs/b2-sdk";
+import {
+  B2Client,
+  classifyError,
+  NetworkError,
+  type Bucket,
+  type BucketType,
+} from "@backblaze-labs/b2-sdk";
 import {
   type BucketCommandServices,
   buildCommandErrorMessage,
@@ -514,7 +520,7 @@ suite("B2 public bucket command safety", () => {
 
   test("refreshes and warns when public bucket creation has unknown state", async () => {
     const { client, calls } = makeCreateBucketClient(async () => {
-      throw new Error("lost response");
+      throw new NetworkError("fetch failed");
     });
     const commandServices = makeCommandServices(client);
 
@@ -535,9 +541,31 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
   });
 
+  test("does not show unknown-state warning for definitive public create failures", async () => {
+    const { client, calls } = makeCreateBucketClient(async () => {
+      throw classifyError({ status: 403, code: "access_denied", message: "denied" });
+    });
+    const commandServices = makeCommandServices(client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["public-bucket", "public-bucket"],
+        quickPickValues: [publicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
+  });
+
   test("refreshes and warns when public visibility update has unknown state", async () => {
     const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
-      throw new Error("access denied");
+      throw new NetworkError("fetch failed");
     });
     const commandServices = makeCommandServices({} as B2Client);
 
@@ -556,6 +584,28 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
-    assert.match(ui.errors[0] ?? "", /Unexpected error/);
+    assert.match(ui.errors[0] ?? "", /Network connection to B2 failed/);
+  });
+
+  test("does not show unknown-state warning for definitive visibility update failures", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
+      throw classifyError({ status: 403, code: "access_denied", message: "denied" });
+    });
+    const commandServices = makeCommandServices({} as B2Client);
+
+    const ui = await withCommandUiStubs(
+      {
+        inputValues: ["photos-public"],
+        quickPickValues: [confirmPublicVisibilityPick],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
   });
 });

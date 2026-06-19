@@ -296,6 +296,14 @@ function isTransientServiceFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * Whether a mutation may have reached B2 even though the client did not get a
+ * reliable final response.
+ */
+export function isB2MutationStateAmbiguous(error: unknown): boolean {
+  return isNetworkFailure(error) || isTransientServiceFailure(error);
+}
+
 function retryAfterText(error: unknown): string {
   const retryAfter = getRetryAfter(error);
   if (retryAfter === undefined) {
