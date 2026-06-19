@@ -56,6 +56,29 @@ async function main() {
       sourceTestCount: 1,
     });
 
+    const tempConfigPath = path.join(tempRoot, "test-harness.config.mjs");
+    writeFile(
+      tempConfigPath,
+      [
+        `export const sourceTestRoot = ${JSON.stringify(harnessConfig.sourceTestRoot)};`,
+        `export const compiledTestRoot = ${JSON.stringify(harnessConfig.compiledTestRoot)};`,
+        "export const sourceTestFilesGlob = `${sourceTestRoot}/**/*.test.ts`;",
+        "export const compiledTestFilesGlob = `${compiledTestRoot}/**/*.test.js`;",
+        "export const mochaOptions = { failZero: true, forbidPending: true };",
+        "",
+      ].join("\n"),
+    );
+    const loadedConfigResult = await runDiscoveryCheck({
+      configPath: tempConfigPath,
+      repoRoot: tempRoot,
+      log: () => {},
+    });
+
+    assert.deepStrictEqual(loadedConfigResult, {
+      compiledTestCount: 1,
+      sourceTestCount: 1,
+    });
+
     const dotPrefixRoots = {
       compiledTestGlobs: [`${harnessConfig.compiledTestRoot}/..prefix/*.test.js`],
       compiledTestRoot: harnessConfig.compiledTestRoot,
@@ -80,6 +103,17 @@ async function main() {
       compiledTestCount: 1,
       sourceTestCount: 1,
     });
+
+    writeFile(path.join(tempRoot, harnessConfig.compiledTestRoot, "orphan.test.js"), "");
+    await assert.rejects(
+      () =>
+        runDiscoveryCheck({
+          harnessConfig: testRoots,
+          repoRoot: tempRoot,
+          log: () => {},
+        }),
+      /stale compiled test file/,
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

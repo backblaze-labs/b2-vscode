@@ -12,6 +12,7 @@ on:
       - "tsconfig*.json"
       - "webpack.config.js"
       - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
       - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
@@ -24,6 +25,7 @@ on:
       - "tsconfig*.json"
       - "webpack.config.js"
       - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
       - ".github/workflows/test.yml"
 
 concurrency:

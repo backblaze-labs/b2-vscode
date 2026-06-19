@@ -23,6 +23,10 @@ function normalizeGlobList(globs, label) {
 }
 
 function findGlobFiles(repoRoot, globs, suffix) {
+  if (typeof fs.globSync !== "function") {
+    throw new Error("Test discovery guard requires Node.js 22 or newer.");
+  }
+
   const files = new Set();
 
   for (const glob of globs) {
@@ -107,15 +111,17 @@ async function runDiscoveryCheck(options = {}) {
   }
 
   const expectedCompiledTestSet = new Set(expectedCompiledTests);
-  const duplicateCompiledTests = compiledTests.filter(
+  const staleCompiledTests = compiledTests.filter(
     (fileName) =>
       !expectedCompiledTestSet.has(
         relativeToRoot(repoRoot, harnessConfig.compiledTestRoot, fileName),
       ),
   );
 
-  if (duplicateCompiledTests.length > 0) {
-    log(`Ignoring stale compiled test file(s): ${duplicateCompiledTests.join(", ")}.`);
+  if (staleCompiledTests.length > 0) {
+    throw new Error(
+      `stale compiled test file(s) without source counterpart: ${staleCompiledTests.join(", ")}.`,
+    );
   }
 
   log(
