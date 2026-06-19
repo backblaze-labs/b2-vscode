@@ -275,8 +275,10 @@ function isMalformedResponse(error: unknown): boolean {
     code === "bad_json" ||
     error instanceof SyntaxError ||
     matchesErrorName(error, "SyntaxError") ||
-    message.includes("malformed") ||
+    message.includes("malformed json") ||
+    message.includes("malformed response") ||
     message.includes("invalid json") ||
+    message.includes("truncated") ||
     message.includes("unexpected token") ||
     message.includes("unexpected end of json") ||
     message.includes("could not parse")

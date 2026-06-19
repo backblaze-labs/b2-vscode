@@ -340,6 +340,8 @@ suite("B2 commands error handling", () => {
       true,
     );
     assert.strictEqual(isB2MutationStateAmbiguous(new SyntaxError("Unexpected end of JSON")), true);
+    assert.strictEqual(isB2MutationStateAmbiguous(new Error("truncated JSON response")), true);
+    assert.strictEqual(isB2MutationStateAmbiguous(new Error("malformed bucket name")), false);
     assert.strictEqual(
       isB2MutationStateAmbiguous(
         classifyError({ status: 403, code: "access_denied", message: "denied" }),
