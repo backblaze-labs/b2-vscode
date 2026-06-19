@@ -29,7 +29,7 @@ function expectInvalid(name, mutate) {
 
 function expectValid(name, mutate) {
   const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot);
-  mutate(auditPolicy, packageJson);
+  mutate(auditPolicy);
   validateAuditPolicy(auditPolicy, packageJson);
 }
 
