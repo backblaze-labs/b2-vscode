@@ -377,6 +377,8 @@ jobs:
           fi
           npm exec --no-install -- vsce verify-pat backblaze
 
+      # VS Code Marketplace does not support OIDC trusted publishing, so vsce requires VSCE_PAT.
+      # zizmor: ignore[use-trusted-publishing]
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_KEY }}
