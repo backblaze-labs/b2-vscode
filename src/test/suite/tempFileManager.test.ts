@@ -86,6 +86,47 @@ suite("TempFileManager", () => {
     }
   });
 
+  test("rejects symlinked parents introduced during directory creation", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const manager = new TempFileManager(tempRoot);
+    const symlinkPath = path.join(tempRoot, "bucket", "new", "link");
+    const outsideSubdir = path.join(outsideRoot, "sub");
+    const originalMkdir = fs.promises.mkdir;
+    const mutablePromises = fs.promises as unknown as { mkdir: typeof fs.promises.mkdir };
+    let symlinkInjected = false;
+
+    mutablePromises.mkdir = (async (...args: Parameters<typeof fs.promises.mkdir>) => {
+      const targetPath = path.resolve(String(args[0]));
+      if (!symlinkInjected && targetPath.startsWith(symlinkPath)) {
+        symlinkInjected = true;
+        fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalMkdir(...args);
+    }) as typeof fs.promises.mkdir;
+
+    try {
+      fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
+
+      await assert.rejects(
+        () =>
+          manager.saveFile(
+            "bucket",
+            path.join("new", "link", "sub", "escape.txt"),
+            Buffer.from("escape"),
+          ),
+        /B2 object path must stay within the temp cache/i,
+      );
+      assert.strictEqual(symlinkInjected, true);
+      assert.strictEqual(fs.existsSync(outsideSubdir), false);
+    } finally {
+      mutablePromises.mkdir = originalMkdir;
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   test("falls back instead of following a symlinked cache root", async () => {
     const tempParent = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-parent-"));
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
