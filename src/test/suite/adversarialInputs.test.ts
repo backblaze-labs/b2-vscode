@@ -130,11 +130,26 @@ function bucket(name = "bucket"): Bucket {
   } as unknown as Bucket;
 }
 
+function realPathForContainment(candidatePath: string): string {
+  const missingSegments: string[] = [];
+  let current = path.resolve(candidatePath);
+
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return path.resolve(candidatePath);
+    }
+    missingSegments.unshift(path.basename(current));
+    current = parent;
+  }
+
+  return path.join(fs.realpathSync.native(current), ...missingSegments);
+}
+
 function assertInside(parentPath: string, candidatePath: string): void {
-  assert.ok(
-    isPathInside(parentPath, candidatePath),
-    `${candidatePath} should remain under ${parentPath}`,
-  );
+  const parent = realPathForContainment(parentPath);
+  const candidate = realPathForContainment(candidatePath);
+  assert.ok(isPathInside(parent, candidate), `${candidatePath} should remain under ${parent}`);
 }
 
 function presignExtras(authorizationToken: string): ToolExtras {
@@ -427,6 +442,24 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("workspace containment returns the symlink-resolved local path", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
+    const realRoot = path.join(workspaceRoot, "real");
+    const linkPath = path.join(workspaceRoot, "link");
+
+    try {
+      await fs.promises.mkdir(realRoot);
+      await fs.promises.symlink(realRoot, linkPath, "dir");
+
+      assert.strictEqual(
+        resolveWorkspaceRelativePath(workspaceRoot, "link/file.txt"),
+        path.join(fs.realpathSync.native(realRoot), "file.txt"),
+      );
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("workspace control directories are rejected as tool local paths", async () => {
     const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
 
@@ -492,8 +525,12 @@ suite("Adversarial untrusted input fuzzing", () => {
 
   test("absolute local paths may target the extension temp root", () => {
     const allowedPath = path.join(os.tmpdir(), TEMP_DIR_NAME, "tool-output.bin");
+    const resolved = resolveToolLocalPath(allowedPath, "workspace required");
 
-    assert.strictEqual(resolveToolLocalPath(allowedPath, "workspace required"), allowedPath);
+    assert.strictEqual(
+      resolved,
+      path.join(fs.realpathSync.native(path.join(os.tmpdir(), TEMP_DIR_NAME)), "tool-output.bin"),
+    );
   });
 
   test("absolute local path resolution preserves non-containment errors", () => {
@@ -637,6 +674,33 @@ suite("Adversarial untrusted input fuzzing", () => {
       await assert.rejects(
         () => writeReadableStreamAtomically(targetPath, stream),
         /forced write failure/,
+      );
+      assert.strictEqual(cancelled, true);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("atomic stream writes cancel the reader on setup failure", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-cancel-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+    const originalOpen = fs.promises.open;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    try {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async () => {
+        throw new Error("forced open failure");
+      }) as typeof fs.promises.open;
+
+      await assert.rejects(
+        () => writeReadableStreamAtomically(targetPath, stream),
+        /forced open failure/,
       );
       assert.strictEqual(cancelled, true);
     } finally {

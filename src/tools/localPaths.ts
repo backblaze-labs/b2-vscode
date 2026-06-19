@@ -64,12 +64,13 @@ function currentWorkspaceRoot(): string | undefined {
 }
 
 function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: string): void {
-  if (!isPathInside(workspaceRoot, candidatePath)) {
+  const workspaceBase = fs.realpathSync.native(workspaceRoot);
+  if (!isPathInside(workspaceBase, candidatePath)) {
     return;
   }
 
   const segments = path
-    .relative(workspaceRoot, candidatePath)
+    .relative(workspaceBase, candidatePath)
     .split(path.sep)
     .filter(Boolean)
     .map((segment) => segment.toLowerCase());

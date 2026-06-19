@@ -261,7 +261,7 @@ export function resolvePathInsideReal(
     throw new PathContainmentError(parameterName, allowedDescription);
   }
 
-  return resolvedCandidate;
+  return effectiveCandidate;
 }
 
 function validatePrivateDirectoryStat(directoryPath: string, stat: fs.Stats): void {
@@ -458,15 +458,17 @@ export async function writeReadableStreamAtomically(
 ): Promise<number> {
   const overwrite = options.overwrite !== false;
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
-  await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
-  await sweepStaleAtomicTempFiles(path.dirname(destinationPath));
-  const tempPath = atomicTempPath(destinationPath);
-  const handle = await fs.promises.open(tempPath, "wx", 0o600);
+  let tempPath: string | undefined;
+  let handle: fs.promises.FileHandle | undefined;
   let size = 0;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const reader = stream.getReader();
 
   try {
-    reader = stream.getReader();
+    await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
+    await sweepStaleAtomicTempFiles(path.dirname(destinationPath));
+    tempPath = atomicTempPath(destinationPath);
+    handle = await fs.promises.open(tempPath, "wx", 0o600);
+
     for (;;) {
       const { done, value } = await readWithTimeout(reader, idleTimeoutMs, options.signal);
       if (done) {
@@ -478,22 +480,23 @@ export async function writeReadableStreamAtomically(
     }
 
     await handle.close();
+    handle = undefined;
     await publishTempFile(tempPath, destinationPath, overwrite);
     return size;
   } catch (error) {
-    if (reader) {
-      await reader.cancel(error).catch(() => undefined);
+    await reader.cancel(error).catch(() => undefined);
+    if (handle) {
+      await handle.close().catch(() => undefined);
     }
-    await handle.close().catch(() => undefined);
-    await fs.promises.rm(tempPath, { force: true });
+    if (tempPath) {
+      await fs.promises.rm(tempPath, { force: true });
+    }
     throw error;
   } finally {
-    if (reader) {
-      try {
-        reader.releaseLock();
-      } catch {
-        // Best-effort release after successful completion or cancellation.
-      }
+    try {
+      reader.releaseLock();
+    } catch {
+      // Best-effort release after successful completion or cancellation.
     }
   }
 }
