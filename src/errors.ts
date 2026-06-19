@@ -278,7 +278,9 @@ function isMalformedResponse(error: unknown): boolean {
     message.includes("malformed json") ||
     message.includes("malformed response") ||
     message.includes("invalid json") ||
-    message.includes("truncated") ||
+    message.includes("truncated json") ||
+    message.includes("truncated response") ||
+    message.includes("response truncated") ||
     message.includes("unexpected token") ||
     message.includes("unexpected end of json") ||
     message.includes("could not parse")
@@ -303,7 +305,15 @@ function isTransientServiceFailure(error: unknown): boolean {
  * confirm whether B2 completed the request.
  */
 export function isB2MutationStateAmbiguous(error: unknown): boolean {
-  return isNetworkFailure(error) || isTransientServiceFailure(error) || isMalformedResponse(error);
+  if (isNetworkFailure(error) || isTransientServiceFailure(error) || isMalformedResponse(error)) {
+    return true;
+  }
+
+  if (getB2Status(error) !== undefined) {
+    return false;
+  }
+
+  return true;
 }
 
 function retryAfterText(error: unknown): string {

@@ -46,6 +46,7 @@ import { TempFileManager } from "../../services/tempFileManager";
 import { isPathInsideOrEqual } from "../../services/pathSafety";
 import { humanSize } from "../../utils/humanSize";
 import type { B2Credentials } from "../../services/authService";
+import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
 const ATTACKER_API_URL = "https://attacker.example.com";
@@ -85,12 +86,6 @@ function createDirectorySymlink(target: string, linkPath: string): boolean {
   }
 }
 
-interface WarningMessageCall {
-  readonly message: string;
-  readonly options: vscode.MessageOptions | undefined;
-  readonly items: readonly string[];
-}
-
 function stubB2ApiUrlInspection(inspection: B2ApiUrlInspection): () => void {
   const mutableWorkspace = vscode.workspace as unknown as {
     getConfiguration: typeof vscode.workspace.getConfiguration;
@@ -128,37 +123,6 @@ function stubB2ApiUrlConfiguration(globalValue: unknown): () => void {
     defaultValue: DEFAULT_B2_API_URL,
     globalValue,
   });
-}
-
-function stubWarningMessage(
-  choice: string | undefined,
-  onCall?: (call: WarningMessageCall) => void,
-): () => void {
-  const mutableWindow = vscode.window as unknown as {
-    showWarningMessage: typeof vscode.window.showWarningMessage;
-  };
-  const originalShowWarningMessage = mutableWindow.showWarningMessage;
-
-  mutableWindow.showWarningMessage = ((
-    message: string,
-    optionsOrFirstItem?: vscode.MessageOptions | string,
-    ...restItems: string[]
-  ) => {
-    const hasOptions = typeof optionsOrFirstItem === "object" && optionsOrFirstItem !== null;
-    const options = hasOptions ? optionsOrFirstItem : undefined;
-    const items =
-      !hasOptions && optionsOrFirstItem !== undefined
-        ? [optionsOrFirstItem, ...restItems]
-        : restItems;
-
-    onCall?.({ message, options, items });
-
-    return Promise.resolve(choice);
-  }) as typeof vscode.window.showWarningMessage;
-
-  return () => {
-    mutableWindow.showWarningMessage = originalShowWarningMessage;
-  };
 }
 
 function stubWithProgress(tokenSource?: vscode.CancellationTokenSource): () => void {
