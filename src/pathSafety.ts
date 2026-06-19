@@ -49,6 +49,12 @@ class StreamIdleTimeoutError extends Error {
   }
 }
 
+function codedLocalError(message: string, code: string): NodeJS.ErrnoException {
+  const error = new Error(message) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
 export function contentHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, HASH_LENGTH);
 }
@@ -251,9 +257,7 @@ export function resolvePathInsideReal(
     existingAncestor = nearestExistingAncestor(resolvedCandidate);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENAMETOOLONG") {
-      const tooLongError = new Error(`${parameterName} is too long.`) as NodeJS.ErrnoException;
-      tooLongError.code = "ENAMETOOLONG";
-      throw tooLongError;
+      throw codedLocalError(`${parameterName} is too long.`, "ENAMETOOLONG");
     }
     throw error;
   }
@@ -270,7 +274,7 @@ export function resolvePathInsideReal(
 
 function validatePrivateDirectoryStat(directoryPath: string, stat: fs.Stats): void {
   if (!stat.isDirectory()) {
-    throw new Error(`${directoryPath} must be a directory.`);
+    throw codedLocalError(`${directoryPath} must be a directory.`, "ENOTDIR");
   }
   if (process.platform === "win32") {
     return;
@@ -278,7 +282,7 @@ function validatePrivateDirectoryStat(directoryPath: string, stat: fs.Stats): vo
 
   const getuid = process.getuid;
   if (typeof getuid === "function" && stat.uid !== getuid()) {
-    throw new Error(`${directoryPath} is not owned by the current user.`);
+    throw codedLocalError(`${directoryPath} is not owned by the current user.`, "EPERM");
   }
 }
 
@@ -380,7 +384,14 @@ async function publishTempFile(
     return;
   }
 
-  await fs.promises.link(tempPath, destinationPath);
+  try {
+    await fs.promises.link(tempPath, destinationPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw error;
+    }
+    await fs.promises.copyFile(tempPath, destinationPath, fs.constants.COPYFILE_EXCL);
+  }
   await fs.promises.unlink(tempPath);
 }
 

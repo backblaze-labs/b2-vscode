@@ -410,6 +410,31 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("private directory validation errors use safe local codes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-private-"));
+    const targetDir = path.join(outputRoot, "target");
+    const linkPath = path.join(outputRoot, "cache-link");
+
+    try {
+      await fs.promises.mkdir(targetDir);
+      await fs.promises.symlink(targetDir, linkPath, "dir");
+
+      await assert.rejects(
+        () => ensurePrivateDirectory(linkPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("must be a directory") &&
+          (error as NodeJS.ErrnoException).code === "ENOTDIR",
+      );
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("concurrent temp cache writes cannot expose a torn file", async () => {
     const manager = new TempFileManager();
     const first = Buffer.alloc(256 * 1024, "a");
@@ -643,6 +668,30 @@ suite("Adversarial untrusted input fuzzing", () => {
       );
       assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "old");
     } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("atomic non-overwrite writes fall back when hard links fail", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-copy-"));
+    const targetPath = path.join(outputRoot, "download.bin");
+    const originalLink = fs.promises.link;
+    let linkCalled = false;
+
+    try {
+      (fs.promises as unknown as { link: typeof fs.promises.link }).link = (async () => {
+        linkCalled = true;
+        const error = new Error("hard link unavailable") as NodeJS.ErrnoException;
+        error.code = "EXDEV";
+        throw error;
+      }) as typeof fs.promises.link;
+
+      await writeBufferAtomically(targetPath, Buffer.from("copied"), { overwrite: false });
+
+      assert.strictEqual(linkCalled, true);
+      assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "copied");
+    } finally {
+      (fs.promises as unknown as { link: typeof fs.promises.link }).link = originalLink;
       await fs.promises.rm(outputRoot, { recursive: true, force: true });
     }
   });
