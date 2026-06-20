@@ -149,7 +149,23 @@ async function withBucketMutationTimeout<T>(
   try {
     return await Promise.race([operationPromise, timeout]);
   } catch (error) {
-    if (!(error instanceof B2MutationTimeoutError) || postTimeoutSettleMs <= 0) {
+    const observeLateSettlement = () => {
+      void operationPromise.then(
+        () => {
+          log(`${description} completed after the client-side timeout`);
+        },
+        (lateError) => {
+          logError(`${description} failed after the client-side timeout`, lateError);
+        },
+      );
+    };
+
+    if (!(error instanceof B2MutationTimeoutError)) {
+      throw error;
+    }
+
+    if (postTimeoutSettleMs <= 0) {
+      observeLateSettlement();
       throw error;
     }
 
@@ -167,9 +183,7 @@ async function withBucketMutationTimeout<T>(
       return await Promise.race([operationPromise, settleTimeout]);
     } catch (settleError) {
       if (settleTimedOut) {
-        void operationPromise.catch((lateError) => {
-          logError(`${description} failed after the client-side timeout`, lateError);
-        });
+        observeLateSettlement();
       }
       throw settleError;
     } finally {
@@ -203,7 +217,6 @@ export interface CommandServices extends CreateBucketCommandServices {
   treeProvider: B2TreeProvider;
   tempFileManager: TempFileManager;
   context: vscode.ExtensionContext;
-  isAuthenticated: () => boolean;
   getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
 }
@@ -397,6 +410,7 @@ export async function changeBucketVisibilityCommand(
   const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
   const newLabel = bucketTypeLabel(newType);
   const currentLabel = bucketTypeLabel(currentType);
+  const publicStateCouldRemainUnknown = currentType === "allPublic" || newType === "allPublic";
   const revision = item.bucket.info.revision;
   if (typeof revision !== "number") {
     treeProvider.refresh();
@@ -454,7 +468,7 @@ export async function changeBucketVisibilityCommand(
     log(`Bucket "${item.bucketName}" changed to ${newType}.`);
     vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
   } catch (error) {
-    if (newType === "allPublic" && isPostRequestB2MutationStateAmbiguous(error)) {
+    if (publicStateCouldRemainUnknown && isPostRequestB2MutationStateAmbiguous(error)) {
       await warnUnknownPublicBucketState(services, "change", item.bucketName, error);
       showCommandError("B2: Could not confirm public bucket visibility change", error);
       return;

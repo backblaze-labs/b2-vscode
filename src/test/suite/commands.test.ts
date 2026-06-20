@@ -197,13 +197,45 @@ suite("B2 commands error handling", () => {
       true,
     );
     assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        name: "AbortError",
+        message: "The operation was aborted",
+      }),
+      true,
+    );
+    assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous({ code: "ECONNRESET", message: "socket hang up" }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "ECONNREFUSED",
+        message: "connect ECONNREFUSED",
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "EAI_AGAIN",
+        message: "getaddrinfo EAI_AGAIN",
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({ code: "EPIPE", message: "broken pipe" }),
       true,
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous({
         code: "UND_ERR_CONNECT_TIMEOUT",
         message: "connect timeout",
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "UND_ERR_HEADERS_TIMEOUT",
+        message: "Headers Timeout Error",
       }),
       true,
     );
@@ -598,7 +630,7 @@ suite("B2 public bucket command safety", () => {
   });
 
   test("refreshes and warns for no-status B2-looking public create failures", async () => {
-    for (const code of ["access_denied", "duplicate_bucket_name", "conflict"]) {
+    for (const code of ["access_denied", "duplicate_bucket_name", "conflict", "bad_request"]) {
       const { client, calls } = makeCreateBucketClient(async () => {
         throw Object.assign(new Error(`${code} without status`), { code });
       });
@@ -795,7 +827,7 @@ suite("B2 public bucket command safety", () => {
   });
 
   test("refreshes and warns for no-status B2-looking public visibility failures", async () => {
-    for (const code of ["access_denied", "duplicate_bucket_name", "conflict"]) {
+    for (const code of ["access_denied", "duplicate_bucket_name", "conflict", "bad_request"]) {
       const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
         throw Object.assign(new Error(`${code} without status`), { code });
       });
@@ -890,6 +922,58 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
     assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("refreshes and warns when public-to-private visibility update times out", async () => {
+    const { item, updates } = makeBucketTreeItem(
+      "photos-public",
+      "allPublic",
+      () => new Promise<UpdateBucketResult>(() => undefined),
+    );
+    const commandServices = makeCommandServices(
+      {},
+      {
+        bucketMutationTimeoutMs: 5,
+        bucketMutationPostTimeoutSettleMs: 0,
+      },
+    );
+
+    const ui = await withWindowUiStubs(
+      {
+        quickPickLabels: [CONFIRM_PRIVATE_VISIBILITY_LABEL],
+        warningValues: [undefined],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.warnings[0]?.message ?? "", /may already be public/);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("refreshes and warns when public-to-private update hits transport failure", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPublic", async () => {
+      throw Object.assign(new Error("Headers Timeout Error"), {
+        code: "UND_ERR_HEADERS_TIMEOUT",
+      });
+    });
+    const commandServices = makeCommandServices({});
+
+    const ui = await withWindowUiStubs(
+      {
+        quickPickLabels: [CONFIRM_PRIVATE_VISIBILITY_LABEL],
+        warningValues: [undefined],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.warnings[0]?.message ?? "", /may already be public/);
+    assert.match(ui.errors[0] ?? "", /Could not confirm public bucket visibility change/);
   });
 
   test("refreshes and warns when public visibility update fails ambiguously without keywords", async () => {

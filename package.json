@@ -442,7 +442,7 @@
             },
             "localPath": {
               "type": "string",
-              "description": "Optional local path to save the file. Defaults to the workspace root with the same file name."
+              "description": "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same file name. Existing files are not overwritten."
             }
           },
           "required": [
@@ -467,7 +467,7 @@
           "properties": {
             "localPath": {
               "type": "string",
-              "description": "Absolute or workspace-relative path to the local file to upload."
+              "description": "Workspace-relative path to the local file to upload. Absolute paths are rejected."
             },
             "bucket": {
               "type": "string",

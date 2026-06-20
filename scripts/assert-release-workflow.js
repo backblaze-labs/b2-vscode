@@ -12,6 +12,7 @@ const yaml = require("js-yaml");
 
 const repoRoot = path.join(__dirname, "..");
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
+const codeQualityWorkflowPath = path.join(repoRoot, ".github", "workflows", "code-quality.yml");
 const publisherPackagePath = path.join(
   repoRoot,
   ".github",
@@ -26,6 +27,7 @@ const publisherLockPath = path.join(
 );
 const workflowText = fs.readFileSync(workflowPath, "utf8");
 const workflow = yaml.load(workflowText);
+const codeQualityWorkflow = yaml.load(fs.readFileSync(codeQualityWorkflowPath, "utf8"));
 const jobs = workflow.jobs ?? {};
 const marketplaceSecretPattern =
   /(?:secrets\s*(?:\.\s*VSCE_KEY|\[\s*["']VSCE_KEY["']\s*\])|\bVSCE_(?:KEY|PAT)\b)/;
@@ -384,6 +386,44 @@ function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = workflo
   );
 }
 
+function eventPaths(workflowToCheck, eventName) {
+  const onConfig = workflowToCheck.on ?? {};
+  const eventConfig = onConfig[eventName];
+  return Array.isArray(eventConfig?.paths) ? eventConfig.paths : [];
+}
+
+function assertCodeQualityRunsReleaseGuard(workflowToCheck = codeQualityWorkflow) {
+  const qualityJob = workflowToCheck.jobs?.quality;
+  assert(qualityJob, "code-quality workflow is missing job: quality");
+  const steps = qualityJob.steps;
+  assert(Array.isArray(steps), "code-quality quality job must declare steps.");
+
+  const runCommands = steps
+    .map((step) => (typeof step.run === "string" ? normalizedCommand(step.run) : ""))
+    .filter(Boolean);
+  assert(
+    runCommands.some(
+      (run) =>
+        /\bnpm\s+run\s+check\b/.test(run) || /\bnpm\s+run\s+check:release-workflow\b/.test(run),
+    ),
+    "code-quality workflow must run npm run check or npm run check:release-workflow.",
+  );
+
+  for (const eventName of ["push", "pull_request"]) {
+    const paths = eventPaths(workflowToCheck, eventName);
+    for (const requiredPath of [
+      ".github/workflows/release.yml",
+      ".github/marketplace-publisher/**",
+      "scripts/assert-release-workflow.js",
+    ]) {
+      assert(
+        paths.includes(requiredPath),
+        `code-quality ${eventName} paths must include ${requiredPath}.`,
+      );
+    }
+  }
+}
+
 function main() {
   for (const jobName of [
     "verify-release-source",
@@ -411,6 +451,7 @@ function main() {
   assertPublishVerifiesAttestation();
   assertArtifactResolverUsage();
   assertPublishPreflightIgnoresLifecycleScripts();
+  assertCodeQualityRunsReleaseGuard();
 }
 
 if (require.main === module) {
@@ -429,6 +470,7 @@ module.exports = {
   assertMarketplacePublisherLockfile,
   assertPublishUsesIsolatedPublisher,
   assertPublishPreflightIgnoresLifecycleScripts,
+  assertCodeQualityRunsReleaseGuard,
   main,
   marketplaceSecretPattern,
 };

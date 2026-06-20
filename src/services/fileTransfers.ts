@@ -36,6 +36,7 @@ const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const STALE_CLEANUP_THROTTLE_MAX_ENTRIES = 256;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_MIN_AGE_MS = 24 * 60 * 60 * 1000;
@@ -326,6 +327,19 @@ function backupDestinationPath(directory: string, name: string): string | undefi
 
 function shouldRunThrottledCleanup(key: string): boolean {
   const now = Date.now();
+  for (const [trackedKey, lastRun] of lastCleanupByDirectory) {
+    if (now - lastRun >= STALE_CLEANUP_INTERVAL_MS * 2) {
+      lastCleanupByDirectory.delete(trackedKey);
+    }
+  }
+  while (lastCleanupByDirectory.size >= STALE_CLEANUP_THROTTLE_MAX_ENTRIES) {
+    const oldestKey = lastCleanupByDirectory.keys().next().value as string | undefined;
+    if (oldestKey === undefined) {
+      break;
+    }
+    lastCleanupByDirectory.delete(oldestKey);
+  }
+
   const previous = lastCleanupByDirectory.get(key);
   if (previous !== undefined && now - previous < STALE_CLEANUP_INTERVAL_MS) {
     return false;
@@ -827,34 +841,18 @@ async function cleanupOwnedUnfinishedUpload(
     "unfinishedCleanupMaxPages" | "unfinishedCleanupTimeoutMs"
   > = {},
 ): Promise<void> {
-  await cleanupMatchingUnfinishedUploads(bucket, remotePath, options, (file) => {
-    return (
-      file.fileName === remotePath &&
-      file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
-    );
-  });
-}
-
-async function cleanupStaleExtensionUnfinishedUploads(
-  bucket: UploadBucketHandle,
-  options: Pick<
-    UploadFileFromDiskOptions,
-    "unfinishedCleanupMaxPages" | "unfinishedCleanupMinAgeMs" | "unfinishedCleanupTimeoutMs"
-  > & {
-    readonly remotePath?: string;
-  } = {},
-): Promise<void> {
-  const minAgeMs = options.unfinishedCleanupMinAgeMs ?? UNFINISHED_UPLOAD_CLEANUP_MIN_AGE_MS;
-  const cutoff = Date.now() - minAgeMs;
-  await cleanupMatchingUnfinishedUploads(bucket, options.remotePath, options, (file) => {
-    const startedMs = Number(file.fileInfo?.[UPLOAD_STARTED_MS_INFO_KEY]);
-    return (
-      (options.remotePath === undefined || file.fileName === options.remotePath) &&
-      file.fileInfo?.[UPLOAD_OWNER_INFO_KEY] === "b2-vscode" &&
-      Number.isFinite(startedMs) &&
-      startedMs <= cutoff
-    );
-  });
+  await cleanupMatchingUnfinishedUploads(
+    bucket,
+    remotePath,
+    options,
+    "Owned unfinished upload",
+    (file) => {
+      return (
+        file.fileName === remotePath &&
+        file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
+      );
+    },
+  );
 }
 
 export async function cleanupStaleUnfinishedUploads(
@@ -866,7 +864,23 @@ export async function cleanupStaleUnfinishedUploads(
     readonly remotePath?: string;
   } = {},
 ): Promise<void> {
-  await cleanupStaleExtensionUnfinishedUploads(bucket, options);
+  const minAgeMs = options.unfinishedCleanupMinAgeMs ?? UNFINISHED_UPLOAD_CLEANUP_MIN_AGE_MS;
+  const cutoff = Date.now() - minAgeMs;
+  await cleanupMatchingUnfinishedUploads(
+    bucket,
+    options.remotePath,
+    options,
+    "Stale extension unfinished upload",
+    (file) => {
+      const startedMs = Number(file.fileInfo?.[UPLOAD_STARTED_MS_INFO_KEY]);
+      return (
+        (options.remotePath === undefined || file.fileName === options.remotePath) &&
+        file.fileInfo?.[UPLOAD_OWNER_INFO_KEY] === "b2-vscode" &&
+        Number.isFinite(startedMs) &&
+        startedMs <= cutoff
+      );
+    },
+  );
 }
 
 async function cleanupMatchingUnfinishedUploads(
@@ -876,6 +890,7 @@ async function cleanupMatchingUnfinishedUploads(
     UploadFileFromDiskOptions,
     "unfinishedCleanupMaxPages" | "unfinishedCleanupTimeoutMs"
   > = {},
+  description: string,
   shouldCancel: (file: UnfinishedLargeFile) => boolean,
 ): Promise<void> {
   if (!bucket.listUnfinishedLargeFiles || !bucket.cancelLargeFile) {
@@ -903,7 +918,7 @@ async function cleanupMatchingUnfinishedUploads(
         ...(startFileId !== undefined ? { startFileId } : {}),
       }),
       timeoutMs,
-      "Owned unfinished upload cleanup",
+      `${description} cleanup`,
     );
     pagesScanned += 1;
 
@@ -912,7 +927,7 @@ async function cleanupMatchingUnfinishedUploads(
         await withTimeout(
           bucket.cancelLargeFile(file.fileId),
           timeoutMs,
-          "Owned unfinished upload cancel",
+          `${description} cancel`,
         ).catch((error) => {
           logError(`Could not cancel unfinished upload ${file.fileId}`, error);
         });

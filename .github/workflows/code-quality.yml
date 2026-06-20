@@ -6,17 +6,25 @@ on:
     paths:
       - "src/**"
       - "package.json"
+      - "package-lock.json"
       - "tsconfig*.json"
       - "eslint.config.mjs"
+      - "scripts/assert-release-workflow.js"
       - ".github/workflows/code-quality.yml"
+      - ".github/workflows/release.yml"
+      - ".github/marketplace-publisher/**"
   pull_request:
     branches: [main]
     paths:
       - "src/**"
       - "package.json"
+      - "package-lock.json"
       - "tsconfig*.json"
       - "eslint.config.mjs"
+      - "scripts/assert-release-workflow.js"
       - ".github/workflows/code-quality.yml"
+      - ".github/workflows/release.yml"
+      - ".github/marketplace-publisher/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -42,13 +50,7 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Check formatting
-        run: npm run format:check
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npm run type-check
+      - name: Run quality checks
+        run: npm run check

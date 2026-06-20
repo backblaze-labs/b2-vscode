@@ -12,6 +12,7 @@ interface ReleaseWorkflowGuard {
   assertMarketplaceSecretOnlyInPublish(workflow: unknown): void;
   assertPublishUsesIsolatedPublisher(workflow: unknown): void;
   assertPublishPreflightIgnoresLifecycleScripts(workflow: unknown): void;
+  assertCodeQualityRunsReleaseGuard(workflow: unknown): void;
 }
 
 function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
@@ -171,6 +172,34 @@ suite("Release workflow guard assertions", () => {
           },
         }),
       /lifecycle scripts/i,
+    );
+  });
+
+  test("rejects code-quality workflows that omit the release guard", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    assert.throws(
+      () =>
+        guard.assertCodeQualityRunsReleaseGuard({
+          on: {
+            push: {
+              paths: ["src/**", ".github/workflows/code-quality.yml"],
+            },
+            pull_request: {
+              paths: ["src/**", ".github/workflows/code-quality.yml"],
+            },
+          },
+          jobs: {
+            quality: {
+              steps: [
+                { run: "npm run format:check" },
+                { run: "npm run lint" },
+                { run: "npm run type-check" },
+              ],
+            },
+          },
+        }),
+      /release-workflow/i,
     );
   });
 });
