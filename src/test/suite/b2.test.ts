@@ -54,7 +54,7 @@ import {
   type UploadBucketHandle,
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
-import { withTimeout } from "../../services/transferTimeout";
+import { createActivityAbortSignal, withTimeout } from "../../services/transferTimeout";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import {
   ensurePrivateDirectory,
@@ -3625,6 +3625,23 @@ suite("B2 transfer helpers", () => {
         (error) => error === thrown,
       );
       assert.strictEqual(linkedAbortListenerCount, 0);
+    }
+  });
+
+  test("does not report parent aborts as stall timeouts", async () => {
+    const parent = new AbortController();
+    const reason = new DOMException("Canceled by user", "AbortError");
+    const activity = createActivityAbortSignal(parent.signal, 10, "Parent cancellation");
+
+    try {
+      parent.abort(reason);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      assert.strictEqual(activity.signal.aborted, true);
+      assert.strictEqual(activity.signal.reason, reason);
+      assert.strictEqual(activity.timeoutError(), undefined);
+    } finally {
+      activity.dispose();
     }
   });
 

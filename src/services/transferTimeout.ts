@@ -37,12 +37,16 @@ export interface ActivityAbortSignal {
   dispose(): void;
 }
 
-function linkParentAbort(parentSignal: AbortSignal | undefined): {
+function linkParentAbort(
+  parentSignal: AbortSignal | undefined,
+  onAbort: () => void = () => undefined,
+): {
   readonly controller: AbortController;
   dispose(): void;
 } {
   const controller = new AbortController();
   const abortFromParent = () => {
+    onAbort();
     if (!controller.signal.aborted) {
       controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
     }
@@ -71,8 +75,6 @@ export function createActivityAbortSignal(
   stallTimeoutMs: number,
   description: string,
 ): ActivityAbortSignal {
-  const linkedAbort = linkParentAbort(parentSignal);
-  const { controller } = linkedAbort;
   let timer: NodeJS.Timeout | undefined;
   let timedOut: TransferStallTimeoutError | undefined;
 
@@ -82,6 +84,8 @@ export function createActivityAbortSignal(
       timer = undefined;
     }
   };
+  const linkedAbort = linkParentAbort(parentSignal, clearTimer);
+  const { controller } = linkedAbort;
 
   const markActivity = () => {
     clearTimer();
@@ -90,6 +94,10 @@ export function createActivityAbortSignal(
     }
 
     timer = setTimeout(() => {
+      if (controller.signal.aborted || parentSignal?.aborted) {
+        return;
+      }
+
       timedOut = new TransferStallTimeoutError(
         `${description} stalled for ${stallTimeoutMs} ms with no transfer activity.`,
       );
