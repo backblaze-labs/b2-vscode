@@ -101,7 +101,8 @@ suite("TempFileManager", () => {
       fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
       await assert.rejects(
-        () => manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
+        () =>
+          manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
         /Temp file cache directory must be a real directory/i,
       );
       assert.strictEqual(fs.existsSync(escapePath), false);
