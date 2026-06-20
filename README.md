@@ -88,6 +88,9 @@ npm run watch
 # Run all quality checks
 npm run check
 
+# Run VS Code extension tests
+npm test
+
 # Fix formatting and lint issues
 npm run check:fix
 
@@ -104,6 +107,11 @@ npm run vsix:install
 Release and Marketplace publishing ownership, preflight, secret scope, artifact
 provenance, and rollback are documented in
 [`docs/release.md`](docs/release.md).
+
+Expected test output includes the discovery guard and a nonzero Mocha summary, for example
+`Discovered N compiled test file(s) for M source test file(s).` followed by a nonzero
+`passing` count. If the compiled test files are missing, `npm test` exits nonzero instead of
+reporting `0 passing`; Mocha is also configured to fail zero-test and pending-test runs.
 
 ## Architecture
 

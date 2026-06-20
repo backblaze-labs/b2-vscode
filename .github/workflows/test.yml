@@ -6,24 +6,26 @@ on:
     paths:
       - "src/**"
       - "resources/icons/**"
-      - "scripts/build-icons.js"
+      - "scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig*.json"
       - "webpack.config.js"
       - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
       - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
     paths:
       - "src/**"
       - "resources/icons/**"
-      - "scripts/build-icons.js"
+      - "scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig*.json"
       - "webpack.config.js"
       - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
       - ".github/workflows/test.yml"
 
 concurrency:
@@ -53,5 +55,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run VS Code tests
+      - name: Run VS Code tests with discovery guard
         run: xvfb-run -a npm test
