@@ -39,8 +39,12 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
 }
 
 export function normalizePresignUrlPath(filePath: string): string {
-  if (!filePath || filePath.includes("\0")) {
+  if (!filePath) {
     throw new Error("path must name a single file and must not be empty.");
+  }
+
+  if (filePath.includes("\0")) {
+    throw new Error("path must not contain NUL bytes.");
   }
 
   if (filePath.endsWith("/")) {

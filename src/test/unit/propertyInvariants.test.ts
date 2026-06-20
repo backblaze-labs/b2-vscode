@@ -408,7 +408,11 @@ test("presign operation supports object names with empty path segments", async (
 });
 
 test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {
-  for (const filePath of ["", "reports/"]) {
+  for (const [filePath, expectedError] of [
+    ["", /empty/i],
+    ["reports/", /folder prefix/i],
+    ["bad\0path", /NUL/i],
+  ] as const) {
     let bucketLookupWasCalled = false;
     const extras = {
       getClient: () => ({
@@ -421,7 +425,7 @@ test("presign operation rejects empty and folder-prefix paths before B2 calls", 
 
     await assert.rejects(
       () => presignUrlOperation.execute({ bucket: "bucket", path: filePath }, extras),
-      /single file|folder prefix|empty/i,
+      expectedError,
     );
     assert.equal(bucketLookupWasCalled, false);
   }

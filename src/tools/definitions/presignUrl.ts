@@ -29,8 +29,7 @@ export const presignUrlTool: B2ToolDefinition = {
         type: "integer",
         minimum: 1,
         maximum: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-        description:
-          "URL validity duration in seconds. Default: 3600 (1 hour). Maximum: 604800 (7 days).",
+        description: `URL validity duration in seconds. Default: 3600 (1 hour). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (7 days).`,
       },
     },
     required: ["bucket", "path"],
