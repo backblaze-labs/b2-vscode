@@ -12,9 +12,10 @@
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
 - `presignUrl` now requires an integer expiration from 1 to 604800 seconds and
-  rejects empty paths, folder-like paths, and path prefixes that do not currently
-  match exactly one downloadable B2 file before issuing a prefix-based download
-  authorization.
+  rejects empty paths, folder-like paths, and paths that `listFiles` cannot
+  verify as an existing downloadable B2 file before issuing a prefix-based
+  download authorization. The token-bearing link is returned in the structured
+  `url` field rather than repeated in the human-readable message.
 
 ### Fixed
 
@@ -57,8 +58,8 @@
 - `downloadFile` now confines workspace-relative `localPath` destinations to the
   first open workspace folder, rejecting absolute paths, traversal attempts, and
   symlink escapes before writing downloaded object data. Downloads enforce a
-  512 MiB limit, write new files directly without overwrite, and use a temporary
-  file plus move only for overwrite-capable transfer paths.
+  512 MiB limit and stream into extension-owned temporary files before publishing
+  the final path without overwriting an existing workspace file.
 - `uploadFile` now confines workspace-relative `localPath` sources to the first
   open workspace folder, rejecting absolute paths, traversal attempts, and
   symlink escapes before reading and uploading local file content.

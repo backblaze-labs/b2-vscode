@@ -15,17 +15,20 @@ import { TEMP_DIR_NAME } from "../constants";
 import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
 import { log } from "../logger";
 import {
-  ensurePrivateDirectorySync,
+  ensureContainedDirectoryPath,
+  ensureRealDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
-  prepareSafeFileWritePath,
+  resolveContainedRelativePath,
 } from "./pathSafety";
-import { buildTempFilePath } from "../utils/localPaths";
-import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
 const STALE_TEMP_CACHE_CLEANUP_MAX_ENTRIES = 2_000;
+
+function defaultTempRoot(): string {
+  return path.join(os.tmpdir(), TEMP_DIR_NAME);
+}
 
 interface StaleTempCacheCleanupOptions {
   readonly tempRoot?: string;
@@ -122,10 +125,20 @@ async function removeStaleCacheEntries(
   }
 }
 
+async function removeExistingCachePath(filePath: string): Promise<void> {
+  try {
+    await fs.promises.rm(filePath, { recursive: true, force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 export async function cleanupStaleTempFileCache(
   options: StaleTempCacheCleanupOptions = {},
 ): Promise<void> {
-  const tempRoot = path.resolve(options.tempRoot ?? path.join(os.tmpdir(), TEMP_DIR_NAME));
+  const tempRoot = path.resolve(options.tempRoot ?? defaultTempRoot());
   assertManagedTempRoot(tempRoot);
   if (!(await pathExistsAsRealDirectory(tempRoot, "Temp file cache root"))) {
     return;
@@ -160,7 +173,7 @@ export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
 
-  constructor(tempRoot = createPrivateTempRoot(TEMP_DIR_NAME)) {
+  constructor(tempRoot = defaultTempRoot()) {
     this.tempRoot = path.resolve(tempRoot);
     this.ensureManagedTempRoot();
     this.ensurePrivateTempRoot();
@@ -171,8 +184,20 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
-    ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
+    ensureRealDirectorySync(this.tempRoot, "Temp file cache root", {
       recursive: true,
+      mode: 0o700,
+    });
+
+    try {
+      fs.chmodSync(this.tempRoot, 0o700);
+    } catch {
+      // Best effort: existing directories may not allow chmod on every platform.
+    }
+  }
+
+  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
+    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
       mode: 0o700,
     });
   }
@@ -206,8 +231,17 @@ export class TempFileManager implements vscode.Disposable {
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
-    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
-    await prepareSafeFileWritePath(this.tempRoot, localPath);
+    const key = `${bucketName}/${fileName}`;
+    const cachedPath = this.getCachedPath(bucketName, fileName);
+    if (cachedPath) {
+      await stream.cancel().catch(() => undefined);
+      return cachedPath;
+    }
+
+    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
+    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
+    await this.ensureCacheDirectoryPath(path.dirname(localPath));
+    await removeExistingCachePath(localPath);
 
     await downloadStreamToFile(stream, localPath, {
       ...options,
@@ -215,7 +249,6 @@ export class TempFileManager implements vscode.Disposable {
       allowedRootDirectory: this.tempRoot,
     });
 
-    const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
 
     return localPath;
@@ -225,7 +258,6 @@ export class TempFileManager implements vscode.Disposable {
    * Remove the entire temp directory.
    */
   cleanup(): void {
-    releasePrivateTempRoot(this.tempRoot);
     try {
       if (fs.existsSync(this.tempRoot)) {
         fs.rmSync(this.tempRoot, { recursive: true, force: true });

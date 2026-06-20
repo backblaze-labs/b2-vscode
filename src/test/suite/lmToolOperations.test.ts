@@ -13,10 +13,8 @@ import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
-import {
-  MAX_PRESIGN_URL_EXPIRATION_SECONDS,
-  presignUrlOperation,
-} from "../../tools/operations/presignUrl";
+import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import { MAX_PRESIGN_URL_EXPIRATION_SECONDS } from "../../tools/presignUrlConstants";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import type { ToolExtras } from "../../tools/types";
 import {
@@ -528,21 +526,21 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("presignUrl rejects broad prefixes that match multiple objects", async () => {
+  test("presignUrl accepts an exact file that has same-prefix siblings", async () => {
     const { bucket, extras } = await createUploadedToolFixture();
     await bucket.upload({
       fileName: `${REMOTE_PATH}.copy`,
       source: new BufferSource(Buffer.from("copy")),
     });
 
-    await assert.rejects(
-      () =>
-        presignUrlOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
-          extras,
-        ),
-      /path prefix must match exactly one downloadable B2 file/i,
+    const presigned = await presignUrlOperation.execute(
+      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+      extras,
     );
+
+    const url = new URL(presigned.url);
+    assert.ok(url.searchParams.get("Authorization"));
+    assert.match(presigned.message, /Other current objects with the same prefix/i);
   });
 
   test("presignUrl rejects hidden file markers", async () => {
@@ -573,7 +571,7 @@ suite("B2 LM tool operations with simulator", () => {
           { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
           { getClient: () => client as never },
         ),
-      /path prefix must match exactly one downloadable B2 file/i,
+      /path must exactly match one downloadable B2 file/i,
     );
     assert.strictEqual(authorizationRequested, false);
   });
@@ -609,7 +607,8 @@ suite("B2 LM tool operations with simulator", () => {
     assert.strictEqual(url.searchParams.get("Authorization"), "object-token");
   });
 
-  test("presignUrl proceeds for share-only keys that cannot list files", async () => {
+  test("presignUrl refuses share-only keys that cannot verify uniqueness", async () => {
+    let authorizationRequested = false;
     const bucket = {
       async listFileNames() {
         throw Object.assign(new Error("missing listFiles capability"), {
@@ -617,9 +616,8 @@ suite("B2 LM tool operations with simulator", () => {
           code: "missing_capability",
         });
       },
-      async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
-        assert.strictEqual(fileNamePrefix, REMOTE_PATH);
-        assert.strictEqual(validDurationInSeconds, 123);
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
         return { authorizationToken: "share-only-token" };
       },
     };
@@ -630,15 +628,47 @@ suite("B2 LM tool operations with simulator", () => {
       },
     };
 
-    const presigned = await presignUrlOperation.execute(
-      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
-      { getClient: () => client as never },
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+          { getClient: () => client as never },
+        ),
+      /requires the listFiles capability/i,
     );
+    assert.strictEqual(authorizationRequested, false);
+  });
 
-    const url = new URL(presigned.url);
-    assert.strictEqual(url.searchParams.get("Authorization"), "share-only-token");
-    assert.match(presigned.message, /cannot list files/i);
-    assert.match(presigned.message, /Objects created later with the same prefix/i);
+  test("presignUrl aborts on transient list authorization errors", async () => {
+    let authorizationRequested = false;
+    const bucket = {
+      async listFileNames() {
+        throw Object.assign(new Error("temporary forbidden"), {
+          status: 403,
+          code: "request_forbidden",
+        });
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "forbidden-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+          { getClient: () => client as never },
+        ),
+      /temporary forbidden/i,
+    );
+    assert.strictEqual(authorizationRequested, false);
   });
 
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {

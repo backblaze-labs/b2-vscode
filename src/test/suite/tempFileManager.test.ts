@@ -11,7 +11,7 @@ import {
   DEFAULT_DOWNLOAD_MAX_BYTES,
   DownloadSizeLimitError,
 } from "../../services/fileTransfers";
-import { TempFileManager } from "../../services/tempFileManager";
+import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import { createDirectorySymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
 import { tempDir } from "../../testSupport/tempDir";
@@ -61,25 +61,70 @@ suite("TempFileManager", () => {
     }
   });
 
-  test("does not let saveStream options overwrite existing cache files", async () => {
+  test("does not let saveStream options overwrite live cached files", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
+    let canceled = false;
 
     try {
       const localPath = await manager.saveStream("bucket", "cached.txt", streamFromText("old"));
+      const replacement = new ReadableStream<Uint8Array>({
+        cancel() {
+          canceled = true;
+        },
+      });
 
-      await assert.rejects(
-        () =>
-          manager.saveStream("bucket", "cached.txt", streamFromText("new"), {
-            overwrite: true,
-          }),
-        /EEXIST|file already exists/i,
-      );
+      const cachedPath = await manager.saveStream("bucket", "cached.txt", replacement, {
+        overwrite: true,
+      });
 
+      assert.strictEqual(cachedPath, localPath);
+      assert.strictEqual(canceled, true);
       assert.strictEqual(fs.readFileSync(localPath, "utf8"), "old");
       assert.strictEqual(manager.getCachedPath("bucket", "cached.txt"), localPath);
     } finally {
       manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("replaces stale on-disk cache files missing from memory", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+    const localPath = path.join(tempRoot, "bucket", "cached.txt");
+
+    try {
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, "stale");
+
+      const savedPath = await manager.saveStream("bucket", "cached.txt", streamFromText("fresh"));
+
+      assert.strictEqual(savedPath, localPath);
+      assert.strictEqual(fs.readFileSync(localPath, "utf8"), "fresh");
+      assert.strictEqual(manager.getCachedPath("bucket", "cached.txt"), localPath);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans stale temp cache files left by older sessions", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const staleFile = path.join(tempRoot, "bucket", "stale.txt");
+    const freshFile = path.join(tempRoot, "bucket", "fresh.txt");
+    const staleTime = new Date(Date.now() - 10_000);
+
+    try {
+      fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+      fs.writeFileSync(staleFile, "stale");
+      fs.writeFileSync(freshFile, "fresh");
+      fs.utimesSync(staleFile, staleTime, staleTime);
+
+      await cleanupStaleTempFileCache({ tempRoot, maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(staleFile), false);
+      assert.strictEqual(fs.readFileSync(freshFile, "utf8"), "fresh");
+    } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -219,7 +264,7 @@ suite("TempFileManager", () => {
     }
   });
 
-  test("rejects cache parent symlink swaps before the final move", async () => {
+  test("rejects cache parent symlink swaps before the final open", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
     const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const manager = new TempFileManager(tempRoot);
@@ -252,7 +297,7 @@ suite("TempFileManager", () => {
       await assert.rejects(
         () =>
           manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
-        /Destination directory.*real directory|outside the allowed root/i,
+        /Destination directory.*real directory|outside the allowed root|ENOENT|no such file/i,
       );
       assert.strictEqual(symlinkInjected, true);
       assert.strictEqual(fs.existsSync(outsideFile), false);
