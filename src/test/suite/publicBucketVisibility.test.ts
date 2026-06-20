@@ -6,6 +6,7 @@
 
 import * as assert from "assert";
 import {
+  bucketTypeLabel,
   buildPublicBucketTypedConfirmationValidationMessage,
   buildPublicBucketTypedConfirmationPrompt,
   buildPublicBucketUnknownStateWarningMessage,
@@ -27,6 +28,11 @@ suite("Public bucket visibility warnings", () => {
 
   test("requires confirmation when changing a private bucket to public", () => {
     assert.strictEqual(shouldConfirmPublicBucketVisibility("allPrivate", "allPublic"), true);
+  });
+
+  test("labels B2 bucket visibility consistently", () => {
+    assert.strictEqual(bucketTypeLabel("allPrivate"), "Private");
+    assert.strictEqual(bucketTypeLabel("allPublic"), "Public");
   });
 
   test("does not require confirmation when changing a public bucket to private", () => {
@@ -73,7 +79,16 @@ suite("Public bucket visibility warnings", () => {
     assert.ok(message.includes("public access"));
   });
 
-  test("unknown-state warning tells users the bucket may already be public", () => {
+  test("create unknown-state warning tells users the bucket may have been created", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage("create", "public-assets");
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("may have been created as public"));
+    assert.ok(message.includes("may not have been created at all"));
+    assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("change unknown-state warning tells users the bucket may already be public", () => {
     const message = buildPublicBucketUnknownStateWarningMessage("change", "public-assets");
 
     assert.ok(message.includes("public-assets"));

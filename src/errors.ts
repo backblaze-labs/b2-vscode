@@ -250,11 +250,15 @@ function isB2SsrfFailure(error: unknown): boolean {
 }
 
 function isNetworkFailure(error: unknown): boolean {
-  if (error instanceof NetworkError || matchesErrorName(error, "NetworkError")) {
+  if (
+    error instanceof NetworkError ||
+    matchesErrorName(error, "NetworkError") ||
+    matchesErrorName(error, "AbortError")
+  ) {
     return true;
   }
 
-  if (getB2Status(error) !== undefined) {
+  if (getB2Status(error) !== undefined || getB2Code(error) !== undefined) {
     return false;
   }
 
@@ -264,16 +268,17 @@ function isNetworkFailure(error: unknown): boolean {
     message.includes("fetch failed") ||
     message.includes("econnreset") ||
     message.includes("enotfound") ||
-    message.includes("etimedout") ||
-    message.includes("aborted")
+    message.includes("etimedout")
   );
 }
 
 function isMalformedResponse(error: unknown): boolean {
-  const code = getB2Code(error);
+  if (getB2Status(error) !== undefined || getB2Code(error) !== undefined) {
+    return false;
+  }
+
   const message = getErrorMessage(error).toLowerCase();
   return (
-    code === "bad_json" ||
     error instanceof SyntaxError ||
     matchesErrorName(error, "SyntaxError") ||
     message.includes("malformed json") ||
@@ -315,24 +320,20 @@ function isMutationTimeout(error: unknown): boolean {
   );
 }
 
-function isPostRetryMutationCollision(error: unknown): boolean {
-  const code = getB2Code(error);
-  const status = getB2Status(error);
-  return code === "duplicate_bucket_name" || code === "conflict" || status === 409;
-}
-
 /**
  * Classifies public bucket mutations after a create/update request has been
- * attempted. It intentionally stays narrow: local/preflight failures without
- * transport uncertainty should not trigger public exposure warnings.
+ * attempted. Transport/timeout/transient-service checks intentionally run
+ * before definitive status handling because those outcomes can be uncertain
+ * even when an HTTP status is present, such as 408 or 5xx. After known
+ * definitive local and B2 failures are excluded, unclassified errors with no B2
+ * status or code default to ambiguous as a public-exposure fail-safe.
  */
 export function isPostRequestB2MutationStateAmbiguous(error: unknown): boolean {
   if (
     isMutationTimeout(error) ||
     isNetworkFailure(error) ||
     isTransientServiceFailure(error) ||
-    isMalformedResponse(error) ||
-    isPostRetryMutationCollision(error)
+    isMalformedResponse(error)
   ) {
     return true;
   }
@@ -431,7 +432,7 @@ export function formatB2UserMessage(error: unknown): string {
     return `B2 rate limit reached. The SDK retries retryable failures with backoff before surfacing this error.${retryAfterText(error)}`;
   }
 
-  if (isMalformedResponse(error)) {
+  if (getB2Code(error) === "bad_json" || isMalformedResponse(error)) {
     return "B2 returned a response the extension could not parse. Retry the operation and check the Backblaze B2 output log if it persists.";
   }
 

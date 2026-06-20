@@ -166,12 +166,12 @@ suite("B2 commands error handling", () => {
     assert.deepStrictEqual(ui.errors, []);
   });
 
-  test("treats malformed mutation responses as ambiguous", () => {
+  test("classifies public mutation failures by certainty", () => {
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(
         classifyError({ status: 400, code: "bad_json", message: "" }),
       ),
-      true,
+      false,
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(new SyntaxError("Unexpected end of JSON")),
@@ -186,10 +186,23 @@ suite("B2 commands error handling", () => {
       true,
     );
     assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "bad_request",
+        message: "bucket name contains aborted",
+      }),
+      false,
+    );
+    assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(
         classifyError({ status: 400, code: "duplicate_bucket_name", message: "duplicate" }),
       ),
-      true,
+      false,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous(
+        classifyError({ status: 409, code: "conflict", message: "revision mismatch" }),
+      ),
+      false,
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(
@@ -507,7 +520,7 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
-    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.match(ui.warnings[1]?.message ?? "", /may have been created as public/);
     assert.strictEqual(ui.warnings[1]?.options?.modal, true);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Could not confirm public bucket creation/);
@@ -531,13 +544,13 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
-    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.match(ui.warnings[1]?.message ?? "", /may have been created as public/);
     assert.strictEqual(ui.warnings[1]?.options?.modal, true);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Could not confirm public bucket creation/);
   });
 
-  test("refreshes and warns when public bucket creation gets malformed response", async () => {
+  test("does not warn when public bucket creation gets definitive bad_json status", async () => {
     const { client, calls } = makeCreateBucketClient(async () => {
       throw classifyError({ status: 400, code: "bad_json", message: "malformed body" });
     });
@@ -553,15 +566,13 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.strictEqual(calls.length, 1);
-    assert.strictEqual(commandServices.refreshCount(), 1);
-    assert.strictEqual(ui.warnings.length, 2);
-    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
-    assert.strictEqual(ui.warnings[1]?.options?.modal, true);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.errors.length, 1);
-    assert.match(ui.errors[0] ?? "", /could not parse/);
+    assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
   });
 
-  test("refreshes and warns when public bucket creation gets duplicate-name status", async () => {
+  test("does not warn when public bucket creation gets duplicate-name status", async () => {
     const { client, calls } = makeCreateBucketClient(async () => {
       throw classifyError({
         status: 400,
@@ -581,11 +592,10 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.strictEqual(calls.length, 1);
-    assert.strictEqual(commandServices.refreshCount(), 1);
-    assert.strictEqual(ui.warnings.length, 2);
-    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.errors.length, 1);
-    assert.match(ui.errors[0] ?? "", /Could not confirm public bucket creation/);
+    assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
   });
 
   test("refreshes and warns when public bucket creation times out", async () => {
@@ -656,7 +666,7 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /Network connection to B2 failed/);
   });
 
-  test("uses bucket revision as an optimistic lock for public visibility updates", async () => {
+  test("uses bucket revision as an optimistic lock and refreshes on conflict", async () => {
     const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
       throw classifyError({ status: 409, code: "conflict", message: "revision mismatch" });
     });
@@ -673,9 +683,8 @@ suite("B2 public bucket command safety", () => {
 
     assert.deepStrictEqual(updates, [{ bucketType: "allPublic", ifRevisionIs: 7 }]);
     assert.strictEqual(commandServices.refreshCount(), 1);
-    assert.strictEqual(ui.warnings.length, 2);
-    assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
-    assert.match(ui.errors[0] ?? "", /Could not confirm public bucket visibility change/);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
   });
 
   test("refreshes and warns when public visibility update times out", async () => {

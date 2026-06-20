@@ -22,6 +22,10 @@ export function isPublicBucketConfirmationAccepted(choice: string | undefined): 
   return choice === CONFIRM_PUBLIC_BUCKET_LABEL;
 }
 
+export function bucketTypeLabel(type: BucketType): string {
+  return type === "allPublic" ? "Public" : "Private";
+}
+
 export function isPublicBucketNameConfirmationAccepted(
   bucketName: string,
   typedBucketName: string | undefined,
@@ -56,10 +60,9 @@ export function buildPublicBucketUnknownStateWarningMessage(
   action: PublicBucketVisibilityAction,
   bucketName: string,
 ): string {
-  const actionText =
-    action === "create"
-      ? `creating public bucket "${bucketName}"`
-      : `changing bucket "${bucketName}" to public`;
+  if (action === "create") {
+    return `B2 could not confirm whether creating public bucket "${bucketName}" completed. A bucket tree refresh was requested because the bucket may have been created as public, or may not have been created at all. Files may be accessible without authorization if the public create succeeded.`;
+  }
 
-  return `B2 could not confirm whether ${actionText} completed. A bucket tree refresh was requested because the bucket may already be public and files may be accessible without authorization.`;
+  return `B2 could not confirm whether changing bucket "${bucketName}" to public completed. A bucket tree refresh was requested because the bucket may already be public and files may be accessible without authorization.`;
 }

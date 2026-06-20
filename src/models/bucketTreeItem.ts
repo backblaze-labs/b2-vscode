@@ -5,7 +5,7 @@
  */
 
 import * as vscode from "vscode";
-import type { Bucket } from "@backblaze-labs/b2-sdk";
+import type { Bucket, BucketType } from "@backblaze-labs/b2-sdk";
 
 /**
  * A collapsible tree item representing a single B2 bucket.
@@ -16,7 +16,7 @@ export class BucketTreeItem extends vscode.TreeItem {
   readonly bucket: Bucket;
   readonly bucketId: string;
   readonly bucketName: string;
-  readonly bucketType: string;
+  readonly bucketType: BucketType;
 
   constructor(bucket: Bucket) {
     super(bucket.name, vscode.TreeItemCollapsibleState.Collapsed);

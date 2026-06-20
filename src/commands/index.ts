@@ -10,7 +10,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client, Bucket } from "@backblaze-labs/b2-sdk";
+import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
@@ -34,6 +34,7 @@ import {
 } from "../errors";
 import { log, logError } from "../logger";
 import {
+  bucketTypeLabel,
   buildPublicBucketUnknownStateWarningMessage,
   buildPublicBucketTypedConfirmationValidationMessage,
   buildPublicBucketWarningMessage,
@@ -59,7 +60,7 @@ export interface BucketCreationClient {
 
 export interface BucketVisibilityItem {
   readonly bucketName: string;
-  readonly bucketType: string;
+  readonly bucketType: BucketType;
   readonly bucket: {
     readonly info: {
       readonly revision: number;
@@ -277,12 +278,12 @@ export async function createBucketCommand(services: CreateBucketCommandServices)
   const visibility = await vscode.window.showQuickPick(
     [
       {
-        label: "Private",
+        label: bucketTypeLabel("allPrivate"),
         description: "Files require authorization to access",
         value: "allPrivate" as const,
       },
       {
-        label: "Public",
+        label: bucketTypeLabel("allPublic"),
         description: "Files can be accessed without authorization",
         value: "allPublic" as const,
       },
@@ -353,12 +354,12 @@ export async function changeBucketVisibilityCommand(
     return;
   }
 
-  // The tree item is the state the user saw and confirmed. A post-mutation
-  // refresh, including on uncertain public failures, reconciles any out-of-band changes.
+  // The tree item is the state the user saw and confirmed. Its revision is sent
+  // with the update so an out-of-band bucket change fails instead of being overwritten.
   const currentType = item.bucketType;
   const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
-  const newLabel = newType === "allPublic" ? "Public" : "Private";
-  const currentLabel = currentType === "allPublic" ? "Public" : "Private";
+  const newLabel = bucketTypeLabel(newType);
+  const currentLabel = bucketTypeLabel(currentType);
 
   const confirm = await vscode.window.showQuickPick(
     [
