@@ -250,6 +250,10 @@ function assertTrustedNpmInstallConfig(label, command) {
 
 function assertAuditStep(label, step, options = {}) {
   const command = normalizedRun(step);
+  assert(
+    !command.includes("${{"),
+    `${label} must not use GitHub template expansion inside run commands.`,
+  );
   assertIgnoreScriptsEnv(label, step);
   assertRetryOnlyInfrastructureFailures(label, step);
   assert(
@@ -483,9 +487,23 @@ function assertTestWorkflow(testWorkflow) {
   const fixtureIndex = stepIndex(testJob, "audit gate fixture", (_step, run) =>
     run.includes("scripts/assert-audit-gate-fixture.js"),
   );
-  const auditIndex = stepIndex(testJob, "dependency advisory audit", (_step, run) =>
-    run.includes("scripts/run-npm-audit.js"),
+  const auditSteps = testJob.steps
+    .map((step, index) => ({ index, step, run: normalizedRun(step) }))
+    .filter(({ run }) => run.includes("scripts/run-npm-audit.js"));
+  assert(
+    auditSteps.length === 2,
+    "test workflow must have separate PR and trusted-branch audit steps.",
   );
+  const prAudit = auditSteps.find(({ step }) =>
+    String(step.if ?? "").includes("github.event_name == 'pull_request_target'"),
+  );
+  const trustedBranchAudit = auditSteps.find(({ step }) =>
+    String(step.if ?? "").includes("github.event_name != 'pull_request_target'"),
+  );
+  assert(prAudit, "test workflow must keep a pull_request_target audit step.");
+  assert(trustedBranchAudit, "test workflow must keep a non-pull_request_target audit step.");
+  const prAuditIndex = prAudit.index;
+  const trustedBranchAuditIndex = trustedBranchAudit.index;
   const signatureIndex = stepIndex(testJob, "dependency signature verification", (_step, run) =>
     /\bnpm\s+audit\s+signatures\b/.test(run),
   );
@@ -515,19 +533,28 @@ function assertTestWorkflow(testWorkflow) {
     ["install", installIndex],
     ["audit policy guard", policyIndex],
     ["audit gate fixture", fixtureIndex],
-    ["dependency advisory audit", auditIndex],
+    ["PR dependency advisory audit", prAuditIndex],
+    ["trusted-branch dependency advisory audit", trustedBranchAuditIndex],
     ["dependency signature verification", signatureIndex],
     ["audit workflow guard", workflowGuardIndex],
   ]) {
     assert(index < testRunIndex, `${label} must run before VS Code tests.`);
   }
   assert(
-    installIndex < auditIndex,
-    "test workflow must install source dependencies before auditing.",
+    installIndex < trustedBranchAuditIndex,
+    "test workflow must install source dependencies before trusted-branch auditing.",
   );
-  assert(policyIndex < auditIndex, "test workflow must validate policy before auditing.");
-  assert(fixtureIndex < auditIndex, "test workflow must run fixture before auditing.");
-  assert(auditIndex < signatureIndex, "test workflow must audit before verifying signatures.");
+  for (const [label, index] of [
+    ["PR audit", prAuditIndex],
+    ["trusted-branch audit", trustedBranchAuditIndex],
+  ]) {
+    assert(policyIndex < index, `test workflow must validate policy before ${label}.`);
+    assert(fixtureIndex < index, `test workflow must run fixture before ${label}.`);
+  }
+  assert(
+    trustedBranchAuditIndex < signatureIndex,
+    "test workflow must audit before verifying signatures.",
+  );
   assert(
     signatureIndex < workflowGuardIndex,
     "workflow guard imports installed YAML tooling and must run after signature verification.",
@@ -544,10 +571,10 @@ function assertTestWorkflow(testWorkflow) {
     "test source install step must be skipped for pull_request_target.",
   );
   assertFixtureStep("test audit fixture step", stepByIndex(testJob, fixtureIndex));
-  assertAuditStep("test audit step", stepByIndex(testJob, auditIndex), {
-    trustedBaseRef: true,
+  assertAuditStep("test PR audit step", stepByIndex(testJob, prAuditIndex), {
     trustedPolicy: true,
   });
+  assertAuditStep("test trusted-branch audit step", stepByIndex(testJob, trustedBranchAuditIndex));
   assertSignatureStep("test signature step", stepByIndex(testJob, signatureIndex), {
     trusted: true,
     skipsPrTarget: true,
@@ -556,7 +583,8 @@ function assertTestWorkflow(testWorkflow) {
     ["test trusted guard install step", trustedInstallIndex],
     ["test ignore-scripts guard step", lifecycleIndex],
     ["test audit fixture step", fixtureIndex],
-    ["test audit step", auditIndex],
+    ["test PR audit step", prAuditIndex],
+    ["test trusted-branch audit step", trustedBranchAuditIndex],
     ["test workflow guard step", workflowGuardIndex],
   ]) {
     assertRunsInTrustedSource(label, stepByIndex(testJob, index));
@@ -738,6 +766,15 @@ function assertBuildExtensionWorkflow(buildWorkflow) {
     String(postPrCommentJob.if ?? "").includes("github.event_name == 'pull_request'") &&
       String(postPrCommentJob.if ?? "").includes("!github.event.pull_request.head.repo.fork"),
     "build-extension PR comment job must run only on same-repository pull_request events.",
+  );
+  const stickyCommentIndex = stepIndex(
+    postPrCommentJob,
+    "build-extension sticky PR comment",
+    (step) => String(step.uses ?? "").startsWith("marocchino/sticky-pull-request-comment@"),
+  );
+  assert(
+    stepByIndex(postPrCommentJob, stickyCommentIndex)["continue-on-error"] === true,
+    "build-extension sticky PR comment must be non-blocking.",
   );
 }
 

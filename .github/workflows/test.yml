@@ -23,7 +23,7 @@ on:
       - ".github/dependabot.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/test.yml"
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.
     branches: [main]
 
 concurrency:
@@ -133,7 +133,8 @@ jobs:
         working-directory: trusted-source
         run: bash scripts/retry.sh node scripts/assert-audit-gate-fixture.js
 
-      - name: Audit dependency advisories
+      - name: Audit dependency advisories from PR metadata
+        if: github.event_name == 'pull_request_target'
         timeout-minutes: 10
         env:
           RETRY_EXIT_CODES: "2"
@@ -142,12 +143,16 @@ jobs:
         # Inline this instead of the package script because package.json is
         # PR-mutable; trusted-source stays pinned to the protected base branch
         # for pull_request_target runs.
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc" --trusted-base-ref "${{ github.event.pull_request.base.ref }}"
-          else
-            bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc"
-          fi
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"
+
+      - name: Audit dependency advisories
+        if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: trusted-source
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc"
 
       - name: Verify dependency signatures
         if: github.event_name != 'pull_request_target'
