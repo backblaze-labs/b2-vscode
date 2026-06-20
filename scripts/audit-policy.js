@@ -4,7 +4,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const { parse, printParseErrorCode } = require("jsonc-parser");
 
 const AUDIT_POLICY_FILE = "audit-policy.jsonc";
 const AUDIT_COMMAND = "node scripts/run-npm-audit.js";
@@ -24,20 +23,28 @@ function assert(condition, message) {
 }
 
 function parseJsonc(text, sourceName = AUDIT_POLICY_FILE) {
-  const errors = [];
-  const parsed = parse(text, errors, {
-    allowTrailingComma: true,
-    disallowComments: false,
-  });
-
-  if (errors.length > 0) {
-    const details = errors
-      .map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`)
-      .join(", ");
-    throw new Error(`${sourceName} is invalid JSONC: ${details}`);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${sourceName} must be strict JSON: ${message}`);
   }
+}
 
-  return parsed;
+function utcDateOnly(date) {
+  const result = new Date(date);
+  result.setUTCHours(0, 0, 0, 0);
+  return result;
+}
+
+function formatDateOnly(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addUtcDays(date, days) {
+  const result = utcDateOnly(date);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
 }
 
 function parseDateOnly(value, fieldName) {
@@ -45,17 +52,14 @@ function parseDateOnly(value, fieldName) {
 
   const date = new Date(`${value}T00:00:00Z`);
   assert(
-    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value,
+    !Number.isNaN(date.getTime()) && formatDateOnly(date) === value,
     `${fieldName} must be a valid calendar date.`,
   );
   return date;
 }
 
 function dateOnlyDaysFromNow(days) {
-  const date = new Date();
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+  return formatDateOnly(addUtcDays(new Date(), days));
 }
 
 function validateAcceptedAdvisory(entry, index, today = new Date()) {
@@ -90,11 +94,9 @@ function validateAcceptedAdvisory(entry, index, today = new Date()) {
     `acceptedAdvisories[${index}].reviewBy must be a YYYY-MM-DD string.`,
   );
 
-  const todayUtc = new Date(today);
-  todayUtc.setUTCHours(0, 0, 0, 0);
+  const todayUtc = utcDateOnly(today);
   const reviewBy = parseDateOnly(entry.reviewBy, `acceptedAdvisories[${index}].reviewBy`);
-  const latestReviewBy = new Date(todayUtc);
-  latestReviewBy.setUTCDate(todayUtc.getUTCDate() + MAX_ACCEPTANCE_DAYS);
+  const latestReviewBy = addUtcDays(todayUtc, MAX_ACCEPTANCE_DAYS);
 
   assert(reviewBy >= todayUtc, `acceptedAdvisories[${index}].reviewBy must not be expired.`);
   assert(
@@ -137,6 +139,7 @@ function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
   );
 
   assert(packageJson.scripts?.["audit:ci"] === AUDIT_COMMAND, "audit:ci script drifted.");
+  assert(packageJson.scripts?.["audit:release"] === AUDIT_COMMAND, "audit:release script drifted.");
   assert(
     packageJson.devDependencies?.["audit-ci"] === undefined,
     "audit-ci must not be reintroduced as a devDependency.",
@@ -154,7 +157,15 @@ function loadCurrentPolicy(repoRoot, policyPath) {
 }
 
 function severityMeetsLevel(severity, auditLevel) {
-  return SEVERITY_RANK[severity] >= SEVERITY_RANK[auditLevel];
+  const auditRank = SEVERITY_RANK[auditLevel];
+  assert(auditRank !== undefined, `unsupported audit level: ${auditLevel}.`);
+
+  const severityRank = SEVERITY_RANK[String(severity ?? "").toLowerCase()];
+  if (severityRank === undefined) {
+    return true;
+  }
+
+  return severityRank >= auditRank;
 }
 
 function advisoryIdFromUrl(url) {
@@ -173,7 +184,7 @@ function collectAuditFindings(report, auditLevel) {
         continue;
       }
 
-      const severity = via.severity || vulnerability.severity;
+      const severity = String(via.severity || vulnerability.severity || "unknown").toLowerCase();
       if (!severityMeetsLevel(severity, auditLevel)) {
         continue;
       }
@@ -206,7 +217,8 @@ function isAcceptedFinding(finding, acceptedAdvisories) {
     const pathsMatch =
       entry.paths === undefined ||
       entry.paths.length === 0 ||
-      finding.paths.every((findingPath) => entry.paths.includes(findingPath));
+      (finding.paths.length > 0 &&
+        finding.paths.every((findingPath) => entry.paths.includes(findingPath)));
 
     return entry.id.toLowerCase() === finding.id.toLowerCase() && packageMatches && pathsMatch;
   });

@@ -68,6 +68,27 @@ function parseAuditReport(stdout, stderr, status) {
   }
 }
 
+function npmAuditScopeArgs(auditPolicy) {
+  return auditPolicy.includeDev ? ["--include=dev"] : ["--omit=dev"];
+}
+
+function sanitizedNpmEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    const normalized = key.toLowerCase();
+    if (
+      normalized === "npm_config_omit" ||
+      normalized === "npm_config_include" ||
+      normalized === "npm_config_only" ||
+      normalized === "npm_config_production"
+    ) {
+      delete env[key];
+    }
+  }
+  env.npm_config_ignore_scripts = "true";
+  return env;
+}
+
 try {
   const args = parseArgs(process.argv.slice(2));
   const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot, args.policy);
@@ -75,11 +96,16 @@ try {
 
   const result = spawnSync(
     npmCommand,
-    ["audit", "--json", `--audit-level=${auditPolicy.auditLevel}`],
+    [
+      "audit",
+      "--json",
+      `--audit-level=${auditPolicy.auditLevel}`,
+      ...npmAuditScopeArgs(auditPolicy),
+    ],
     {
       cwd: args.directory,
       encoding: "utf8",
-      env: { ...process.env, npm_config_ignore_scripts: "true" },
+      env: sanitizedNpmEnv(),
       maxBuffer: AUDIT_MAX_BUFFER_BYTES,
     },
   );

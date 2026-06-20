@@ -9,9 +9,6 @@ on:
       - "src/**"
       - "resources/icons/**"
       - "scripts/**"
-      - "scripts/audit-policy.js"
-      - "scripts/run-npm-audit.js"
-      - "scripts/npm-command.js"
       - "audit-policy.jsonc"
       - "package.json"
       - "package-lock.json"
@@ -21,30 +18,12 @@ on:
       - "webpack.config.js"
       - ".vscode-test.mjs"
       - "test-harness.config.mjs"
+      - ".github/CODEOWNERS"
       - ".github/dependabot.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "resources/icons/**"
-      - "scripts/**"
-      - "scripts/audit-policy.js"
-      - "scripts/run-npm-audit.js"
-      - "scripts/npm-command.js"
-      - "audit-policy.jsonc"
-      - "package.json"
-      - "package-lock.json"
-      - "README.md"
-      - "SECURITY.md"
-      - "tsconfig*.json"
-      - "webpack.config.js"
-      - ".vscode-test.mjs"
-      - "test-harness.config.mjs"
-      - ".github/dependabot.yml"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/test.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -71,11 +50,6 @@ jobs:
           node-version: "22"
           cache: npm
 
-      # Step names/order in this job are asserted by
-      # scripts/assert-audit-workflow.js; update that guard if they change.
-      - name: Assert audit workflow guardrails
-        run: node scripts/assert-audit-workflow.js
-
       - name: Assert lifecycle scripts stay disabled
         run: node scripts/assert-ignore-scripts-install.js
 
@@ -92,11 +66,12 @@ jobs:
         timeout-minutes: 10
         env:
           npm_config_ignore_scripts: "true"
-        run: bash scripts/retry.sh node scripts/assert-audit-gate-fixture.js
+        run: node scripts/assert-audit-gate-fixture.js
 
       - name: Audit dependency advisories
         timeout-minutes: 10
         env:
+          RETRY_EXIT_CODES: "2"
           npm_config_ignore_scripts: "true"
         # Inline this instead of the package script because package.json is
         # PR-mutable; assert-audit-policy.js keeps the local script in sync.
@@ -105,6 +80,9 @@ jobs:
       - name: Verify dependency signatures
         timeout-minutes: 10
         run: bash scripts/retry.sh npm audit signatures
+
+      - name: Assert audit workflow guardrails
+        run: node scripts/assert-audit-workflow.js
 
       - name: Run VS Code tests with discovery guard
         timeout-minutes: 20

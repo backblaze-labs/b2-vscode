@@ -11,6 +11,11 @@ on:
         required: false
         default: false
         type: boolean
+      dependency_gate_break_glass:
+        description: "Emergency override reason for skipping advisory and signature gates during a workflow_dispatch hotfix."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -65,8 +70,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      # Step names/order in this job are asserted by
-      # scripts/assert-audit-workflow.js; update that guard if they change.
       - name: Install dependencies without lifecycle scripts
         timeout-minutes: 10
         # Keep this lifecycle-disabled. If a future dependency needs a build
@@ -77,14 +80,28 @@ jobs:
         run: node scripts/assert-audit-policy.js
 
       - name: Audit dependency advisories
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dependency_gate_break_glass == '' }}
         timeout-minutes: 10
         env:
+          RETRY_EXIT_CODES: "2"
           npm_config_ignore_scripts: "true"
         run: bash scripts/retry.sh node scripts/run-npm-audit.js
 
       - name: Verify dependency signatures
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dependency_gate_break_glass == '' }}
         timeout-minutes: 10
         run: bash scripts/retry.sh npm audit signatures
+
+      - name: Record dependency gate break-glass
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
+        env:
+          DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
+        run: |
+          if [ -z "$DEPENDENCY_GATE_BREAK_GLASS" ]; then
+            echo "dependency_gate_break_glass requires an emergency reason."
+            exit 1
+          fi
+          echo "::warning title=Dependency gate break-glass::${DEPENDENCY_GATE_BREAK_GLASS}"
 
       - name: Run quality checks
         run: npm run check
@@ -133,11 +150,30 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies without lifecycle scripts
+      - name: Install dependencies
         run: bash scripts/retry.sh npm ci --ignore-scripts
 
-      - name: Run npm audit
-        run: npm run audit:release
+      - name: Assert audit policy guardrails
+        run: node scripts/assert-audit-policy.js
+
+      - name: Audit dependency advisories
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dependency_gate_break_glass == '' }}
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js
+
+      - name: Record dependency gate break-glass
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
+        env:
+          DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
+        run: |
+          if [ -z "$DEPENDENCY_GATE_BREAK_GLASS" ]; then
+            echo "dependency_gate_break_glass requires an emergency reason."
+            exit 1
+          fi
+          echo "::warning title=Dependency gate break-glass::${DEPENDENCY_GATE_BREAK_GLASS}"
 
   sast:
     name: CodeQL SAST
@@ -165,7 +201,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies without lifecycle scripts
+      - name: Install dependencies
         run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Build extension for analysis
@@ -276,7 +312,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies without lifecycle scripts
+      - name: Install dependencies
         run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Download VSIX artifact
@@ -374,7 +410,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies without lifecycle scripts
+      - name: Install dependencies
         run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Download VSIX artifact

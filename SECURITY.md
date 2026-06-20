@@ -9,9 +9,11 @@ workflow runs the same advisory gate before building and packaging the VSIX.
 
 The required test check and the release workflow install dependencies with
 `npm ci --ignore-scripts`, so package lifecycle scripts cannot run before the
-advisory gate evaluates the lockfile on those paths. Other repository workflows
-may still use plain `npm ci`; the ignore-scripts guarantee is scoped to the
-required audit/test path and release path.
+advisory gate evaluates the lockfile on those paths. Every release workflow
+install uses the same lifecycle-disabled retry helper before build, smoke,
+preflight, publish, or release steps. Other repository workflows may still use
+plain `npm ci`; the ignore-scripts guarantee is scoped to the required
+audit/test path and release workflow.
 
 The gate fails on moderate, high, or critical advisories because tooling
 dependencies participate in building, packaging, and testing the VSIX.
@@ -31,12 +33,20 @@ merge cannot wait.
 ## Accepted Advisories And Break-Glass
 
 `audit-policy.jsonc` contains the machine-readable `acceptedAdvisories` list.
+The file intentionally uses strict JSON syntax despite the `.jsonc` extension so
+the security gate can parse it with built-in `JSON.parse` before dependency
+signature verification.
 Each entry must include a GHSA advisory id, package name, owner, reason, and
 `reviewBy` date. The policy guard rejects malformed entries, expired entries,
 entries more than 30 days out, lowered thresholds, skipped dev dependencies, and
 unknown policy keys. Both the required test check and the release workflow honor
 this list, so a tracked no-fix advisory can unblock merges and releases without
 turning off the audit gate.
+
+Changes to the policy file, audit helpers, and audit workflows are listed in
+`.github/CODEOWNERS`; branch protection must require CODEOWNER review so a PR
+cannot introduce a vulnerable dependency and approve its own accepted-advisory
+entry.
 
 For emergency or unrelated changes blocked by a new moderate-or-higher advisory
 without an available fix:
@@ -49,15 +59,23 @@ without an available fix:
    branch-protection break-glass only if the emergency cannot wait.
 4. Remove, replace, or upgrade the affected dependency before the review date.
 
+For an emergency release blocked by a new advisory, expired acceptance, or npm
+registry/advisory outage, maintainers can run the release workflow manually with
+`dependency_gate_break_glass` set to a non-empty reason. The workflow records the
+reason as an Actions warning and skips the dependency advisory and signature
+gates only for that `workflow_dispatch` run; normal tag and dry-run releases keep
+the gate enabled.
+
 The audit gate depends on npm registry and advisory API availability. The retry
 helper retries transient failures, and infrastructure failures are reported as
 `npm audit infrastructure error` so they are distinguishable from dependency
 advisories. The scheduled weekly audit is an early signal only; maintainers must
 still monitor failed scheduled runs in GitHub Actions.
 
-The guard scripts protect against accidental or trusted-contributor drift in the
-policy and workflows. They are not a substitute for human review of untrusted
-fork PRs, because forked changes can modify scripts in the checked-out tree.
+The guard scripts and CODEOWNERS rules protect against accidental or
+trusted-contributor drift in the policy and workflows. They are not a substitute
+for repository settings that require maintainer approval before running
+workflows from untrusted forks.
 
 If a future dependency legitimately requires a postinstall build step, do not
 replace `npm ci --ignore-scripts` with plain `npm ci`. Add a targeted,

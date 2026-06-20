@@ -5,7 +5,9 @@
  */
 
 const path = require("path");
+const fs = require("fs");
 const {
+  collectAuditFindings,
   dateOnlyDaysFromNow,
   isAcceptedFinding,
   loadCurrentPolicy,
@@ -62,9 +64,66 @@ function assertAcceptedPathScope() {
     throw new Error("accepted advisory paths must cover every affected finding path.");
   }
 
+  const emptyPathFinding = { ...finding, paths: [] };
+  if (isAcceptedFinding(emptyPathFinding, [partialAcceptance])) {
+    throw new Error("path-scoped accepted advisories must not match findings with no paths.");
+  }
+
   const fullAcceptance = acceptedAdvisory({ paths: finding.paths });
   if (!isAcceptedFinding(finding, [fullAcceptance])) {
     throw new Error("accepted advisory paths should match when every finding path is listed.");
+  }
+}
+
+function assertUnknownSeverityBlocks() {
+  const findings = collectAuditFindings(
+    {
+      vulnerabilities: {
+        "example-package": {
+          name: "example-package",
+          via: [
+            {
+              source: 12345,
+              name: "example-package",
+              dependency: "example-package",
+              title: "Fixture advisory with missing severity",
+            },
+          ],
+          nodes: ["node_modules/example-package"],
+        },
+      },
+    },
+    "moderate",
+  );
+
+  if (findings.length !== 1 || findings[0].severity !== "unknown") {
+    throw new Error("advisories with missing severity must be collected as blocking findings.");
+  }
+}
+
+function assertCodeOwnerProtection() {
+  const codeownersPath = path.join(repoRoot, ".github", "CODEOWNERS");
+  const codeowners = fs.readFileSync(codeownersPath, "utf8");
+  const protectedPaths = new Set(
+    codeowners
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => line.split(/\s+/))
+      .filter((parts) => parts.length >= 2 && parts.some((part) => part.startsWith("@")))
+      .map(([pattern]) => pattern),
+  );
+
+  for (const requiredPath of [
+    "/audit-policy.jsonc",
+    "/scripts/audit-policy.js",
+    "/scripts/run-npm-audit.js",
+    "/scripts/assert-audit-policy.js",
+    "/scripts/assert-audit-workflow.js",
+  ]) {
+    if (!protectedPaths.has(requiredPath)) {
+      throw new Error(`CODEOWNERS must require review for ${requiredPath}.`);
+    }
   }
 }
 
@@ -72,6 +131,8 @@ try {
   const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot);
   validateAuditPolicy(auditPolicy, packageJson);
   assertAcceptedPathScope();
+  assertUnknownSeverityBlocks();
+  assertCodeOwnerProtection();
 
   // Validator self-checks: these do not inspect repository state, they prove
   // the guard rejects known policy bypasses before CI trusts it.
@@ -104,6 +165,9 @@ try {
   });
   expectInvalid("neutered audit script", (_auditPolicy, packageJson) => {
     packageJson.scripts["audit:ci"] = 'node -e "process.exit(0)"';
+  });
+  expectInvalid("raw release audit script", (_auditPolicy, packageJson) => {
+    packageJson.scripts["audit:release"] = "npm audit --omit=dev --audit-level=moderate";
   });
   expectInvalid("reintroduced audit-ci dependency", (_auditPolicy, packageJson) => {
     packageJson.devDependencies["audit-ci"] = "7.1.0";

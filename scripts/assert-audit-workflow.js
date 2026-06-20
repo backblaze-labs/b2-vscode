@@ -6,6 +6,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const yaml = require("js-yaml");
 
 const repoRoot = path.join(__dirname, "..");
 
@@ -21,37 +22,113 @@ function assert(condition, message) {
 }
 
 function readWorkflow(relativePath) {
-  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  const text = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  return { text, workflow: yaml.load(text) };
 }
 
-function getStep(workflow, name) {
-  const marker = `- name: ${name}`;
-  const start = workflow.indexOf(marker);
-  assert(start !== -1, `missing workflow step: ${name}.`);
-
-  const rest = workflow.slice(start + marker.length);
-  const nextStep = rest.search(/\n\s+- name: /);
-  return nextStep === -1
-    ? workflow.slice(start)
-    : workflow.slice(start, start + marker.length + nextStep);
+function workflowOn(workflow) {
+  return workflow.on ?? workflow["on"] ?? {};
 }
 
-function hasTokens(block, tokens) {
-  const normalized = block.replace(/\s+/g, " ");
-  return tokens.every((token) => normalized.includes(token));
+function eventConfig(workflow, eventName) {
+  const on = workflowOn(workflow);
+  if (Array.isArray(on)) {
+    return on.includes(eventName) ? {} : undefined;
+  }
+  if (typeof on === "string") {
+    return on === eventName ? {} : undefined;
+  }
+  return on[eventName];
+}
+
+function workflowHasEvent(workflow, eventName) {
+  return eventConfig(workflow, eventName) !== undefined;
+}
+
+function pathPatterns(workflow, eventName) {
+  const config = eventConfig(workflow, eventName);
+  const paths = config?.paths ?? [];
+  return Array.isArray(paths) ? paths : [paths];
+}
+
+function patternCoversPath(pattern, targetPath) {
+  if (pattern === targetPath) {
+    return true;
+  }
+  if (pattern.endsWith("/**")) {
+    return targetPath.startsWith(pattern.slice(0, -2));
+  }
+  return false;
+}
+
+function assertPathFilterCovers(workflow, eventName, targetPath) {
+  const paths = pathPatterns(workflow, eventName);
+  assert(
+    paths.some((pattern) => patternCoversPath(String(pattern), targetPath)),
+    `${eventName} path filters must include ${targetPath} or a covering glob.`,
+  );
+}
+
+function assertNoPullRequestPaths(workflow) {
+  const config = eventConfig(workflow, "pull_request");
+  assert(config !== undefined, "test workflow must run on pull_request.");
+  assert(
+    config.paths === undefined && config["paths-ignore"] === undefined,
+    "pull_request must not use path filters because the required check must report on every PR.",
+  );
+}
+
+function job(workflow, jobName) {
+  const selected = workflow.jobs?.[jobName];
+  assert(selected, `missing workflow job: ${jobName}.`);
+  assert(Array.isArray(selected.steps), `${jobName} must declare steps.`);
+  return selected;
+}
+
+function normalizedRun(step) {
+  return typeof step.run === "string" ? step.run.replace(/\s+/g, " ").trim() : "";
+}
+
+function stepIndex(jobConfig, label, predicate) {
+  const index = jobConfig.steps.findIndex((step) => predicate(step, normalizedRun(step)));
+  assert(index !== -1, `missing workflow step for ${label}.`);
+  return index;
+}
+
+function stepByIndex(jobConfig, index) {
+  return jobConfig.steps[index];
+}
+
+function hasTokens(command, tokens) {
+  return tokens.every((token) => command.includes(token));
 }
 
 function assertIgnoreScriptsEnv(label, step) {
   assert(
-    /npm_config_ignore_scripts\s*:\s*["']?true["']?/.test(step),
+    step.env?.npm_config_ignore_scripts === "true" || step.env?.npm_config_ignore_scripts === true,
     `${label} must set npm_config_ignore_scripts: "true".`,
   );
 }
 
+function assertRetryOnlyInfrastructureFailures(label, step) {
+  assert(
+    step.env?.RETRY_EXIT_CODES === "2" || step.env?.RETRY_EXIT_CODES === 2,
+    `${label} must retry only npm audit infrastructure failures.`,
+  );
+}
+
+function allRunSteps(workflow) {
+  return Object.entries(workflow.jobs ?? {}).flatMap(([jobName, jobConfig]) =>
+    (jobConfig.steps ?? [])
+      .map((step) => ({ jobName, step, run: normalizedRun(step) }))
+      .filter(({ run }) => run),
+  );
+}
+
 function assertNoPlainNpmCi(workflow, workflowName) {
-  const offenders = workflow
-    .split("\n")
-    .filter((line) => line.includes("npm ci") && !line.includes("--ignore-scripts"));
+  const offenders = allRunSteps(workflow).filter(
+    ({ run }) => /\bnpm\s+ci\b/.test(run) && !run.includes("--ignore-scripts"),
+  );
 
   assert(
     offenders.length === 0,
@@ -59,109 +136,168 @@ function assertNoPlainNpmCi(workflow, workflowName) {
   );
 }
 
-const testWorkflow = readWorkflow(".github/workflows/test.yml");
-const releaseWorkflow = readWorkflow(".github/workflows/release.yml");
-const testRunIndex = testWorkflow.indexOf("- name: Run VS Code tests");
-const testFixtureIndex = testWorkflow.indexOf("- name: Assert audit gate fails closed");
-const testAuditIndex = testWorkflow.indexOf("- name: Audit dependency advisories");
-const testSignatureIndex = testWorkflow.indexOf("- name: Verify dependency signatures");
-const releaseBuildIndex = releaseWorkflow.indexOf("- name: Build extension");
-const releaseAuditIndex = releaseWorkflow.indexOf("- name: Audit dependency advisories");
-const releaseSignatureIndex = releaseWorkflow.indexOf("- name: Verify dependency signatures");
-const readmePathFilterCount = (testWorkflow.match(/- "README\.md"/g) || []).length;
-const policyPathFilterCount = (testWorkflow.match(/- "audit-policy\.jsonc"/g) || []).length;
-const policyHelperPathFilterCount = (testWorkflow.match(/- "scripts\/audit-policy\.js"/g) || [])
-  .length;
-const auditScriptPathFilterCount = (testWorkflow.match(/- "scripts\/run-npm-audit\.js"/g) || [])
-  .length;
-const npmCommandPathFilterCount = (testWorkflow.match(/- "scripts\/npm-command\.js"/g) || [])
-  .length;
-
-assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
-assert(
-  readmePathFilterCount >= 2,
-  "test workflow push and pull_request path filters must include README.md.",
-);
-assert(
-  policyPathFilterCount >= 2,
-  "test workflow push and pull_request path filters must include audit-policy.jsonc.",
-);
-assert(
-  policyHelperPathFilterCount >= 2,
-  "test workflow push and pull_request path filters must include scripts/audit-policy.js.",
-);
-assert(
-  auditScriptPathFilterCount >= 2,
-  "test workflow push and pull_request path filters must include scripts/run-npm-audit.js.",
-);
-assert(
-  npmCommandPathFilterCount >= 2,
-  "test workflow push and pull_request path filters must include scripts/npm-command.js.",
-);
-assert(!testWorkflow.includes("audit-ci"), "test workflow must not execute audit-ci.");
-assert(!releaseWorkflow.includes("audit-ci"), "release workflow must not execute audit-ci.");
-assert(!testWorkflow.includes("npm run audit:ci"), "CI must not call the PR-mutable audit script.");
-assert(testRunIndex !== -1, "test workflow must still run VS Code tests.");
-for (const [label, index] of [
-  ["audit gate fixture", testFixtureIndex],
-  ["dependency advisory audit", testAuditIndex],
-  ["dependency signature verification", testSignatureIndex],
-]) {
-  assert(index !== -1 && index < testRunIndex, `${label} must run before VS Code tests.`);
+function assertNoAuditCi(workflow, workflowName) {
+  const offenders = allRunSteps(workflow).filter(({ run }) => /\baudit-ci\b/.test(run));
+  assert(offenders.length === 0, `${workflowName} must not execute audit-ci.`);
 }
-assert(releaseBuildIndex !== -1, "release workflow must still build the extension.");
-assert(
-  releaseAuditIndex !== -1 && releaseAuditIndex < releaseBuildIndex,
-  "release workflow must audit dependencies before building.",
-);
-assert(
-  releaseSignatureIndex !== -1 && releaseSignatureIndex < releaseBuildIndex,
-  "release workflow must verify dependency signatures before building.",
-);
-assertNoPlainNpmCi(testWorkflow, "test workflow");
-assertNoPlainNpmCi(releaseWorkflow, "release workflow");
 
-const testInstallStep = getStep(testWorkflow, "Install dependencies without lifecycle scripts");
-const testAuditStep = getStep(testWorkflow, "Audit dependency advisories");
-const testSignatureStep = getStep(testWorkflow, "Verify dependency signatures");
-const releaseInstallStep = getStep(
-  releaseWorkflow,
-  "Install dependencies without lifecycle scripts",
-);
-const releaseAuditStep = getStep(releaseWorkflow, "Audit dependency advisories");
-const releaseSignatureStep = getStep(releaseWorkflow, "Verify dependency signatures");
+function assertNoMutableAuditScript(workflow) {
+  const offenders = allRunSteps(workflow).filter(({ run }) => run.includes("npm run audit:ci"));
+  assert(offenders.length === 0, "CI must not call the PR-mutable audit script.");
+}
 
-// CI deliberately inlines the audit command instead of `npm run audit:ci`
-// because package.json is part of the PR-mutable checkout.
-for (const [label, step] of [
-  ["test audit step", testAuditStep],
-  ["release audit step", releaseAuditStep],
-]) {
+function assertAuditStep(label, step) {
+  const command = normalizedRun(step);
   assertIgnoreScriptsEnv(label, step);
+  assertRetryOnlyInfrastructureFailures(label, step);
   assert(
-    hasTokens(step, ["bash scripts/retry.sh", "node", "scripts/run-npm-audit.js"]),
+    hasTokens(command, ["bash scripts/retry.sh", "node", "scripts/run-npm-audit.js"]),
     `${label} must run the npm audit gate through the retry helper.`,
   );
 }
 
-for (const [label, step] of [
-  ["test install step", testInstallStep],
-  ["release install step", releaseInstallStep],
-]) {
+function assertInstallStep(label, step) {
   assert(
-    hasTokens(step, ["bash scripts/retry.sh", "npm", "ci", "--ignore-scripts"]),
+    hasTokens(normalizedRun(step), ["bash scripts/retry.sh", "npm", "ci", "--ignore-scripts"]),
     `${label} must install with lifecycle scripts disabled through the retry helper.`,
   );
 }
 
-for (const [label, step] of [
-  ["test signature step", testSignatureStep],
-  ["release signature step", releaseSignatureStep],
-]) {
+function assertSignatureStep(label, step) {
   assert(
-    hasTokens(step, ["bash scripts/retry.sh", "npm", "audit", "signatures"]),
+    hasTokens(normalizedRun(step), ["bash scripts/retry.sh", "npm", "audit", "signatures"]),
     `${label} must verify dependency signatures through the retry helper.`,
   );
 }
+
+function assertTestWorkflow(testWorkflow) {
+  assert(
+    workflowHasEvent(testWorkflow, "schedule"),
+    "test workflow must include a scheduled audit run.",
+  );
+  assert(workflowHasEvent(testWorkflow, "push"), "test workflow must run on push.");
+  assertNoPullRequestPaths(testWorkflow);
+
+  for (const targetPath of [
+    "README.md",
+    "SECURITY.md",
+    "audit-policy.jsonc",
+    "scripts/audit-policy.js",
+    "scripts/run-npm-audit.js",
+    "scripts/npm-command.js",
+  ]) {
+    assertPathFilterCovers(testWorkflow, "push", targetPath);
+  }
+
+  const testJob = job(testWorkflow, "test");
+  const installIndex = stepIndex(testJob, "test install", (_step, run) => /\bnpm\s+ci\b/.test(run));
+  const policyIndex = stepIndex(testJob, "audit policy guard", (_step, run) =>
+    run.includes("scripts/assert-audit-policy.js"),
+  );
+  const fixtureIndex = stepIndex(testJob, "audit gate fixture", (_step, run) =>
+    run.includes("scripts/assert-audit-gate-fixture.js"),
+  );
+  const auditIndex = stepIndex(testJob, "dependency advisory audit", (_step, run) =>
+    run.includes("scripts/run-npm-audit.js"),
+  );
+  const signatureIndex = stepIndex(testJob, "dependency signature verification", (_step, run) =>
+    /\bnpm\s+audit\s+signatures\b/.test(run),
+  );
+  const workflowGuardIndex = stepIndex(testJob, "audit workflow guard", (_step, run) =>
+    run.includes("scripts/assert-audit-workflow.js"),
+  );
+  const testRunIndex = stepIndex(testJob, "VS Code tests", (_step, run) =>
+    /\bnpm\s+test\b/.test(run),
+  );
+
+  for (const [label, index] of [
+    ["install", installIndex],
+    ["audit policy guard", policyIndex],
+    ["audit gate fixture", fixtureIndex],
+    ["dependency advisory audit", auditIndex],
+    ["dependency signature verification", signatureIndex],
+    ["audit workflow guard", workflowGuardIndex],
+  ]) {
+    assert(index < testRunIndex, `${label} must run before VS Code tests.`);
+  }
+  assert(installIndex < auditIndex, "test workflow must install before auditing.");
+  assert(auditIndex < signatureIndex, "test workflow must audit before verifying signatures.");
+  assert(
+    signatureIndex < workflowGuardIndex,
+    "workflow guard imports installed YAML tooling and must run after signature verification.",
+  );
+
+  assertInstallStep("test install step", stepByIndex(testJob, installIndex));
+  assertAuditStep("test audit step", stepByIndex(testJob, auditIndex));
+  assertSignatureStep("test signature step", stepByIndex(testJob, signatureIndex));
+}
+
+function assertReleaseWorkflow(releaseWorkflow) {
+  const qualityJob = job(releaseWorkflow, "quality");
+  const auditJob = job(releaseWorkflow, "audit");
+  const buildJob = job(releaseWorkflow, "build");
+  const buildNeeds = Array.isArray(buildJob.needs) ? buildJob.needs : [buildJob.needs];
+  assert(buildNeeds.includes("quality"), "build must depend on the quality audit gate.");
+  assert(buildNeeds.includes("audit"), "build must depend on the dependency audit job.");
+
+  const qualityInstallIndex = stepIndex(qualityJob, "release quality install", (_step, run) =>
+    /\bnpm\s+ci\b/.test(run),
+  );
+  const qualityAuditIndex = stepIndex(qualityJob, "release quality audit", (_step, run) =>
+    run.includes("scripts/run-npm-audit.js"),
+  );
+  const qualitySignatureIndex = stepIndex(qualityJob, "release quality signatures", (_step, run) =>
+    /\bnpm\s+audit\s+signatures\b/.test(run),
+  );
+  const qualityCheckIndex = stepIndex(qualityJob, "release quality checks", (_step, run) =>
+    run.includes("npm run check"),
+  );
+
+  assert(qualityInstallIndex < qualityAuditIndex, "release quality must install before auditing.");
+  assert(
+    qualityAuditIndex < qualitySignatureIndex,
+    "release quality must audit before verifying signatures.",
+  );
+  assert(
+    qualitySignatureIndex < qualityCheckIndex,
+    "release quality must verify signatures before running package scripts.",
+  );
+
+  assertInstallStep("release quality install step", stepByIndex(qualityJob, qualityInstallIndex));
+  assertAuditStep("release quality audit step", stepByIndex(qualityJob, qualityAuditIndex));
+  assertSignatureStep(
+    "release quality signature step",
+    stepByIndex(qualityJob, qualitySignatureIndex),
+  );
+
+  const auditInstallIndex = stepIndex(auditJob, "release audit install", (_step, run) =>
+    /\bnpm\s+ci\b/.test(run),
+  );
+  const auditGateIndex = stepIndex(auditJob, "release audit gate", (_step, run) =>
+    run.includes("scripts/run-npm-audit.js"),
+  );
+  assert(auditInstallIndex < auditGateIndex, "release audit job must install before auditing.");
+  assertInstallStep("release audit install step", stepByIndex(auditJob, auditInstallIndex));
+  assertAuditStep("release audit step", stepByIndex(auditJob, auditGateIndex));
+
+  const rawAuditRelease = allRunSteps(releaseWorkflow).filter(({ run }) =>
+    run.includes("npm run audit:release"),
+  );
+  assert(
+    rawAuditRelease.length === 0,
+    "release workflow must not call the raw audit:release package script.",
+  );
+}
+
+const { workflow: testWorkflow } = readWorkflow(".github/workflows/test.yml");
+const { workflow: releaseWorkflow } = readWorkflow(".github/workflows/release.yml");
+
+assertNoAuditCi(testWorkflow, "test workflow");
+assertNoAuditCi(releaseWorkflow, "release workflow");
+assertNoMutableAuditScript(testWorkflow);
+assertNoPlainNpmCi(testWorkflow, "test workflow");
+assertNoPlainNpmCi(releaseWorkflow, "release workflow");
+assertTestWorkflow(testWorkflow);
+assertReleaseWorkflow(releaseWorkflow);
 
 console.log("Audit workflow guardrails verified.");

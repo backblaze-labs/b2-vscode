@@ -13,6 +13,7 @@ const { npmCommand } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-fixture-"));
+const devOnlyTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-dev-fixture-"));
 
 const packageJson = {
   name: "b2-vscode-audit-fixture",
@@ -23,28 +24,40 @@ const packageJson = {
   },
 };
 
-const packageLock = {
-  name: "b2-vscode-audit-fixture",
+const devOnlyPackageJson = {
+  name: "b2-vscode-audit-dev-fixture",
   version: "1.0.0",
-  lockfileVersion: 3,
-  requires: true,
-  packages: {
-    "": {
-      name: "b2-vscode-audit-fixture",
-      version: "1.0.0",
-      dependencies: {
-        lodash: "4.17.20",
-      },
-    },
-    "node_modules/lodash": {
-      version: "4.17.20",
-      resolved: "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
-      integrity:
-        "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
-      license: "MIT",
-    },
+  private: true,
+  devDependencies: {
+    lodash: "4.17.20",
   },
 };
+
+function packageLock(name, dependencyField) {
+  return {
+    name,
+    version: "1.0.0",
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      "": {
+        name,
+        version: "1.0.0",
+        [dependencyField]: {
+          lodash: "4.17.20",
+        },
+      },
+      "node_modules/lodash": {
+        version: "4.17.20",
+        resolved: "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
+        integrity:
+          "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
+        license: "MIT",
+        ...(dependencyField === "devDependencies" ? { dev: true } : {}),
+      },
+    },
+  };
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -59,13 +72,12 @@ function run(command, args, options = {}) {
   };
 }
 
-function runGate(args = []) {
-  return run("node", [
-    path.join(repoRoot, "scripts/run-npm-audit.js"),
-    "--directory",
-    tempRoot,
-    ...args,
-  ]);
+function runGate(directory = tempRoot, args = [], options = {}) {
+  return run(
+    "node",
+    [path.join(repoRoot, "scripts/run-npm-audit.js"), "--directory", directory, ...args],
+    options,
+  );
 }
 
 function assertInvalidCliArgs(args, expectedMessage) {
@@ -121,7 +133,7 @@ try {
   );
   fs.writeFileSync(
     path.join(tempRoot, "package-lock.json"),
-    `${JSON.stringify(packageLock, null, 2)}\n`,
+    `${JSON.stringify(packageLock(packageJson.name, "dependencies"), null, 2)}\n`,
   );
 
   const result = runGate();
@@ -140,6 +152,40 @@ try {
   }
   if (!/lodash|GHSA/i.test(result.output)) {
     throw new Error(`npm audit gate failed for an unexpected reason:\n${result.output}`);
+  }
+
+  fs.writeFileSync(
+    path.join(devOnlyTempRoot, "package.json"),
+    `${JSON.stringify(devOnlyPackageJson, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(devOnlyTempRoot, "package-lock.json"),
+    `${JSON.stringify(packageLock(devOnlyPackageJson.name, "devDependencies"), null, 2)}\n`,
+  );
+  fs.writeFileSync(path.join(devOnlyTempRoot, ".npmrc"), "omit=dev\n");
+
+  const devOnlyResult = runGate(devOnlyTempRoot, [], {
+    env: {
+      ...process.env,
+      npm_config_ignore_scripts: "true",
+      npm_config_omit: "dev",
+    },
+  });
+  if (devOnlyResult.error) {
+    throw devOnlyResult.error;
+  }
+  if (devOnlyResult.status === 0) {
+    throw new Error("npm audit gate allowed npm_config_omit=dev to hide dev advisories.");
+  }
+  if (devOnlyResult.status === 2) {
+    throw new Error(
+      `npm audit infrastructure error while checking dev dependency coverage:\n${devOnlyResult.output}`,
+    );
+  }
+  if (!/lodash|GHSA/i.test(devOnlyResult.output)) {
+    throw new Error(
+      `dev dependency audit failed for an unexpected reason:\n${devOnlyResult.output}`,
+    );
   }
 
   const acceptedPolicyPath = path.join(tempRoot, "accepted-audit-policy.jsonc");
@@ -164,7 +210,7 @@ try {
     )}\n`,
   );
 
-  const acceptedResult = runGate(["--policy", acceptedPolicyPath]);
+  const acceptedResult = runGate(tempRoot, ["--policy", acceptedPolicyPath]);
   if (acceptedResult.error) {
     throw acceptedResult.error;
   }
@@ -177,4 +223,5 @@ try {
   console.log("Audit gate fixture failed closed and accepted tracked advisories.");
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
+  fs.rmSync(devOnlyTempRoot, { recursive: true, force: true });
 }
