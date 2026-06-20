@@ -6,7 +6,6 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
@@ -19,6 +18,7 @@ import {
   BUNDLED_CREDENTIAL_SMOKE_ENV,
   type BundledCredentialSmokeResolver,
 } from "../../testSupport/bundledCredentialSmoke";
+import { tempDir } from "../../testSupport/tempDir";
 import {
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
@@ -41,10 +41,6 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
   "dist",
   "bundledCredentialSmoke.js",
 );
-
-function tempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
-}
 
 function loadBundledExtension(): BundledExtensionSmokeExports {
   delete require.cache[require.resolve(DIST_EXTENSION_PATH)];

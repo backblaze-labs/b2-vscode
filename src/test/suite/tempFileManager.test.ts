@@ -6,22 +6,15 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
+import { DownloadSizeLimitError } from "../../services/fileTransfers";
 import { TempFileManager } from "../../services/tempFileManager";
-
-function streamFromText(text: string): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(Buffer.from(text));
-      controller.close();
-    },
-  });
-}
+import { streamFromText } from "../../testSupport/streams";
+import { tempDir } from "../../testSupport/tempDir";
 
 suite("TempFileManager", () => {
   test("saves downloaded streams, returns cached paths, and clears cache on cleanup", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
 
     try {
@@ -48,7 +41,7 @@ suite("TempFileManager", () => {
   });
 
   test("drops cached paths when the cached file is gone", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
 
     try {
@@ -64,8 +57,29 @@ suite("TempFileManager", () => {
     }
   });
 
+  test("rejects oversized cached downloads without caching partial files", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      await assert.rejects(
+        () =>
+          manager.saveStream("bucket", "large.txt", streamFromText("too large"), {
+            maxBytes: 3,
+          }),
+        DownloadSizeLimitError,
+      );
+
+      assert.strictEqual(manager.getCachedPath("bucket", "large.txt"), undefined);
+      assert.strictEqual(fs.existsSync(path.join(tempRoot, "bucket", "large.txt")), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects bucket and file names that escape the cache root", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
     const traversalCases = [
       { bucketName: "bucket", fileName: "../../escape.txt" },
@@ -89,8 +103,8 @@ suite("TempFileManager", () => {
   });
 
   test("rejects cache writes through symlinked parents", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
-    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const manager = new TempFileManager(tempRoot);
     const bucketRoot = path.join(tempRoot, "bucket");
     const symlinkPath = path.join(bucketRoot, "link");
@@ -114,8 +128,8 @@ suite("TempFileManager", () => {
   });
 
   test("rejects symlinked parents introduced during directory creation", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-manager-"));
-    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const manager = new TempFileManager(tempRoot);
     const symlinkPath = path.join(tempRoot, "bucket", "new", "link");
     const outsideSubdir = path.join(outsideRoot, "sub");
@@ -155,8 +169,8 @@ suite("TempFileManager", () => {
   });
 
   test("rejects a symlinked cache root", () => {
-    const tempParent = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-parent-"));
-    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-temp-outside-"));
+    const tempParent = tempDir("b2-vscode-temp-parent-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const symlinkRoot = path.join(tempParent, "b2-vscode");
 
     try {
