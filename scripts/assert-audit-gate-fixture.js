@@ -223,7 +223,13 @@ try {
     )}\n`,
   );
 
-  const acceptedResult = runGate(tempRoot, ["--policy", acceptedPolicyPath]);
+  const acceptedResult = runGate(tempRoot, ["--policy", acceptedPolicyPath], {
+    env: {
+      ...process.env,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_BASE_REF: "",
+    },
+  });
   if (acceptedResult.error) {
     throw new InfrastructureError(acceptedResult.error.message);
   }

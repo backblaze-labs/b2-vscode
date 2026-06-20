@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 5
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
     permissions:
-      actions: read
+      actions: read # Verify dependency-gate-break-glass environment protection rules.
       contents: read
     environment: dependency-gate-break-glass
 
