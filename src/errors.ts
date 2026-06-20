@@ -264,7 +264,8 @@ function isNetworkFailure(error: unknown): boolean {
     message.includes("fetch failed") ||
     message.includes("econnreset") ||
     message.includes("enotfound") ||
-    message.includes("etimedout")
+    message.includes("etimedout") ||
+    message.includes("aborted")
   );
 }
 
@@ -302,18 +303,54 @@ function isTransientServiceFailure(error: unknown): boolean {
 
 /**
  * Whether a mutation's final state is uncertain because the client cannot
- * confirm whether B2 completed the request.
+ * confirm whether B2 completed the request after the request was sent.
  */
-export function isB2MutationStateAmbiguous(error: unknown): boolean {
-  if (isNetworkFailure(error) || isTransientServiceFailure(error) || isMalformedResponse(error)) {
+export class B2MutationTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "B2MutationTimeoutError";
+  }
+}
+
+function isMutationTimeout(error: unknown): boolean {
+  return (
+    error instanceof B2MutationTimeoutError || matchesErrorName(error, "B2MutationTimeoutError")
+  );
+}
+
+function isPostRetryMutationCollision(error: unknown): boolean {
+  const code = getB2Code(error);
+  const status = getB2Status(error);
+  return code === "duplicate_bucket_name" || code === "conflict" || status === 409;
+}
+
+/**
+ * Classifies public bucket mutations after a create/update request has been
+ * attempted. It intentionally stays narrow: local/preflight failures without
+ * transport uncertainty should not trigger public exposure warnings.
+ */
+export function isPostRequestB2MutationStateAmbiguous(error: unknown): boolean {
+  if (
+    isMutationTimeout(error) ||
+    isNetworkFailure(error) ||
+    isTransientServiceFailure(error) ||
+    isMalformedResponse(error) ||
+    isPostRetryMutationCollision(error)
+  ) {
     return true;
   }
 
-  if (getB2Status(error) !== undefined) {
+  if (
+    isB2SsrfFailure(error) ||
+    isInvalidCredentials(error) ||
+    isMissingCapability(error) ||
+    isCapExceeded(error) ||
+    isSafeLocalError(error)
+  ) {
     return false;
   }
 
-  return true;
+  return false;
 }
 
 function retryAfterText(error: unknown): string {
@@ -367,6 +404,10 @@ export function formatB2UserMessage(error: unknown): string {
     matchesErrorName(error, "B2ResourceNotFoundError")
   ) {
     return redactSensitiveText(getErrorMessage(error));
+  }
+
+  if (isMutationTimeout(error)) {
+    return "The B2 request timed out before the extension could confirm the final state. Refresh the bucket tree and verify the bucket in Backblaze before retrying.";
   }
 
   if (isExpiredAuth(error)) {

@@ -26,6 +26,9 @@ export function isPublicBucketNameConfirmationAccepted(
   bucketName: string,
   typedBucketName: string | undefined,
 ): boolean {
+  if (!bucketName.trim()) {
+    return false;
+  }
   return typedBucketName === bucketName;
 }
 
@@ -58,5 +61,5 @@ export function buildPublicBucketUnknownStateWarningMessage(
       ? `creating public bucket "${bucketName}"`
       : `changing bucket "${bucketName}" to public`;
 
-  return `B2 could not confirm whether ${actionText} completed. The bucket tree has been refreshed because the bucket may already be public and files may be accessible without authorization.`;
+  return `B2 could not confirm whether ${actionText} completed. A bucket tree refresh was requested because the bucket may already be public and files may be accessible without authorization.`;
 }

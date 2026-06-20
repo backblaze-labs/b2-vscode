@@ -1,16 +1,16 @@
 /**
  * Command registrations for the B2 extension.
  *
- * Most command handlers stay inline in registerCommands. Safety-critical flows
- * that need command-path tests can be extracted behind narrow service
- * interfaces; public bucket visibility changes use that pattern because they
- * can expose bucket contents.
+ * Most command handlers stay inline in registerCommands. Handlers that need
+ * command-path tests can be extracted behind narrow service interfaces; public
+ * bucket visibility changes are one example because they can expose bucket
+ * contents.
  *
  * @module commands
  */
 
 import * as vscode from "vscode";
-import type { B2Client } from "@backblaze-labs/b2-sdk";
+import type { B2Client, Bucket } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
@@ -26,7 +26,12 @@ import {
   withCancellableTransferProgress,
 } from "../services/transferProgress";
 import { withTransferStallTimeout } from "../services/fileTransfers";
-import { B2PartialFailureError, formatB2UserMessage, isB2MutationStateAmbiguous } from "../errors";
+import {
+  B2MutationTimeoutError,
+  B2PartialFailureError,
+  formatB2UserMessage,
+  isPostRequestB2MutationStateAmbiguous,
+} from "../errors";
 import { log, logError } from "../logger";
 import {
   buildPublicBucketUnknownStateWarningMessage,
@@ -41,6 +46,28 @@ import {
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 
+const PUBLIC_BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
+
+type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
+type CreateBucketResult = ReturnType<B2Client["createBucket"]>;
+type BucketUpdateOptions = Parameters<Bucket["update"]>[0];
+type BucketUpdateResult = ReturnType<Bucket["update"]>;
+
+export interface BucketCreationClient {
+  createBucket(options: CreateBucketOptions): CreateBucketResult;
+}
+
+export interface BucketVisibilityItem {
+  readonly bucketName: string;
+  readonly bucketType: string;
+  readonly bucket: {
+    readonly info: {
+      readonly revision: number;
+    };
+    update(options: BucketUpdateOptions): BucketUpdateResult;
+  };
+}
+
 export function buildCommandErrorMessage(prefix: string, error: unknown): string {
   return `${prefix}. ${formatB2UserMessage(error)}`;
 }
@@ -48,6 +75,12 @@ export function buildCommandErrorMessage(prefix: string, error: unknown): string
 function showCommandError(prefix: string, error: unknown): void {
   logError(prefix, error);
   vscode.window.showErrorMessage(buildCommandErrorMessage(prefix, error));
+}
+
+function isBucketRevisionConflict(error: unknown): boolean {
+  const record =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  return record.status === 409 || record.code === "conflict";
 }
 
 async function confirmPublicBucketVisibility(
@@ -80,19 +113,67 @@ async function confirmPublicBucketVisibility(
   return isPublicBucketNameConfirmationAccepted(bucketName, typedBucketName);
 }
 
+function validateBucketName(bucketName: string): string | undefined {
+  if (!bucketName) {
+    return "Bucket name is required";
+  }
+  if (bucketName.length < 6) {
+    return "Bucket name must be at least 6 characters";
+  }
+  if (bucketName.length > 50) {
+    return "Bucket name must be at most 50 characters";
+  }
+  if (!/^[a-zA-Z0-9-]+$/.test(bucketName)) {
+    return "Bucket name can only contain letters, digits, and hyphens";
+  }
+  return undefined;
+}
+
+async function withPublicBucketMutationTimeout<T>(
+  description: string,
+  timeoutMs: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return operation();
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new B2MutationTimeoutError(`${description} timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([operation(), timeout]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 /**
  * Services required by commands.
  */
 export interface BucketCommandServices {
   treeProvider: Pick<B2TreeProvider, "refresh">;
-  getClient: () => B2Client | null;
+  getClient: () => unknown | null;
+  publicBucketMutationTimeoutMs?: number;
 }
 
-export interface CommandServices extends BucketCommandServices {
+export interface CreateBucketCommandServices extends Omit<BucketCommandServices, "getClient"> {
+  getClient: () => BucketCreationClient | null;
+}
+
+export interface CommandServices extends CreateBucketCommandServices {
   authService: AuthService;
   treeProvider: B2TreeProvider;
   tempFileManager: TempFileManager;
   context: vscode.ExtensionContext;
+  getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
 }
 
@@ -160,7 +241,7 @@ async function warnUnknownPublicBucketState(
 ): Promise<void> {
   services.treeProvider.refresh();
   logError(
-    `B2: Unconfirmed public bucket state after ${action} of "${bucketName}"; bucket may be public and the tree was refreshed`,
+    `B2: Unconfirmed public bucket state after ${action} of "${bucketName}"; bucket may be public and a tree refresh was requested`,
     error,
   );
   await vscode.window.showWarningMessage(
@@ -169,7 +250,7 @@ async function warnUnknownPublicBucketState(
   );
 }
 
-export async function createBucketCommand(services: BucketCommandServices): Promise<void> {
+export async function createBucketCommand(services: CreateBucketCommandServices): Promise<void> {
   const { treeProvider, getClient } = services;
   const client = getClient();
   if (!client) {
@@ -182,23 +263,14 @@ export async function createBucketCommand(services: BucketCommandServices): Prom
     prompt: "Enter a name for the new bucket",
     placeHolder: "my-new-bucket",
     ignoreFocusOut: true,
-    validateInput: (value) => {
-      if (!value) {
-        return "Bucket name is required";
-      }
-      if (value.length < 6) {
-        return "Bucket name must be at least 6 characters";
-      }
-      if (value.length > 50) {
-        return "Bucket name must be at most 50 characters";
-      }
-      if (!/^[a-zA-Z0-9-]+$/.test(value)) {
-        return "Bucket name can only contain letters, digits, and hyphens";
-      }
-      return undefined;
-    },
+    validateInput: validateBucketName,
   });
   if (!bucketName) {
+    return;
+  }
+  const bucketNameValidation = validateBucketName(bucketName);
+  if (bucketNameValidation) {
+    vscode.window.showErrorMessage(`B2: ${bucketNameValidation}`);
     return;
   }
 
@@ -239,17 +311,26 @@ export async function createBucketCommand(services: BucketCommandServices): Prom
         title: `Creating B2 bucket "${bucketName}"...`,
         cancellable: false,
       },
-      () =>
-        client.createBucket({
-          bucketName,
-          bucketType: visibility.value,
-        }),
+      () => {
+        const create = () =>
+          client.createBucket({
+            bucketName,
+            bucketType: visibility.value,
+          });
+        return visibility.value === "allPublic"
+          ? withPublicBucketMutationTimeout(
+              `Creating public B2 bucket "${bucketName}"`,
+              services.publicBucketMutationTimeoutMs ?? PUBLIC_BUCKET_MUTATION_TIMEOUT_MS,
+              create,
+            )
+          : create();
+      },
     );
     treeProvider.refresh();
     log(`Bucket "${bucket.name}" created with type ${visibility.value}.`);
     vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
   } catch (error) {
-    if (visibility.value === "allPublic" && isB2MutationStateAmbiguous(error)) {
+    if (visibility.value === "allPublic" && isPostRequestB2MutationStateAmbiguous(error)) {
       await warnUnknownPublicBucketState(services, "create", bucketName, error);
       showCommandError("B2: Could not confirm public bucket creation", error);
       return;
@@ -260,7 +341,7 @@ export async function createBucketCommand(services: BucketCommandServices): Prom
 
 export async function changeBucketVisibilityCommand(
   services: BucketCommandServices,
-  item?: BucketTreeItem,
+  item?: BucketVisibilityItem,
 ): Promise<void> {
   const { treeProvider, getClient } = services;
   if (!getClient()) {
@@ -313,16 +394,29 @@ export async function changeBucketVisibilityCommand(
         title: `Changing "${item.bucketName}" to ${newLabel}...`,
         cancellable: false,
       },
-      () => item.bucket.update({ bucketType: newType }),
+      () => {
+        const update = () =>
+          item.bucket.update({ bucketType: newType, ifRevisionIs: item.bucket.info.revision });
+        return newType === "allPublic"
+          ? withPublicBucketMutationTimeout(
+              `Changing B2 bucket "${item.bucketName}" to public`,
+              services.publicBucketMutationTimeoutMs ?? PUBLIC_BUCKET_MUTATION_TIMEOUT_MS,
+              update,
+            )
+          : update();
+      },
     );
     treeProvider.refresh();
     log(`Bucket "${item.bucketName}" changed to ${newType}.`);
     vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
   } catch (error) {
-    if (newType === "allPublic" && isB2MutationStateAmbiguous(error)) {
+    if (newType === "allPublic" && isPostRequestB2MutationStateAmbiguous(error)) {
       await warnUnknownPublicBucketState(services, "change", item.bucketName, error);
       showCommandError("B2: Could not confirm public bucket visibility change", error);
       return;
+    }
+    if (isBucketRevisionConflict(error)) {
+      treeProvider.refresh();
     }
     showCommandError("B2: Failed to update bucket", error);
   }
