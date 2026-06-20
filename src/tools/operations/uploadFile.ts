@@ -62,23 +62,22 @@ async function workspaceUploadSource(relativePath: string): Promise<UploadSource
   const workspaceRoot = workspaceFolder.uri.fsPath;
   const lexicalPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
   assertNoControlDirectoryRead(workspaceRoot, lexicalPath);
+
+  const [workspaceRealPath, localRealPath] = await Promise.all([
+    fs.promises.realpath(workspaceRoot),
+    fs.promises.realpath(lexicalPath),
+  ]);
+  if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
+    throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+  }
+  assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
+  const localRealStats = await fs.promises.stat(localRealPath);
   const source = await openUploadSourceFile(lexicalPath);
-
   try {
-    const [workspaceRealPath, localRealPath] = await Promise.all([
-      fs.promises.realpath(workspaceRoot),
-      fs.promises.realpath(lexicalPath),
-    ]);
-    const localRealStats = await fs.promises.stat(localRealPath);
-
     if (!sameFileIdentity(source.stats, localRealStats)) {
       throw new Error(`localPath changed while opening upload source: ${relativePath}`);
     }
-    if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
-      throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
-    }
 
-    assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
     return source;
   } catch (error) {
     await closeUploadSource(source);

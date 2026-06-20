@@ -19,6 +19,7 @@ import {
 } from "@backblaze-labs/b2-sdk";
 import { logError } from "../logger";
 import {
+  assertRealDirectory,
   ensureContainedDirectoryPath,
   ensureRealDirectory,
   pathExistsAsRealDirectory,
@@ -457,6 +458,7 @@ async function reserveDestinationFile(
   destinationDirectory: string,
 ): Promise<ReservedDestinationFile> {
   const parentStats = await fs.promises.lstat(destinationDirectory);
+  assertRealDirectory(parentStats, destinationDirectory, "Download destination directory");
   const handle = await fs.promises.open(
     destinationPath,
     fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW_OPEN_FLAG,
