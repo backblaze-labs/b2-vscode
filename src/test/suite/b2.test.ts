@@ -2961,6 +2961,21 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("does not restore destination backups from the current process", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-current-backup-"));
+    const backup = path.join(dir, `.b2-replace-backup-active.bin-${process.pid}-abcdefabcdef.tmp`);
+    fs.writeFileSync(backup, "active");
+
+    try {
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 0 });
+
+      assert.strictEqual(fs.existsSync(backup), true);
+      assert.strictEqual(fs.existsSync(path.join(dir, "active.bin")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("recovers orphaned destination backups across a workspace tree", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
     const nested = path.join(dir, "nested", "downloads");
@@ -2998,6 +3013,49 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(restored), false);
       assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips large workspace directories during destination backup cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-skip-cleanup-"));
+    const sourceDir = path.join(dir, "src");
+    const nodeModulesDir = path.join(dir, "node_modules");
+    const sourceBackup = path.join(sourceDir, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    const dependencyBackup = path.join(
+      nodeModulesDir,
+      ".b2-replace-backup-dep.txt-1-abcdefabcdef.tmp",
+    );
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.mkdirSync(nodeModulesDir, { recursive: true });
+    fs.writeFileSync(sourceBackup, "report");
+    fs.writeFileSync(dependencyBackup, "dependency");
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir });
+
+      assert.strictEqual(fs.existsSync(sourceBackup), false);
+      assert.strictEqual(fs.readFileSync(path.join(sourceDir, "report.txt"), "utf8"), "report");
+      assert.strictEqual(fs.existsSync(dependencyBackup), true);
+      assert.strictEqual(fs.existsSync(path.join(nodeModulesDir, "dep.txt")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("honors the workspace destination cleanup directory budget", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-budget-cleanup-"));
+    const nested = path.join(dir, "nested");
+    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(backup, "report");
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, maxDirectories: 1 });
+
+      assert.strictEqual(fs.existsSync(backup), true);
+      assert.strictEqual(fs.existsSync(path.join(nested, "report.txt")), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

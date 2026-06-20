@@ -68,6 +68,16 @@ const UPLOAD_SESSION_MARKER_DIR_NAME = "b2-vscode-upload-sessions";
 const UPLOAD_SESSION_MARKER_PREFIX = "session-";
 const UPLOAD_SESSION_MARKER_SUFFIX = ".json";
 const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
+const WORKSPACE_DESTINATION_CLEANUP_MAX_DIRECTORIES = 500;
+const WORKSPACE_DESTINATION_CLEANUP_MAX_MS = 2_000;
+const WORKSPACE_DESTINATION_CLEANUP_SKIP_NAMES = new Set([
+  ".git",
+  ".vscode-test",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+]);
 
 const lastCleanupByDirectory = new Map<string, number>();
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
@@ -411,7 +421,12 @@ function isDestinationTempFile(name: string): boolean {
   );
 }
 
-function backupDestinationPath(directory: string, name: string): string | undefined {
+interface BackupDestinationInfo {
+  readonly restorePath: string;
+  readonly processId: number;
+}
+
+function backupDestinationInfo(directory: string, name: string): BackupDestinationInfo | undefined {
   if (!name.startsWith(REPLACE_BACKUP_TEMP_PREFIX) || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
     return undefined;
   }
@@ -420,8 +435,15 @@ function backupDestinationPath(directory: string, name: string): string | undefi
     REPLACE_BACKUP_TEMP_PREFIX.length,
     name.length - TRANSFER_TEMP_SUFFIX.length,
   );
-  const match = /^(.*)-\d+-[a-f0-9]+$/u.exec(encoded);
-  return match ? path.join(directory, match[1]) : undefined;
+  const match = /^(.*)-(\d+)-[a-f0-9]+$/u.exec(encoded);
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    restorePath: path.join(directory, match[1]),
+    processId: Number(match[2]),
+  };
 }
 
 function shouldRunThrottledCleanup(key: string): boolean {
@@ -631,8 +653,11 @@ export async function cleanupStaleDestinationTempFiles(options: {
     const filePath = path.join(directory, entry);
     try {
       const stats = await fs.promises.lstat(filePath);
-      const restorePath = backupDestinationPath(directory, entry);
-      if (restorePath && (await restoreDestinationBackup(filePath, restorePath))) {
+      const backup = backupDestinationInfo(directory, entry);
+      if (backup?.processId === process.pid) {
+        continue;
+      }
+      if (backup && (await restoreDestinationBackup(filePath, backup.restorePath))) {
         continue;
       }
       if (stats.mtimeMs <= cutoff) {
@@ -649,6 +674,8 @@ export async function cleanupStaleDestinationTempFiles(options: {
 export async function cleanupWorkspaceDestinationTempFiles(options: {
   workspaceRoot: string;
   maxAgeMs?: number;
+  maxDirectories?: number;
+  maxDurationMs?: number;
 }): Promise<void> {
   let workspaceRoot: string;
   try {
@@ -661,7 +688,24 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     return;
   }
 
+  const startedAt = Date.now();
+  const maxDirectories = Math.max(
+    0,
+    options.maxDirectories ?? WORKSPACE_DESTINATION_CLEANUP_MAX_DIRECTORIES,
+  );
+  const maxDurationMs = Math.max(0, options.maxDurationMs ?? WORKSPACE_DESTINATION_CLEANUP_MAX_MS);
+  let visitedDirectories = 0;
+
+  function budgetExhausted(): boolean {
+    return visitedDirectories >= maxDirectories || Date.now() - startedAt >= maxDurationMs;
+  }
+
   async function visit(directory: string): Promise<void> {
+    if (budgetExhausted()) {
+      return;
+    }
+    visitedDirectories += 1;
+
     await cleanupStaleDestinationTempFiles({
       directory,
       ...(options.maxAgeMs !== undefined ? { maxAgeMs: options.maxAgeMs } : {}),
@@ -679,7 +723,13 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     }
 
     for (const entry of entries) {
+      if (budgetExhausted()) {
+        break;
+      }
       if (!entry.isDirectory()) {
+        continue;
+      }
+      if (WORKSPACE_DESTINATION_CLEANUP_SKIP_NAMES.has(entry.name)) {
         continue;
       }
 
