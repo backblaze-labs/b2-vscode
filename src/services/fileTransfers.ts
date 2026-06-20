@@ -40,8 +40,10 @@ import {
 } from "./pathSafety";
 import {
   DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+  UploadIndeterminateError,
   abortPromise,
   createActivityAbortSignal,
+  isActivityTimeout,
   normalizeTransferError,
   withTransferStallTimeout,
   withTimeout,
@@ -51,8 +53,10 @@ import {
 export {
   DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
   TransferStallTimeoutError,
+  UploadIndeterminateError,
   abortPromise,
   createActivityAbortSignal,
+  isActivityTimeout,
   normalizeTransferError,
   withTransferStallTimeout,
   type ActivityAbortSignal,
@@ -388,6 +392,13 @@ function isDestinationTempFile(name: string): boolean {
 
   const payload = name.slice(prefix.length, -TRANSFER_TEMP_SUFFIX.length);
   return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
+}
+
+function assertDestinationFileNameIsNotReserved(destinationPath: string): void {
+  const name = path.basename(destinationPath);
+  if (isTransferTempFile(name) || isDestinationTempFile(name)) {
+    throw new Error(`Destination filename uses a reserved B2 transfer temp pattern: ${name}`);
+  }
 }
 
 function isEnoent(error: unknown): boolean {
@@ -1087,6 +1098,7 @@ async function downloadStreamToFileInternal(
   let sourceStreamOwnedByPipeline = false;
 
   try {
+    assertDestinationFileNameIsNotReserved(destinationPath);
     const maxBytes = normalizedMaxBytes(options.maxBytes);
     assertKnownDownloadSizeWithinLimit(options.knownBytes, maxBytes, destinationPath);
     const destinationDirectory = await ensureDownloadDestinationDirectory(
@@ -1252,18 +1264,6 @@ class CleanupOperationTimeoutError extends Error {
   }
 }
 
-export class UploadFinalizationIndeterminateError extends Error {
-  readonly originalError?: unknown;
-
-  constructor(remotePath: string, originalError?: unknown) {
-    super(
-      `B2 upload finalization for ${remotePath} did not finish before timeout or cancellation. The local upload stream closed, so the upload may still complete in B2; check the bucket before retrying.`,
-    );
-    this.name = "UploadFinalizationIndeterminateError";
-    this.originalError = originalError;
-  }
-}
-
 async function observeImmediateUploadDoneError(
   done: Promise<FileVersion> | undefined,
 ): Promise<unknown | undefined> {
@@ -1281,21 +1281,6 @@ async function observeImmediateUploadDoneError(
       timer.unref?.();
     }),
   ]);
-}
-
-async function waitForUploadFinalization(
-  done: Promise<FileVersion>,
-  signal: AbortSignal,
-  remotePath: string,
-): Promise<FileVersion> {
-  try {
-    return await Promise.race([done, abortPromise(signal)]);
-  } catch (error) {
-    if (signal.aborted) {
-      throw new UploadFinalizationIndeterminateError(remotePath, error);
-    }
-    throw error;
-  }
 }
 
 async function withAbortableTimeout<T>(
@@ -1886,6 +1871,15 @@ export async function uploadEmptyObject(
   );
 }
 
+function uploadIndeterminateError(
+  remotePath: string,
+  uploadSessionId: string,
+): UploadIndeterminateError {
+  return new UploadIndeterminateError(
+    `Upload of ${remotePath} timed out while B2 finalization was in progress (session ${uploadSessionId}). The upload may have completed after the timeout; check B2 before retrying to avoid duplicate file versions.`,
+  );
+}
+
 /**
  * Upload a local file path or a pre-opened source file. Passing an
  * UploadSourceFile transfers ownership of its handle to this function; the
@@ -1914,6 +1908,7 @@ export async function uploadFileFromDisk(
   let uploadDoneError: unknown;
   let uploadDone: Promise<FileVersion> | undefined;
   let uploadStreamWasCreated = false;
+  let finalizationStarted = false;
 
   try {
     if (stats.size === 0) {
@@ -1955,13 +1950,21 @@ export async function uploadFileFromDisk(
     readableStream.on("data", activity.markActivity);
     const readable = Readable.toWeb(readableStream) as ReadableStream<Uint8Array>;
 
-    await readable.pipeTo(writable, { signal: activity.signal });
-    const result = await waitForUploadFinalization(done, activity.signal, remotePath);
+    await Promise.race([
+      readable.pipeTo(writable, { signal: activity.signal }),
+      abortPromise(activity.signal),
+    ]);
+    finalizationStarted = true;
+    const result = await Promise.race([done, abortPromise(activity.signal)]);
     if (uploadSessionMarkerWritten) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
     return result;
   } catch (error) {
+    if (finalizationStarted && isActivityTimeout(error, activity)) {
+      throw uploadIndeterminateError(remotePath, uploadSessionId);
+    }
+
     let canceledCount = 0;
     if (uploadStreamWasCreated) {
       canceledCount = await cleanupOwnedUnfinishedUpload(
@@ -1979,7 +1982,7 @@ export async function uploadFileFromDisk(
     }
     const transferError =
       uploadDoneError ?? (await observeImmediateUploadDoneError(uploadDone)) ?? error;
-    if (transferError instanceof UploadFinalizationIndeterminateError) {
+    if (transferError instanceof UploadIndeterminateError) {
       throw transferError;
     }
     normalizeTransferError(transferError, activity);

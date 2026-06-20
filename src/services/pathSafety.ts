@@ -450,6 +450,13 @@ async function nearestExistingPath(candidatePath: string): Promise<ExistingPath>
 
 export function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
   const root = path.resolve(rootPath);
+  for (const segment of segments) {
+    assertNoNul(segment, "Path segment");
+    if (isAbsolutePortable(segment)) {
+      throw new UnsafePathError("Path segment must be relative to the allowed root.");
+    }
+  }
+
   const resolved = path.resolve(root, ...segments);
 
   if (!isPathInsideOrEqual(root, resolved)) {

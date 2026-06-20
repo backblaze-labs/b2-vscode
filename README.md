@@ -137,9 +137,11 @@ src/
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
 │   ├── b2.ts                 # B2 SDK client factory
-│   ├── fileTransfers.ts      # Upload/download transfer helpers
+│   ├── fileTransfers.ts      # Upload/download transfer facade
 │   ├── pathSafety.ts         # Workspace and filesystem path containment
 │   ├── tempFileManager.ts    # Downloaded file cache
+│   ├── transferTempFiles.ts  # Transfer temp files and atomic destination moves
+│   ├── transferTimeout.ts    # Transfer stall timeout orchestration
 │   └── transferProgress.ts   # VS Code transfer progress/cancellation
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider

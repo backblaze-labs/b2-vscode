@@ -13,6 +13,13 @@ export class TransferStallTimeoutError extends Error {
   }
 }
 
+export class UploadIndeterminateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UploadIndeterminateError";
+  }
+}
+
 export interface TransferTimeoutOptions {
   readonly signal?: AbortSignal;
   readonly stallTimeoutMs?: number;
@@ -106,9 +113,16 @@ export function createActivityAbortSignal(
   };
 }
 
+export function isActivityTimeout(error: unknown, activity: ActivityAbortSignal): boolean {
+  const timeoutError = activity.timeoutError();
+  return Boolean(
+    timeoutError && (error === timeoutError || activity.signal.aborted || isAbortLikeError(error)),
+  );
+}
+
 export function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): never {
   const timeoutError = activity.timeoutError();
-  if (timeoutError && (activity.signal.aborted || isAbortLikeError(error))) {
+  if (timeoutError && isActivityTimeout(error, activity)) {
     throw timeoutError;
   }
 

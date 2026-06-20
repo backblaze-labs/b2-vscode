@@ -458,7 +458,8 @@ export function formatB2UserMessage(error: unknown): string {
 
   if (
     matchesErrorName(error, "DownloadSizeLimitError") ||
-    matchesErrorName(error, "TransferStallTimeoutError")
+    matchesErrorName(error, "TransferStallTimeoutError") ||
+    matchesErrorName(error, "UploadIndeterminateError")
   ) {
     return redactSensitiveText(getErrorMessage(error));
   }

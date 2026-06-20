@@ -46,7 +46,7 @@ import {
   STREAMING_UPLOAD_PART_SIZE,
   TRANSFER_TEMP_DIR_NAME,
   TransferStallTimeoutError,
-  UploadFinalizationIndeterminateError,
+  UploadIndeterminateError,
   uploadEmptyObject,
   uploadFileHandle,
   uploadFileFromDisk,
@@ -593,6 +593,29 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(cancelCalled, true);
       assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects destination filenames reserved for transfer internals", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-download-"));
+    const destination = path.join(dir, ".b2-replace-backup-.env-1-deadbeef.tmp");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination),
+        /reserved B2 transfer temp pattern/i,
+      );
+
+      assert.strictEqual(fs.existsSync(destination), false);
+      assert.strictEqual(fs.existsSync(path.join(dir, ".env")), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1591,7 +1614,7 @@ suite("B2 transfer helpers", () => {
             stallTimeoutMs: 20,
           }),
         (error) => {
-          assert.ok(error instanceof UploadFinalizationIndeterminateError);
+          assert.ok(error instanceof UploadIndeterminateError);
           assert.match(error.message, /may still complete in B2/i);
           return true;
         },
@@ -2867,7 +2890,7 @@ suite("B2 transfer helpers", () => {
     );
   });
 
-  test("times out stalled streaming upload finalization", async () => {
+  test("reports indeterminate stalled streaming upload finalization", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-finalize-stall-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
@@ -2894,7 +2917,7 @@ suite("B2 transfer helpers", () => {
           uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
             stallTimeoutMs: 20,
           }),
-        UploadFinalizationIndeterminateError,
+        UploadIndeterminateError,
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
