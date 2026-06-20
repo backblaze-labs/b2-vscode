@@ -62,6 +62,19 @@ function createDirectorySymlink(target: string, linkPath: string): boolean {
   }
 }
 
+function createFileSymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, "file");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 suite("B2 LM tool operations with simulator", () => {
   test("listBuckets returns simulator bucket metadata", async () => {
     const { client } = await createSimulatorBucket();
@@ -163,7 +176,9 @@ suite("B2 LM tool operations with simulator", () => {
       fs.mkdirSync(workspaceRoot, { recursive: true });
       fs.mkdirSync(outsideRoot, { recursive: true });
       fs.writeFileSync(localPath, "secret");
-      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+      if (!createDirectorySymlink(outsideRoot, symlinkPath)) {
+        return;
+      }
 
       await withWorkspaceFolder(workspaceRoot, () =>
         assert.rejects(
@@ -196,13 +211,20 @@ suite("B2 LM tool operations with simulator", () => {
       fs.mkdirSync(outsideRoot, { recursive: true });
       fs.writeFileSync(localPath, "safe");
       fs.writeFileSync(outsidePath, "secret");
+      const symlinkCheck = path.join(dir, "file-symlink-check");
+      if (!createFileSymlink(outsidePath, symlinkCheck)) {
+        return;
+      }
+      fs.unlinkSync(symlinkCheck);
       const authorizedPath = fs.realpathSync(localPath);
 
       mutableFs.open = (async (...args: Parameters<typeof fs.promises.open>) => {
         if (!swapped && path.resolve(String(args[0])) === path.resolve(authorizedPath)) {
           swapped = true;
           fs.rmSync(authorizedPath, { force: true });
-          fs.symlinkSync(outsidePath, authorizedPath);
+          if (!createFileSymlink(outsidePath, authorizedPath)) {
+            throw new Error("File symlink creation became unavailable.");
+          }
         }
         return originalOpen(...args);
       }) as typeof fs.promises.open;
@@ -384,7 +406,9 @@ suite("B2 LM tool operations with simulator", () => {
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
       fs.mkdirSync(outsideRoot, { recursive: true });
-      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+      if (!createDirectorySymlink(outsideRoot, symlinkPath)) {
+        return;
+      }
 
       await withWorkspaceFolder(workspaceRoot, () =>
         assert.rejects(
