@@ -10,10 +10,15 @@ export const CONFIRM_PUBLIC_BUCKET_LABEL = "Make Public";
 export const PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER = "Type the bucket name to confirm";
 
 export type PublicBucketVisibilityAction = "create" | "change";
+export type PublicPrivateBucketType = Extract<BucketType, "allPrivate" | "allPublic">;
+
+export function isPublicPrivateBucketType(type: BucketType): type is PublicPrivateBucketType {
+  return type === "allPrivate" || type === "allPublic";
+}
 
 export function shouldConfirmPublicBucketVisibility(
   currentType: string | undefined,
-  nextType: BucketType,
+  nextType: PublicPrivateBucketType,
 ): boolean {
   return nextType === "allPublic" && currentType !== "allPublic";
 }
@@ -22,7 +27,7 @@ export function isPublicBucketConfirmationAccepted(choice: string | undefined): 
   return choice === CONFIRM_PUBLIC_BUCKET_LABEL;
 }
 
-export function bucketTypeLabel(type: BucketType): string {
+export function bucketTypeLabel(type: PublicPrivateBucketType): string {
   return type === "allPublic" ? "Public" : "Private";
 }
 
@@ -61,8 +66,8 @@ export function buildPublicBucketUnknownStateWarningMessage(
   bucketName: string,
 ): string {
   if (action === "create") {
-    return `B2 could not confirm whether creating public bucket "${bucketName}" completed. A bucket tree refresh was requested because the bucket may have been created as public, or may not have been created at all. Files may be accessible without authorization if the public create succeeded.`;
+    return `B2 could not confirm whether creating public bucket "${bucketName}" completed. A bucket tree refresh was requested because the bucket may have been created as public, may still complete, or may not have been created at all. Files may be accessible without authorization if the public create succeeded.`;
   }
 
-  return `B2 could not confirm whether changing bucket "${bucketName}" to public completed. A bucket tree refresh was requested because the bucket may already be public and files may be accessible without authorization.`;
+  return `B2 could not confirm whether changing bucket "${bucketName}" to public completed. A bucket tree refresh was requested because the original request may still complete, the bucket may already be public, and files may be accessible without authorization.`;
 }

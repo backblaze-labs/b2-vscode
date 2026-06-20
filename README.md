@@ -64,8 +64,8 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `listBuckets` — list all accessible buckets
 - `listFiles` — list files in a bucket/folder
 - `getFileInfo` — get metadata for a specific file
-- `downloadFile` — download a file to the workspace by default, or to `localPath`
-- `uploadFile` — upload a file to a bucket
+- `downloadFile` — download a file to the workspace by default, or to a workspace-relative `localPath`; existing files are not overwritten
+- `uploadFile` — upload a workspace-relative file to a bucket
 - `deleteFile` — delete a file by name
 - `presignUrl` — generate a time-limited download URL
 
@@ -77,7 +77,7 @@ In agent mode, treat bucket listings and file contents as untrusted input: an ag
 
 Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
 
-Large uploads tag in-progress multipart sessions so the extension can cancel its own failed uploads. A VS Code crash, power loss, or network failure during cleanup can still leave unfinished large files in B2, so bucket operators should configure a B2 lifecycle rule to automatically cancel unfinished multipart uploads before they accumulate storage cost.
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed uploads and reclaim stale extension-owned sessions after authentication and on later uploads to the same key. A VS Code crash, power loss, or network failure during cleanup can still leave unfinished large files in B2, so bucket operators should configure a B2 lifecycle rule to automatically cancel unfinished multipart uploads before they accumulate storage cost.
 
 ## Development
 

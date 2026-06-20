@@ -20,6 +20,7 @@ import {
   formatB2UserMessage,
   redactSensitiveText,
 } from "../../errors";
+import { DownloadSizeLimitError } from "../../services/fileTransfers";
 
 function b2Error(status: number, code: string, message: string, retryAfter?: number): Error {
   return classifyError(
@@ -163,6 +164,13 @@ suite("B2 error handling", () => {
     const message = formatB2UserMessage(new B2ResourceNotFoundError('Bucket "b" not found.'));
 
     assert.equal(message, 'Bucket "b" not found.');
+  });
+
+  test("surfaces download size limit failures to users and tools", () => {
+    const error = new DownloadSizeLimitError("Download to file.bin exceeded the 1024 byte limit.");
+
+    assert.match(formatB2UserMessage(error), /exceeded the 1024 byte limit/i);
+    assert.match(formatB2ToolUserMessage(error), /exceeded the 1024 byte limit/i);
   });
 
   test("tool messages preserve safe local file errors", () => {

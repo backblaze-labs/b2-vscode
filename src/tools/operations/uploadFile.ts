@@ -11,7 +11,9 @@ import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import {
   assertUploadSourcePathUnchanged,
+  closeUploadSource,
   openUploadSourceFile,
+  sameFileIdentity,
   uploadFileFromDisk,
   type UploadSourceFile,
 } from "../../services/fileTransfers";
@@ -43,14 +45,6 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
   if (blocked) {
     throw new Error(`uploadFile refuses to read inside workspace control directory: ${blocked}`);
   }
-}
-
-function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-async function closeUploadSource(source: UploadSourceFile): Promise<void> {
-  await source.handle.close().catch(() => undefined);
 }
 
 async function workspaceUploadSource(relativePath: string): Promise<UploadSourceFile> {

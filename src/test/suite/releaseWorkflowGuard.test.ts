@@ -11,6 +11,7 @@ interface ReleaseWorkflowGuard {
   assertMarketplaceSecretStepsUseIsolatedPublisher(workflow: unknown): void;
   assertMarketplaceSecretOnlyInPublish(workflow: unknown): void;
   assertPublishUsesIsolatedPublisher(workflow: unknown): void;
+  assertPublishPreflightIgnoresLifecycleScripts(workflow: unknown): void;
 }
 
 function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
@@ -26,6 +27,14 @@ suite("Release workflow guard assertions", () => {
         publish: {
           steps: [
             {
+              name: "Install dependencies",
+              run: "npm ci --ignore-scripts",
+            },
+            {
+              name: "Resolve and verify VSIX artifact",
+              run: "node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum",
+            },
+            {
               name: "Install isolated Marketplace publisher",
               id: "publisher",
               run: [
@@ -34,10 +43,6 @@ suite("Release workflow guard assertions", () => {
                 'cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"',
                 "npm ci --ignore-scripts --no-audit --no-fund --omit=dev",
               ].join("\n"),
-            },
-            {
-              name: "Install dependencies",
-              run: "npm ci --ignore-scripts",
             },
             {
               name: "Verify Marketplace publisher token",
@@ -98,6 +103,74 @@ suite("Release workflow guard assertions", () => {
           },
         }),
       /repo-controlled dependencies/i,
+    );
+  });
+
+  test("rejects repo-controlled commands after isolated publisher install", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    assert.throws(
+      () =>
+        guard.assertPublishUsesIsolatedPublisher({
+          jobs: {
+            publish: {
+              steps: [
+                {
+                  name: "Install dependencies",
+                  run: "npm ci --ignore-scripts",
+                },
+                {
+                  name: "Resolve and verify VSIX artifact",
+                  run: "node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum",
+                },
+                {
+                  name: "Install isolated Marketplace publisher",
+                  id: "publisher",
+                  run: [
+                    'PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"',
+                    'cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"',
+                    'cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"',
+                    "npm ci --ignore-scripts --no-audit --no-fund --omit=dev",
+                  ].join("\n"),
+                },
+                {
+                  name: "Tamper after publisher install",
+                  run: "node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum",
+                },
+                {
+                  name: "Verify Marketplace publisher token",
+                  run: 'env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" verify-pat backblaze',
+                },
+                {
+                  name: "Publish to VS Code Marketplace",
+                  run: 'env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" publish --skip-duplicate --packagePath extension.vsix',
+                },
+              ],
+            },
+          },
+        }),
+      /repo-controlled commands/i,
+    );
+  });
+
+  test("rejects publish preflight lifecycle scripts", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    assert.throws(
+      () =>
+        guard.assertPublishPreflightIgnoresLifecycleScripts({
+          jobs: {
+            "publish-preflight": {
+              steps: [
+                {
+                  name: "Install dependencies",
+                  run: "npm ci",
+                },
+              ],
+            },
+          },
+        }),
+      /lifecycle scripts/i,
     );
   });
 });

@@ -29,6 +29,7 @@ const workflow = yaml.load(workflowText);
 const jobs = workflow.jobs ?? {};
 const marketplaceSecretPattern =
   /(?:secrets\s*(?:\.\s*VSCE_KEY|\[\s*["']VSCE_KEY["']\s*\])|\bVSCE_(?:KEY|PAT)\b)/;
+const repoControlledCommandPattern = /\bnpm\s+(?:ci|exec|install|run)\b|\bnpx\b|\bnode\s+scripts\//;
 const marketplacePublisherPackage = JSON.parse(fs.readFileSync(publisherPackagePath, "utf8"));
 const marketplacePublisherLock = JSON.parse(fs.readFileSync(publisherLockPath, "utf8"));
 
@@ -186,10 +187,25 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
   const installDependenciesRun = normalizedCommand(
     stepRunInSteps(steps, "publish", "Install dependencies"),
   );
+  const installDependenciesStepIndex = stepIndexInSteps(steps, "publish", "Install dependencies");
   assert(
     /\bnpm\s+ci\b/.test(installDependenciesRun) &&
       installDependenciesRun.includes("--ignore-scripts"),
     "publish job repo dependencies must be installed without lifecycle scripts.",
+  );
+  assert(
+    installDependenciesStepIndex < installStepIndex,
+    "publish job repo dependencies must be installed before the isolated Marketplace publisher is created.",
+  );
+
+  const resolveVsixStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Resolve and verify VSIX artifact",
+  );
+  assert(
+    resolveVsixStepIndex < installStepIndex,
+    "repo-controlled VSIX resolution must run before the isolated Marketplace publisher is created.",
   );
 
   const verifyPatRun = normalizedCommand(
@@ -221,6 +237,16 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
   assert(
     installStepIndex < verifyPatStepIndex && installStepIndex < publishStepIndex,
     "isolated Marketplace publisher must be installed before VSCE_PAT is exposed.",
+  );
+
+  const firstSecretStepIndex = Math.min(verifyPatStepIndex, publishStepIndex);
+  const postPublisherPreSecretRuns = steps
+    .slice(installStepIndex + 1, firstSecretStepIndex)
+    .map((step) => normalizedCommand(String(step.run ?? "")))
+    .filter(Boolean);
+  assert(
+    !postPublisherPreSecretRuns.some((run) => repoControlledCommandPattern.test(run)),
+    "repo-controlled commands must not run after the isolated publisher is created and before VSCE_PAT is used.",
   );
 }
 
@@ -344,6 +370,20 @@ function assertArtifactResolverUsage() {
   );
 }
 
+function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = workflow) {
+  const preflightJob = workflowToCheck.jobs?.["publish-preflight"];
+  assert(preflightJob, "release workflow is missing job: publish-preflight");
+  const steps = preflightJob.steps;
+  assert(Array.isArray(steps), "publish-preflight must declare steps.");
+  const installRun = normalizedCommand(
+    stepRunInSteps(steps, "publish-preflight", "Install dependencies"),
+  );
+  assert(
+    /\bnpm\s+ci\b/.test(installRun) && installRun.includes("--ignore-scripts"),
+    "publish-preflight dependency install must not run package lifecycle scripts.",
+  );
+}
+
 function main() {
   for (const jobName of [
     "verify-release-source",
@@ -370,6 +410,7 @@ function main() {
   assertReleaseAfterPublish();
   assertPublishVerifiesAttestation();
   assertArtifactResolverUsage();
+  assertPublishPreflightIgnoresLifecycleScripts();
 }
 
 if (require.main === module) {
@@ -387,6 +428,7 @@ module.exports = {
   assertMarketplaceSecretOnlyInPublish,
   assertMarketplacePublisherLockfile,
   assertPublishUsesIsolatedPublisher,
+  assertPublishPreflightIgnoresLifecycleScripts,
   main,
   marketplaceSecretPattern,
 };

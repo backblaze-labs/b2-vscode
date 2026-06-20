@@ -43,12 +43,14 @@ import {
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
   isPublicBucketNameConfirmationAccepted,
+  isPublicPrivateBucketType,
   PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
   shouldConfirmPublicBucketVisibility,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 
-const PUBLIC_BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
+const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
+const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
 
 type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
 type CreateBucketResult = ReturnType<B2Client["createBucket"]>;
@@ -125,15 +127,17 @@ function validateBucketName(bucketName: string): string | undefined {
   return undefined;
 }
 
-async function withPublicBucketMutationTimeout<T>(
+async function withBucketMutationTimeout<T>(
   description: string,
   timeoutMs: number,
+  postTimeoutSettleMs: number,
   operation: () => Promise<T>,
 ): Promise<T> {
   if (timeoutMs <= 0) {
     return operation();
   }
 
+  const operationPromise = operation();
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -143,7 +147,36 @@ async function withPublicBucketMutationTimeout<T>(
   });
 
   try {
-    return await Promise.race([operation(), timeout]);
+    return await Promise.race([operationPromise, timeout]);
+  } catch (error) {
+    if (!(error instanceof B2MutationTimeoutError) || postTimeoutSettleMs <= 0) {
+      throw error;
+    }
+
+    let settleTimer: NodeJS.Timeout | undefined;
+    let settleTimedOut = false;
+    const settleTimeout = new Promise<never>((_resolve, reject) => {
+      settleTimer = setTimeout(() => {
+        settleTimedOut = true;
+        reject(error);
+      }, postTimeoutSettleMs);
+      settleTimer.unref?.();
+    });
+
+    try {
+      return await Promise.race([operationPromise, settleTimeout]);
+    } catch (settleError) {
+      if (settleTimedOut) {
+        void operationPromise.catch((lateError) => {
+          logError(`${description} failed after the client-side timeout`, lateError);
+        });
+      }
+      throw settleError;
+    } finally {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+      }
+    }
   } finally {
     if (timer) {
       clearTimeout(timer);
@@ -156,11 +189,12 @@ async function withPublicBucketMutationTimeout<T>(
  */
 export interface BucketCommandServices {
   treeProvider: Pick<B2TreeProvider, "refresh">;
-  getClient: () => unknown | null;
-  publicBucketMutationTimeoutMs?: number;
+  isAuthenticated: () => boolean;
+  bucketMutationTimeoutMs?: number;
+  bucketMutationPostTimeoutSettleMs?: number;
 }
 
-export interface CreateBucketCommandServices extends Omit<BucketCommandServices, "getClient"> {
+export interface CreateBucketCommandServices extends BucketCommandServices {
   getClient: () => BucketCreationClient | null;
 }
 
@@ -169,6 +203,7 @@ export interface CommandServices extends CreateBucketCommandServices {
   treeProvider: B2TreeProvider;
   tempFileManager: TempFileManager;
   context: vscode.ExtensionContext;
+  isAuthenticated: () => boolean;
   getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
 }
@@ -264,6 +299,8 @@ export async function createBucketCommand(services: CreateBucketCommandServices)
   if (!bucketName) {
     return;
   }
+  // Defensive re-check: tests and extension-host edge cases can bypass
+  // validateInput by returning undefined or a stale value.
   const bucketNameValidation = validateBucketName(bucketName);
   if (bucketNameValidation) {
     vscode.window.showErrorMessage(`B2: ${bucketNameValidation}`);
@@ -313,13 +350,12 @@ export async function createBucketCommand(services: CreateBucketCommandServices)
             bucketName,
             bucketType: visibility.value,
           });
-        return visibility.value === "allPublic"
-          ? withPublicBucketMutationTimeout(
-              `Creating public B2 bucket "${bucketName}"`,
-              services.publicBucketMutationTimeoutMs ?? PUBLIC_BUCKET_MUTATION_TIMEOUT_MS,
-              create,
-            )
-          : create();
+        return withBucketMutationTimeout(
+          `Creating ${visibility.value === "allPublic" ? "public" : "private"} B2 bucket "${bucketName}"`,
+          services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
+          services.bucketMutationPostTimeoutSettleMs ?? BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          create,
+        );
       },
     );
     treeProvider.refresh();
@@ -339,8 +375,8 @@ export async function changeBucketVisibilityCommand(
   services: BucketCommandServices,
   item?: BucketVisibilityItem,
 ): Promise<void> {
-  const { treeProvider, getClient } = services;
-  if (!getClient()) {
+  const { treeProvider, isAuthenticated } = services;
+  if (!isAuthenticated()) {
     vscode.window.showErrorMessage("B2: Not authenticated.");
     return;
   }
@@ -352,6 +388,12 @@ export async function changeBucketVisibilityCommand(
   // The tree item is the state the user saw and confirmed. Its revision is sent
   // with the update so an out-of-band bucket change fails instead of being overwritten.
   const currentType = item.bucketType;
+  if (!isPublicPrivateBucketType(currentType)) {
+    vscode.window.showErrorMessage(
+      `B2: Bucket type "${currentType}" cannot be changed with the public/private visibility command.`,
+    );
+    return;
+  }
   const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
   const newLabel = bucketTypeLabel(newType);
   const currentLabel = bucketTypeLabel(currentType);
@@ -400,13 +442,12 @@ export async function changeBucketVisibilityCommand(
       },
       () => {
         const update = () => item.bucket.update({ bucketType: newType, ifRevisionIs: revision });
-        return newType === "allPublic"
-          ? withPublicBucketMutationTimeout(
-              `Changing B2 bucket "${item.bucketName}" to public`,
-              services.publicBucketMutationTimeoutMs ?? PUBLIC_BUCKET_MUTATION_TIMEOUT_MS,
-              update,
-            )
-          : update();
+        return withBucketMutationTimeout(
+          `Changing B2 bucket "${item.bucketName}" to ${newType === "allPublic" ? "public" : "private"}`,
+          services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
+          services.bucketMutationPostTimeoutSettleMs ?? BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          update,
+        );
       },
     );
     treeProvider.refresh();

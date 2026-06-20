@@ -138,6 +138,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
           signal,
           overwrite: false,
           allowedRootDirectory: destination.workspaceRoot,
+          temporaryDirectory: path.join(path.dirname(savePath), ".b2-vscode-transfers"),
         });
       },
     );

@@ -444,6 +444,10 @@ export function formatB2UserMessage(error: unknown): string {
     return "The B2 request timed out before the extension could confirm the final state. Refresh the bucket tree and verify the bucket in Backblaze before retrying.";
   }
 
+  if (matchesErrorName(error, "DownloadSizeLimitError")) {
+    return redactSensitiveText(getErrorMessage(error));
+  }
+
   if (isExpiredAuth(error)) {
     return "B2 authorization expired. Retry the operation; the SDK refreshes auth automatically when possible. If this keeps happening, run B2: Authenticate again.";
   }

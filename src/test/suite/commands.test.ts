@@ -43,7 +43,10 @@ const CONFIRM_PRIVATE_VISIBILITY_LABEL = "Change to Private";
 
 function makeCommandServices<TClient>(
   client: TClient | null,
-  options: Pick<BucketCommandServices, "publicBucketMutationTimeoutMs"> = {},
+  options: Pick<
+    BucketCommandServices,
+    "bucketMutationTimeoutMs" | "bucketMutationPostTimeoutSettleMs"
+  > = {},
 ): {
   readonly services: BucketCommandServices & { getClient: () => TClient | null };
   readonly refreshCount: () => number;
@@ -55,6 +58,7 @@ function makeCommandServices<TClient>(
         refreshes++;
       },
     },
+    isAuthenticated: () => client !== null,
     getClient: () => client,
     ...options,
   };
@@ -321,6 +325,30 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /Bucket name can only contain/);
   });
 
+  test("times out stalled private bucket creation", async () => {
+    const { client, calls } = makeCreateBucketClient(
+      () => new Promise<CreateBucketResult>(() => undefined),
+    );
+    const commandServices = makeCommandServices(client, {
+      bucketMutationTimeoutMs: 5,
+      bucketMutationPostTimeoutSettleMs: 0,
+    });
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["private-bucket"],
+        quickPickLabels: [PRIVATE_VISIBILITY_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(ui.warnings.length, 0);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
   test("does not create a public bucket when typed confirmation name mismatches", async () => {
     const { client, calls } = makeCreateBucketClient();
     const commandServices = makeCommandServices(client);
@@ -467,6 +495,20 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.progress.length, 1);
     assert.strictEqual(ui.progress[0]?.cancellable, false);
     assert.strictEqual(commandServices.refreshCount(), 1);
+  });
+
+  test("rejects unsupported bucket types before offering a visibility toggle", async () => {
+    const { item, updates } = makeBucketTreeItem("snapshot-bucket", "snapshot");
+    const commandServices = makeCommandServices({});
+
+    const ui = await withWindowUiStubs({}, () =>
+      changeBucketVisibilityCommand(commandServices.services, item),
+    );
+
+    assert.deepStrictEqual(updates, []);
+    assert.strictEqual(ui.quickPicks.length, 0);
+    assert.strictEqual(ui.progress.length, 0);
+    assert.match(ui.errors[0] ?? "", /cannot be changed/i);
   });
 
   test("refreshes when visibility update hits a revision conflict", async () => {
@@ -655,7 +697,10 @@ suite("B2 public bucket command safety", () => {
     const { client, calls } = makeCreateBucketClient(
       () => new Promise<CreateBucketResult>(() => undefined),
     );
-    const commandServices = makeCommandServices(client, { publicBucketMutationTimeoutMs: 5 });
+    const commandServices = makeCommandServices(client, {
+      bucketMutationTimeoutMs: 5,
+      bucketMutationPostTimeoutSettleMs: 0,
+    });
 
     const ui = await withWindowUiStubs(
       {
@@ -670,6 +715,36 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
     assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("refreshes success when public bucket creation settles after timeout", async () => {
+    const { client, calls } = makeCreateBucketClient(
+      () =>
+        new Promise<CreateBucketResult>((resolve) => {
+          setTimeout(() => {
+            resolve({ name: "public-bucket" } as CreateBucketResult);
+          }, 10);
+        }),
+    );
+    const commandServices = makeCommandServices(client, {
+      bucketMutationTimeoutMs: 5,
+      bucketMutationPostTimeoutSettleMs: 50,
+    });
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["public-bucket", "public-bucket"],
+        quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
+        warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.strictEqual(ui.errors.length, 0);
+    assert.strictEqual(ui.infos.length, 1);
   });
 
   test("does not show unknown-state warning for definitive public create failures", async () => {
@@ -794,7 +869,13 @@ suite("B2 public bucket command safety", () => {
       "allPrivate",
       () => new Promise<UpdateBucketResult>(() => undefined),
     );
-    const commandServices = makeCommandServices({}, { publicBucketMutationTimeoutMs: 5 });
+    const commandServices = makeCommandServices(
+      {},
+      {
+        bucketMutationTimeoutMs: 5,
+        bucketMutationPostTimeoutSettleMs: 0,
+      },
+    );
 
     const ui = await withWindowUiStubs(
       {
