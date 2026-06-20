@@ -294,6 +294,15 @@ test("download destinations reject trailing path separators", async () => {
   );
 });
 
+test("download localPath inputs reject empty internal segments", async () => {
+  await assert.rejects(() =>
+    resolveDownloadSavePath(workspaceRoot, "safe.txt", "downloads//safe.txt"),
+  );
+  await assert.rejects(() =>
+    resolveDownloadSavePath(workspaceRoot, "safe.txt", "downloads\\\\safe.txt"),
+  );
+});
+
 test(
   "workspace symlink downloads cannot redirect outside the workspace",
   { skip: process.platform === "win32" ? "directory symlink support varies on Windows" : false },

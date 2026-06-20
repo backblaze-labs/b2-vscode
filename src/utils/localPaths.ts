@@ -64,7 +64,7 @@ function safeLocalPathInputSegments(localPath: string): string[] {
     throw new UnsafePathError("localPath must be relative to the workspace.");
   }
 
-  const segments = localPath.split(/[\\/]+/);
+  const segments = localPath.split(/[\\/]/);
   if (
     segments.length === 0 ||
     segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
