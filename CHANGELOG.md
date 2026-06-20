@@ -18,11 +18,18 @@
   sibling files before issuing a prefix-based download authorization. The
   token-bearing link is returned in the structured `url` field rather than
   repeated in the human-readable message.
+- Removed automatic activation-time cancellation of stale unfinished large-file
+  uploads. Interrupted multipart uploads are no longer reclaimed on startup;
+  configure a B2 lifecycle rule or manually cancel unfinished uploads to bound
+  storage for crashed or killed transfers.
 
 ### Fixed
 
 - Marketplace package metadata now points to the canonical
   `backblaze-labs/b2-vscode` repository URL.
+- File transfers now fail stalled uploads, downloads, and zero-byte folder-marker
+  uploads with a bounded timeout instead of leaving progress notifications
+  pending indefinitely.
 - Packaged CLI credential auto-detection now loads copied SQL.js runtime assets
   from the extension runtime directory (`dist/sql-wasm.js` and
   `dist/sql-wasm.wasm`). VSIX packaging now verifies pinned SQL.js runtime and
