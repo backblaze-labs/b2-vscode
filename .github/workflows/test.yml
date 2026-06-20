@@ -80,7 +80,9 @@ jobs:
 
       - name: Verify dependency signatures
         timeout-minutes: 10
-        run: bash scripts/retry.sh npm audit signatures
+        env:
+          npm_config_ignore_scripts: "true"
+        run: bash scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit workflow guardrails
         run: node scripts/assert-audit-workflow.js

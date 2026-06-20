@@ -6,6 +6,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const { spawnSync } = require("child_process");
 const {
   collectAuditFindings,
   dateOnlyDaysFromNow,
@@ -47,6 +48,7 @@ function acceptedAdvisory(overrides = {}) {
     owner: "security-team",
     reason: "No patched version is available yet.",
     reviewBy: dateOnlyDaysFromNow(7),
+    paths: ["node_modules/example-package"],
     ...overrides,
   };
 }
@@ -72,6 +74,15 @@ function assertAcceptedPathScope() {
   const fullAcceptance = acceptedAdvisory({ paths: finding.paths });
   if (!isAcceptedFinding(finding, [fullAcceptance])) {
     throw new Error("accepted advisory paths should match when every finding path is listed.");
+  }
+
+  const groupedFinding = {
+    ...finding,
+    package: "transitive-example-package",
+    vulnerability: "example-package",
+  };
+  if (isAcceptedFinding(groupedFinding, [fullAcceptance])) {
+    throw new Error("accepted advisory package matching must not widen to vulnerability groups.");
   }
 }
 
@@ -118,6 +129,8 @@ function assertCodeOwnerProtection() {
     "/audit-policy.jsonc",
     "/scripts/audit-policy.js",
     "/scripts/run-npm-audit.js",
+    "/scripts/retry.sh",
+    "/scripts/npm-command.js",
     "/scripts/assert-audit-policy.js",
     "/scripts/assert-audit-workflow.js",
   ]) {
@@ -127,12 +140,29 @@ function assertCodeOwnerProtection() {
   }
 }
 
+function assertRetryPropagatesFailure() {
+  const result = spawnSync("bash", ["scripts/retry.sh", "node", "-e", "process.exit(7)"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, RETRY_ATTEMPTS: "1" },
+  });
+
+  if (result.status !== 7) {
+    throw new Error(
+      `retry.sh must propagate the wrapped command exit code. Exit ${result.status}.\n${
+        result.stdout ?? ""
+      }\n${result.stderr ?? ""}`,
+    );
+  }
+}
+
 try {
   const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot);
   validateAuditPolicy(auditPolicy, packageJson);
   assertAcceptedPathScope();
   assertUnknownSeverityBlocks();
   assertCodeOwnerProtection();
+  assertRetryPropagatesFailure();
 
   // Validator self-checks: these do not inspect repository state, they prove
   // the guard rejects known policy bypasses before CI trusts it.
@@ -162,6 +192,9 @@ try {
   });
   expectInvalid("accepted advisory without owner", (auditPolicy) => {
     auditPolicy.acceptedAdvisories = [acceptedAdvisory({ owner: "" })];
+  });
+  expectInvalid("accepted advisory without paths", (auditPolicy) => {
+    auditPolicy.acceptedAdvisories = [acceptedAdvisory({ paths: undefined })];
   });
   expectInvalid("neutered audit script", (_auditPolicy, packageJson) => {
     packageJson.scripts["audit:ci"] = 'node -e "process.exit(0)"';

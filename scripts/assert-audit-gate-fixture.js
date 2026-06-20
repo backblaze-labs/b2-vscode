@@ -9,7 +9,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { collectAuditFindings, dateOnlyDaysFromNow } = require("./audit-policy");
-const { npmCommand } = require("./npm-command");
+const { npmCommand, trustedNpmConfigArgs, trustedNpmEnv } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-fixture-"));
@@ -67,11 +67,12 @@ function packageLock(name, dependencyField) {
 }
 
 function run(command, args, options = {}) {
+  const { env, ...spawnOptions } = options;
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
-    env: { ...process.env, npm_config_ignore_scripts: "true" },
-    ...options,
+    env: trustedNpmEnv(env),
+    ...spawnOptions,
   });
   return {
     ...result,
@@ -100,9 +101,13 @@ function assertInvalidCliArgs(args, expectedMessage) {
 }
 
 function loadFixtureFindings() {
-  const result = run(npmCommand, ["audit", "--json", "--audit-level=moderate"], {
-    cwd: tempRoot,
-  });
+  const result = run(
+    npmCommand,
+    ["audit", "--json", "--audit-level=moderate", ...trustedNpmConfigArgs],
+    {
+      cwd: tempRoot,
+    },
+  );
   if (result.error) {
     throw new InfrastructureError(result.error.message);
   }
@@ -142,6 +147,7 @@ try {
     path.join(tempRoot, "package-lock.json"),
     `${JSON.stringify(packageLock(packageJson.name, "dependencies"), null, 2)}\n`,
   );
+  fs.writeFileSync(path.join(tempRoot, ".npmrc"), "registry=https://example.invalid/\n");
 
   const result = runGate();
   if (result.error) {

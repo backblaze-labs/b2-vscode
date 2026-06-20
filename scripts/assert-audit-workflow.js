@@ -175,8 +175,21 @@ function assertInstallStep(label, step) {
 
 function assertSignatureStep(label, step) {
   assert(
-    hasTokens(normalizedRun(step), ["bash scripts/retry.sh", "npm", "audit", "signatures"]),
-    `${label} must verify dependency signatures through the retry helper.`,
+    step.if === undefined,
+    `${label} must run unconditionally; break-glass may skip only advisory audits.`,
+  );
+  assertIgnoreScriptsEnv(label, step);
+  assert(
+    hasTokens(normalizedRun(step), [
+      "bash scripts/retry.sh",
+      "npm",
+      "audit",
+      "signatures",
+      "--registry=https://registry.npmjs.org/",
+      "--userconfig=/dev/null",
+      "--globalconfig=/tmp/b2-vscode-empty-npm-globalconfig",
+    ]),
+    `${label} must verify dependency signatures through the retry helper using the trusted npm registry config.`,
   );
 }
 
@@ -194,6 +207,7 @@ function assertTestWorkflow(testWorkflow) {
     "audit-policy.jsonc",
     "scripts/audit-policy.js",
     "scripts/run-npm-audit.js",
+    "scripts/retry.sh",
     "scripts/npm-command.js",
   ]) {
     assertPathFilterCovers(testWorkflow, "push", targetPath);
@@ -244,12 +258,25 @@ function assertTestWorkflow(testWorkflow) {
 }
 
 function assertReleaseWorkflow(releaseWorkflow) {
+  const breakGlassJob = job(releaseWorkflow, "dependency-gate-break-glass");
   const qualityJob = job(releaseWorkflow, "quality");
   const auditJob = job(releaseWorkflow, "audit");
   const buildJob = job(releaseWorkflow, "build");
   const buildNeeds = Array.isArray(buildJob.needs) ? buildJob.needs : [buildJob.needs];
+  assert(
+    breakGlassJob.environment === "dependency-gate-break-glass" ||
+      breakGlassJob.environment?.name === "dependency-gate-break-glass",
+    "dependency-gate-break-glass job must require the protected dependency-gate-break-glass environment.",
+  );
+  stepIndex(breakGlassJob, "break-glass environment protection check", (_step, run) =>
+    hasTokens(run, ["environments/dependency-gate-break-glass", "required_reviewers"]),
+  );
   assert(buildNeeds.includes("quality"), "build must depend on the quality audit gate.");
   assert(buildNeeds.includes("audit"), "build must depend on the dependency audit job.");
+  assert(
+    buildNeeds.includes("dependency-gate-break-glass"),
+    "build must depend on dependency-gate-break-glass approval.",
+  );
 
   const qualityInstallIndex = stepIndex(qualityJob, "release quality install", (_step, run) =>
     /\bnpm\s+ci\b/.test(run),

@@ -12,7 +12,7 @@ on:
         default: false
         type: boolean
       dependency_gate_break_glass:
-        description: "Emergency override reason for skipping advisory and signature gates during a workflow_dispatch hotfix."
+        description: "Emergency override reason for skipping advisory gates during a workflow_dispatch hotfix."
         required: false
         default: ""
         type: string
@@ -51,6 +51,40 @@ jobs:
             exit 1
           fi
 
+  dependency-gate-break-glass:
+    name: Dependency Gate Break-Glass Approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
+    permissions:
+      actions: read
+      contents: read
+    environment: dependency-gate-break-glass
+
+    steps:
+      - name: Verify break-glass environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ENV_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/environments/dependency-gate-break-glass")
+          printf '%s' "$ENV_JSON" | node -e '
+            const fs = require("fs");
+            const env = JSON.parse(fs.readFileSync(0, "utf8"));
+            const rules = Array.isArray(env.protection_rules) ? env.protection_rules : [];
+            if (!rules.some((rule) => rule.type === "required_reviewers")) {
+              console.error("The dependency-gate-break-glass environment must have required reviewers before advisory gates can be skipped.");
+              process.exit(1);
+            }
+          '
+
+      - name: Record dependency gate break-glass
+        env:
+          DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          echo "::warning title=Dependency gate break-glass::${GITHUB_ACTOR}: ${DEPENDENCY_GATE_BREAK_GLASS}"
+
   quality:
     name: Format, Lint & Type Check
     runs-on: ubuntu-latest
@@ -88,20 +122,10 @@ jobs:
         run: bash scripts/retry.sh node scripts/run-npm-audit.js
 
       - name: Verify dependency signatures
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dependency_gate_break_glass == '' }}
         timeout-minutes: 10
-        run: bash scripts/retry.sh npm audit signatures
-
-      - name: Record dependency gate break-glass
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
         env:
-          DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
-        run: |
-          if [ -z "$DEPENDENCY_GATE_BREAK_GLASS" ]; then
-            echo "dependency_gate_break_glass requires an emergency reason."
-            exit 1
-          fi
-          echo "::warning title=Dependency gate break-glass::${DEPENDENCY_GATE_BREAK_GLASS}"
+          npm_config_ignore_scripts: "true"
+        run: bash scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Run quality checks
         run: npm run check
@@ -164,17 +188,6 @@ jobs:
           npm_config_ignore_scripts: "true"
         run: bash scripts/retry.sh node scripts/run-npm-audit.js
 
-      - name: Record dependency gate break-glass
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dependency_gate_break_glass != '' }}
-        env:
-          DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
-        run: |
-          if [ -z "$DEPENDENCY_GATE_BREAK_GLASS" ]; then
-            echo "dependency_gate_break_glass requires an emergency reason."
-            exit 1
-          fi
-          echo "::warning title=Dependency gate break-glass::${DEPENDENCY_GATE_BREAK_GLASS}"
-
   sast:
     name: CodeQL SAST
     runs-on: ubuntu-latest
@@ -214,9 +227,19 @@ jobs:
 
   build:
     name: Build VSIX
-    needs: [verify-release-source, quality, test, audit, sast]
+    needs: [verify-release-source, dependency-gate-break-glass, quality, test, audit, sast]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: >-
+      ${{
+        always() &&
+        needs.verify-release-source.result == 'success' &&
+        (needs.dependency-gate-break-glass.result == 'success' || needs.dependency-gate-break-glass.result == 'skipped') &&
+        needs.quality.result == 'success' &&
+        needs.test.result == 'success' &&
+        needs.audit.result == 'success' &&
+        needs.sast.result == 'success'
+      }}
     permissions:
       contents: read
 

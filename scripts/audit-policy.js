@@ -22,7 +22,7 @@ function assert(condition, message) {
   }
 }
 
-function parseJsonc(text, sourceName = AUDIT_POLICY_FILE) {
+function parseStrictJsonPolicy(text, sourceName = AUDIT_POLICY_FILE) {
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -104,13 +104,14 @@ function validateAcceptedAdvisory(entry, index, today = new Date()) {
     `acceptedAdvisories[${index}].reviewBy must be within ${MAX_ACCEPTANCE_DAYS} days.`,
   );
 
-  if (entry.paths !== undefined) {
-    assert(Array.isArray(entry.paths), `acceptedAdvisories[${index}].paths must be an array.`);
-    assert(
-      entry.paths.every((item) => typeof item === "string" && item.length > 0),
-      `acceptedAdvisories[${index}].paths must contain non-empty strings.`,
-    );
-  }
+  assert(
+    Array.isArray(entry.paths) && entry.paths.length > 0,
+    `acceptedAdvisories[${index}].paths must be a non-empty array.`,
+  );
+  assert(
+    entry.paths.every((item) => typeof item === "string" && item.length > 0),
+    `acceptedAdvisories[${index}].paths must contain non-empty strings.`,
+  );
 }
 
 function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
@@ -147,7 +148,7 @@ function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
 }
 
 function loadAuditPolicy(repoRoot, policyPath = path.join(repoRoot, AUDIT_POLICY_FILE)) {
-  return parseJsonc(fs.readFileSync(policyPath, "utf8"), path.basename(policyPath));
+  return parseStrictJsonPolicy(fs.readFileSync(policyPath, "utf8"), path.basename(policyPath));
 }
 
 function loadCurrentPolicy(repoRoot, policyPath) {
@@ -212,13 +213,10 @@ function collectAuditFindings(report, auditLevel) {
 
 function isAcceptedFinding(finding, acceptedAdvisories) {
   return acceptedAdvisories.some((entry) => {
-    const packageMatches =
-      entry.package === finding.package || entry.package === finding.vulnerability;
+    const packageMatches = entry.package === finding.package;
     const pathsMatch =
-      entry.paths === undefined ||
-      entry.paths.length === 0 ||
-      (finding.paths.length > 0 &&
-        finding.paths.every((findingPath) => entry.paths.includes(findingPath)));
+      finding.paths.length > 0 &&
+      finding.paths.every((findingPath) => entry.paths.includes(findingPath));
 
     return entry.id.toLowerCase() === finding.id.toLowerCase() && packageMatches && pathsMatch;
   });
@@ -238,6 +236,6 @@ module.exports = {
   formatFinding,
   isAcceptedFinding,
   loadCurrentPolicy,
-  parseJsonc,
+  parseStrictJsonPolicy,
   validateAuditPolicy,
 };

@@ -42,8 +42,9 @@ should_retry() {
 for attempt in $(seq 1 "$attempts"); do
   if "$@"; then
     exit 0
+  else
+    status="$?"
   fi
-  status="$?"
 
   if [ "$attempt" -eq "$attempts" ]; then
     exit "$status"

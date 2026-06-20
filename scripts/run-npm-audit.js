@@ -12,9 +12,10 @@ const {
   formatFinding,
   isAcceptedFinding,
   loadCurrentPolicy,
+  parseStrictJsonPolicy,
   validateAuditPolicy,
 } = require("./audit-policy");
-const { npmCommand } = require("./npm-command");
+const { npmCommand, trustedNpmConfigArgs, trustedNpmEnv } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
 const AUDIT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
@@ -72,21 +73,54 @@ function npmAuditScopeArgs(auditPolicy) {
   return auditPolicy.includeDev ? ["--include=dev"] : ["--omit=dev"];
 }
 
-function sanitizedNpmEnv() {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    const normalized = key.toLowerCase();
-    if (
-      normalized === "npm_config_omit" ||
-      normalized === "npm_config_include" ||
-      normalized === "npm_config_only" ||
-      normalized === "npm_config_production"
-    ) {
-      delete env[key];
+function readBaseBranchPolicy(repoRoot, baseRef) {
+  const basePolicySpec = `refs/remotes/origin/${baseRef}:${AUDIT_POLICY_FILE}`;
+  let result = spawnSync("git", ["show", basePolicySpec], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) {
+    const fetchResult = spawnSync(
+      "git",
+      ["fetch", "--no-tags", "origin", `${baseRef}:refs/remotes/origin/${baseRef}`],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+    if (fetchResult.status !== 0) {
+      failInfrastructure(
+        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${
+          fetchResult.stdout ?? ""
+        }\n${fetchResult.stderr ?? ""}`,
+      );
     }
+
+    result = spawnSync("git", ["show", basePolicySpec], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
   }
-  env.npm_config_ignore_scripts = "true";
-  return env;
+
+  if (result.status !== 0 || !result.stdout) {
+    return undefined;
+  }
+
+  return parseStrictJsonPolicy(result.stdout, basePolicySpec);
+}
+
+function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson) {
+  if (process.env.GITHUB_EVENT_NAME !== "pull_request" || !process.env.GITHUB_BASE_REF) {
+    return auditPolicy.acceptedAdvisories;
+  }
+
+  const basePolicy = readBaseBranchPolicy(repoRoot, process.env.GITHUB_BASE_REF);
+  if (basePolicy === undefined) {
+    return [];
+  }
+  validateAuditPolicy(basePolicy, packageJson);
+  return basePolicy.acceptedAdvisories;
 }
 
 try {
@@ -101,11 +135,12 @@ try {
       "--json",
       `--audit-level=${auditPolicy.auditLevel}`,
       ...npmAuditScopeArgs(auditPolicy),
+      ...trustedNpmConfigArgs,
     ],
     {
       cwd: args.directory,
       encoding: "utf8",
-      env: sanitizedNpmEnv(),
+      env: trustedNpmEnv(),
       maxBuffer: AUDIT_MAX_BUFFER_BYTES,
     },
   );
@@ -124,8 +159,9 @@ try {
   }
 
   const findings = collectAuditFindings(report, auditPolicy.auditLevel);
+  const acceptedAdvisories = trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson);
   const unacceptedFindings = findings.filter(
-    (finding) => !isAcceptedFinding(finding, auditPolicy.acceptedAdvisories),
+    (finding) => !isAcceptedFinding(finding, acceptedAdvisories),
   );
 
   if (unacceptedFindings.length > 0) {
