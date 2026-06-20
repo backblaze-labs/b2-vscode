@@ -27,6 +27,7 @@ import {
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
   writeFileNoFollow,
+  writeFileNoFollowWithinRoot,
 } from "./pathSafety";
 
 export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -616,6 +617,28 @@ export function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+async function copyIntoPlaceNoFollow(
+  sourcePath: string,
+  destinationPath: string,
+  options: MoveIntoPlaceOptions = {},
+  allowedRootDirectory?: string,
+): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    await writeFileNoFollowWithinRoot(
+      allowedRootDirectory,
+      destinationPath,
+      fs.createReadStream(sourcePath),
+      {
+        ...options,
+        label: "download target",
+      },
+    );
+  } else {
+    await writeFileNoFollow(destinationPath, fs.createReadStream(sourcePath), options);
+  }
+  await removeTempFile(sourcePath);
+}
+
 async function replaceExistingDestination(
   sourcePath: string,
   destinationPath: string,
@@ -674,7 +697,18 @@ async function renameIntoPlace(
 async function moveIntoPlaceWithoutOverwrite(
   sourcePath: string,
   destinationPath: string,
+  allowedRootDirectory?: string,
 ): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    await copyIntoPlaceNoFollow(
+      sourcePath,
+      destinationPath,
+      { overwrite: false },
+      allowedRootDirectory,
+    );
+    return;
+  }
+
   try {
     await fs.promises.link(sourcePath, destinationPath);
   } catch (error) {
@@ -694,9 +728,10 @@ async function moveIntoPlace(
   sourcePath: string,
   destinationPath: string,
   options: MoveIntoPlaceOptions = {},
+  allowedRootDirectory?: string,
 ): Promise<void> {
   if (options.overwrite === false) {
-    await moveIntoPlaceWithoutOverwrite(sourcePath, destinationPath);
+    await moveIntoPlaceWithoutOverwrite(sourcePath, destinationPath, allowedRootDirectory);
     return;
   }
 
@@ -779,6 +814,7 @@ export async function downloadStreamToFile(
       temporaryPath,
       destinationPath,
       options.overwrite !== undefined ? { overwrite: options.overwrite } : {},
+      options.allowedRootDirectory,
     );
     temporaryPath = "";
     return stats.size;

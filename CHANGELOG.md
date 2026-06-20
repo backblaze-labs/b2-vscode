@@ -14,7 +14,8 @@
 - Download and temp-open paths now preserve natural B2 object basenames while
   sanitizing traversal and platform-unsafe path segments before writing locally.
 - Copilot `downloadFile` / `uploadFile` local paths are workspace-relative;
-  download destinations are sanitized before writing.
+  absolute local paths are no longer accepted, download destinations are
+  sanitized before writing, and existing local files are not overwritten.
 
 ### Fixed
 
@@ -65,6 +66,9 @@
   authorization token.
 - Temp-open downloads now use a private per-process cache directory with
   owner-only file permissions.
+- Interrupted large uploads are canceled automatically only while the extension
+  still owns the active upload session. Configure a B2 bucket lifecycle rule to
+  cancel stale unfinished large files after crashes or host termination.
 
 ## [0.0.1] — 2026-03-25
 

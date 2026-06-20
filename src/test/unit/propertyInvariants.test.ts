@@ -107,6 +107,7 @@ test("temp cache paths stay inside the temp root for arbitrary B2 names", () => 
 test("natural B2 basenames are preserved for default download and temp paths", async () => {
   const naturalName = "My File #1.csv";
   const unicodeName = "caf\u00e9 #1.txt";
+  const hiddenName = ".npmrc";
   const bucketPath = buildTempFilePath(tempRoot, "bucket/with\\slash", "safe.txt");
   const bucketPathSegments = path.relative(tempRoot, bucketPath).split(path.sep);
 
@@ -118,6 +119,10 @@ test("natural B2 basenames are preserved for default download and temp paths", a
     path.basename(buildTempFilePath(tempRoot, "bucket", `reports/${unicodeName}`)),
     unicodeName,
   );
+  assert.equal(
+    path.basename(await resolveDownloadSavePath(workspaceRoot, `reports/${hiddenName}`)),
+    hiddenName,
+  );
   assert.equal(bucketPathSegments.length, 2);
   assert.notEqual(bucketPathSegments[0], "bucket/with\\slash");
   assert.notEqual(bucketPathSegments[0], "");
@@ -127,9 +132,9 @@ test("natural B2 basenames are preserved for default download and temp paths", a
 test("unsafe B2 basenames are encoded for default downloads", async () => {
   const bidiName = "invoice\u202Egnp.exe";
   const reservedName = "aux";
-  const hiddenName = ".npmrc";
+  const controlDirectoryName = ".git";
 
-  for (const unsafeName of [bidiName, reservedName, hiddenName]) {
+  for (const unsafeName of [bidiName, reservedName, controlDirectoryName]) {
     const destinationPath = await resolveDownloadSavePath(workspaceRoot, `reports/${unsafeName}`);
     assert.notEqual(path.basename(destinationPath), unsafeName);
     assert.match(path.basename(destinationPath), /^__b2_/);
@@ -360,6 +365,8 @@ test("presign operation supports object names with empty path segments", async (
   assert.deepEqual(authorizationRequests, [["a//b.txt", 60]]);
   assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
   assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
+  assert.equal(result.message.includes("token/with #spaces"), false);
+  assert.equal(result.message.includes(result.url), false);
 });
 
 test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {

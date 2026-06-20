@@ -18,8 +18,9 @@ import {
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
+  prepareSafeFileWritePath,
 } from "./pathSafety";
-import { buildTempFilePath, prepareSafeFileWritePath } from "../utils/localPaths";
+import { buildTempFilePath } from "../utils/localPaths";
 import { createPrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;

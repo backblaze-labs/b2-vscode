@@ -9,8 +9,8 @@ import * as path from "path";
 import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
-import { findWorkspaceControlDirectory } from "../../services/pathSafety";
-import { prepareSafeFileWritePath, resolveDownloadSavePath } from "../../utils/localPaths";
+import { findWorkspaceControlDirectory, prepareSafeFileWritePath } from "../../services/pathSafety";
+import { resolveDownloadSavePath } from "../../utils/localPaths";
 import {
   sanitizePathError,
   type PathMessageReplacement,

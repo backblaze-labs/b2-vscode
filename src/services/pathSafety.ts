@@ -7,6 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Buffer } from "buffer";
+import type { FileHandle } from "fs/promises";
 
 export class UnsafePathError extends Error {
   constructor(message: string) {
@@ -237,6 +238,44 @@ async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefine
   }
 }
 
+function isSameFilesystemEntry(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
+  const beforeStats = await fs.promises.lstat(filePath);
+  if (beforeStats.isSymbolicLink() || !beforeStats.isFile()) {
+    throw new UnsafePathError(`${label} must be a real file, not a symlink or special file.`);
+  }
+
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fileHandle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollowFlag);
+  let completed = false;
+
+  try {
+    const [openedStats, afterStats] = await Promise.all([
+      fileHandle.stat(),
+      fs.promises.lstat(filePath),
+    ]);
+    if (afterStats.isSymbolicLink() || !afterStats.isFile() || !openedStats.isFile()) {
+      throw new UnsafePathError(`${label} must be a real file, not a symlink or special file.`);
+    }
+    if (
+      !isSameFilesystemEntry(beforeStats, openedStats) ||
+      !isSameFilesystemEntry(afterStats, openedStats)
+    ) {
+      throw new UnsafePathError(`${label} changed while it was being opened.`);
+    }
+
+    completed = true;
+    return fileHandle;
+  } finally {
+    if (!completed) {
+      await fileHandle.close().catch(() => undefined);
+    }
+  }
+}
+
 async function nearestExistingPath(candidatePath: string): Promise<string> {
   let currentPath = candidatePath;
   for (;;) {
@@ -333,6 +372,45 @@ export async function writeFileNoFollow(
   let completed = false;
 
   try {
+    if (typeof data === "string" || data instanceof Uint8Array) {
+      await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
+    } else {
+      for await (const chunk of data) {
+        await fileHandle.write(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+      }
+    }
+    completed = true;
+  } finally {
+    try {
+      await fileHandle.close();
+    } finally {
+      if (!completed && options.overwrite === false) {
+        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+}
+
+export async function writeFileNoFollowWithinRoot(
+  rootPath: string,
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+  options: { overwrite?: boolean; label?: string } = {},
+): Promise<void> {
+  const label = options.label ?? "path";
+  await assertSafeFileWritePath(rootPath, filePath, label);
+
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const overwriteFlag = options.overwrite === false ? fs.constants.O_EXCL : fs.constants.O_TRUNC;
+  const fileHandle = await fs.promises.open(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
+    0o600,
+  );
+  let completed = false;
+
+  try {
+    await assertSafeFileWritePath(rootPath, filePath, label);
     if (typeof data === "string" || data instanceof Uint8Array) {
       await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
     } else {

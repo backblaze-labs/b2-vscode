@@ -1,7 +1,7 @@
 /**
  * Helpers for turning B2 object names and workspace-relative input into local
- * filesystem paths. Containment and no-follow write checks live in
- * services/pathSafety and are re-exported here for compatibility.
+ * filesystem paths. Containment and safe-write primitives live in
+ * services/pathSafety.
  *
  * @module utils/localPaths
  */
@@ -11,26 +11,17 @@ import { toWellFormedString } from "./strings";
 import {
   assertNoNul,
   assertSafeFileWritePath,
-  assertSafeWritePath,
   isAbsolutePortable,
-  prepareSafeFileWritePath,
   resolveInsideRoot,
   UnsafePathError,
-  writeFileNoFollow,
 } from "../services/pathSafety";
-
-export {
-  assertSafeFileWritePath,
-  assertSafeWritePath,
-  prepareSafeFileWritePath,
-  writeFileNoFollow,
-};
 
 const ENCODED_SEGMENT_PREFIX = "__b2_";
 const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F\u007F<>:"|?*\\/]/g;
 const UNSAFE_BIDI_CONTROL_CHARACTERS = /[\u202A-\u202E\u2066-\u2069]/g;
 const UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS = /[. ]+$/;
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+const WORKSPACE_CONTROL_DIRECTORY_SEGMENTS = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 function encodeRawLocalPathSegment(segment: string): string {
   return `${ENCODED_SEGMENT_PREFIX}${segment ? Buffer.from(segment, "utf8").toString("hex") : "empty"}`;
@@ -47,7 +38,7 @@ export function sanitizeLocalPathSegment(segment: string): string {
     !wellFormedSegment ||
     sanitized !== wellFormedSegment ||
     WINDOWS_RESERVED_NAME.test(sanitized) ||
-    sanitized.startsWith(".") ||
+    WORKSPACE_CONTROL_DIRECTORY_SEGMENTS.has(sanitized.toLowerCase()) ||
     sanitized.startsWith(ENCODED_SEGMENT_PREFIX)
   ) {
     return encodeRawLocalPathSegment(wellFormedSegment);

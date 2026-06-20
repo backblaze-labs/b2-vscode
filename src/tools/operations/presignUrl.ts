@@ -71,7 +71,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
     return {
       url,
       expiresIn,
-      message: `Pre-signed URL for ${filePath} (valid for ${expiresIn}s): ${url}`,
+      message: `Pre-signed URL for ${filePath} is valid for ${expiresIn}s.`,
     };
   },
 };

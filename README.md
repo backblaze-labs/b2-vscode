@@ -133,7 +133,8 @@ src/
 ├── commands/index.ts         # Command registrations
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
-│   ├── b2.ts                 # B2 SDK client factory + stream helper
+│   ├── b2.ts                 # B2 SDK client factory
+│   ├── fileTransfers.ts      # Upload/download streaming and staging
 │   └── tempFileManager.ts    # Downloaded file cache
 ├── utils/                    # Pure path, URL, and formatting helpers
 ├── providers/
