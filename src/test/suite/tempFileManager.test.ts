@@ -224,25 +224,24 @@ suite("TempFileManager", () => {
     const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const manager = new TempFileManager(tempRoot);
     const symlinkPath = path.join(tempRoot, "bucket", "link");
+    const localPath = path.join(symlinkPath, "escape.txt");
     const outsideFile = path.join(outsideRoot, "escape.txt");
     const capabilityLink = path.join(tempRoot, "symlink-capability");
-    const originalMkdir = fs.promises.mkdir;
-    const mutablePromises = fs.promises as unknown as { mkdir: typeof fs.promises.mkdir };
+    const originalOpen = fs.promises.open;
+    const mutablePromises = fs.promises as unknown as { open: typeof fs.promises.open };
     let symlinkInjected = false;
-    let targetMkdirCalls = 0;
 
-    mutablePromises.mkdir = (async (...args: Parameters<typeof fs.promises.mkdir>) => {
-      const result = await originalMkdir(...args);
-      const targetPath = path.resolve(String(args[0]));
-      if (targetPath === symlinkPath) {
-        targetMkdirCalls += 1;
-      }
-      if (!symlinkInjected && targetPath === symlinkPath && targetMkdirCalls === 2) {
+    mutablePromises.open = (async (
+      filePath: fs.PathLike,
+      flags?: string | number,
+      mode?: fs.Mode,
+    ) => {
+      if (!symlinkInjected && path.resolve(String(filePath)) === path.resolve(localPath)) {
         fs.rmSync(symlinkPath, { recursive: true, force: true });
         symlinkInjected = createDirectorySymlink(outsideRoot, symlinkPath);
       }
-      return result;
-    }) as typeof fs.promises.mkdir;
+      return originalOpen(filePath, flags, mode);
+    }) as typeof fs.promises.open;
 
     try {
       if (!createDirectorySymlink(outsideRoot, capabilityLink)) {
@@ -262,7 +261,7 @@ suite("TempFileManager", () => {
         undefined,
       );
     } finally {
-      mutablePromises.mkdir = originalMkdir;
+      mutablePromises.open = originalOpen;
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });
       fs.rmSync(outsideRoot, { recursive: true, force: true });
