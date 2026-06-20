@@ -817,7 +817,11 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
               { getClient: () => client },
             ),
-          /real directory|symlink/i,
+          (error: unknown) => {
+            assert.match((error as Error).message, /real directory|symlink/i);
+            assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+            return true;
+          },
         );
       });
 
