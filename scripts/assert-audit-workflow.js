@@ -156,6 +156,16 @@ function assertAuditStep(label, step) {
   );
 }
 
+function assertFixtureStep(label, step) {
+  const command = normalizedRun(step);
+  assertIgnoreScriptsEnv(label, step);
+  assertRetryOnlyInfrastructureFailures(label, step);
+  assert(
+    hasTokens(command, ["bash scripts/retry.sh", "node", "scripts/assert-audit-gate-fixture.js"]),
+    `${label} must run the audit fixture through the retry helper.`,
+  );
+}
+
 function assertInstallStep(label, step) {
   assert(
     hasTokens(normalizedRun(step), ["bash scripts/retry.sh", "npm", "ci", "--ignore-scripts"]),
@@ -228,6 +238,7 @@ function assertTestWorkflow(testWorkflow) {
   );
 
   assertInstallStep("test install step", stepByIndex(testJob, installIndex));
+  assertFixtureStep("test audit fixture step", stepByIndex(testJob, fixtureIndex));
   assertAuditStep("test audit step", stepByIndex(testJob, auditIndex));
   assertSignatureStep("test signature step", stepByIndex(testJob, signatureIndex));
 }

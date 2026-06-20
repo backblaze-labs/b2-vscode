@@ -65,8 +65,9 @@ jobs:
       - name: Assert audit gate fails closed
         timeout-minutes: 10
         env:
+          RETRY_EXIT_CODES: "2"
           npm_config_ignore_scripts: "true"
-        run: node scripts/assert-audit-gate-fixture.js
+        run: bash scripts/retry.sh node scripts/assert-audit-gate-fixture.js
 
       - name: Audit dependency advisories
         timeout-minutes: 10

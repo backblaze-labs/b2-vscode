@@ -15,6 +15,13 @@ const repoRoot = path.join(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-fixture-"));
 const devOnlyTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-audit-dev-fixture-"));
 
+class InfrastructureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InfrastructureError";
+  }
+}
+
 const packageJson = {
   name: "b2-vscode-audit-fixture",
   version: "1.0.0",
@@ -97,7 +104,7 @@ function loadFixtureFindings() {
     cwd: tempRoot,
   });
   if (result.error) {
-    throw result.error;
+    throw new InfrastructureError(result.error.message);
   }
   if (result.status === 0) {
     throw new Error(
@@ -109,7 +116,7 @@ function loadFixtureFindings() {
   try {
     report = JSON.parse(result.stdout ?? "");
   } catch (error) {
-    throw new Error(
+    throw new InfrastructureError(
       `npm audit infrastructure error while reading the lodash fixture: ${error.message}\n${result.output}`,
     );
   }
@@ -138,7 +145,7 @@ try {
 
   const result = runGate();
   if (result.error) {
-    throw result.error;
+    throw new InfrastructureError(result.error.message);
   }
   if (result.status === 0) {
     throw new Error(
@@ -146,7 +153,7 @@ try {
     );
   }
   if (result.status === 2) {
-    throw new Error(
+    throw new InfrastructureError(
       `npm audit infrastructure error while checking the lodash fixture:\n${result.output}`,
     );
   }
@@ -172,13 +179,13 @@ try {
     },
   });
   if (devOnlyResult.error) {
-    throw devOnlyResult.error;
+    throw new InfrastructureError(devOnlyResult.error.message);
   }
   if (devOnlyResult.status === 0) {
     throw new Error("npm audit gate allowed npm_config_omit=dev to hide dev advisories.");
   }
   if (devOnlyResult.status === 2) {
-    throw new Error(
+    throw new InfrastructureError(
       `npm audit infrastructure error while checking dev dependency coverage:\n${devOnlyResult.output}`,
     );
   }
@@ -212,7 +219,12 @@ try {
 
   const acceptedResult = runGate(tempRoot, ["--policy", acceptedPolicyPath]);
   if (acceptedResult.error) {
-    throw acceptedResult.error;
+    throw new InfrastructureError(acceptedResult.error.message);
+  }
+  if (acceptedResult.status === 2) {
+    throw new InfrastructureError(
+      `npm audit infrastructure error while checking accepted advisories:\n${acceptedResult.output}`,
+    );
   }
   if (acceptedResult.status !== 0) {
     throw new Error(
@@ -221,6 +233,9 @@ try {
   }
 
   console.log("Audit gate fixture failed closed and accepted tracked advisories.");
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = error instanceof InfrastructureError ? 2 : 1;
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
   fs.rmSync(devOnlyTempRoot, { recursive: true, force: true });
