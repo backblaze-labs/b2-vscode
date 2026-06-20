@@ -1677,6 +1677,31 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("does not restore symlink destination backups", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
+    const target = path.join(dir, "target");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const restored = path.join(dir, "file.bin");
+    fs.mkdirSync(target);
+
+    try {
+      const symlinkSupported = createDirectorySymlink(target, backup);
+      if (!symlinkSupported) {
+        return;
+      }
+
+      await cleanupStaleDestinationTempFiles({
+        directory: dir,
+        maxAgeMs: Number.POSITIVE_INFINITY,
+      });
+
+      assert.strictEqual(fs.existsSync(restored), false);
+      assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("reports only requested progress cancellations as CancellationError", async () => {
     const tokenSource = new vscode.CancellationTokenSource();
     let restore = stubWithProgress(tokenSource);

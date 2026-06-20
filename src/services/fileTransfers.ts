@@ -436,6 +436,12 @@ export async function cleanupStaleDestinationTempFiles(options: {
       const stats = await fs.promises.lstat(filePath);
       const restorePath = backupDestinationPath(directory, entry);
       if (restorePath && !fs.existsSync(restorePath)) {
+        if (!stats.isFile()) {
+          if (stats.mtimeMs <= cutoff) {
+            await fs.promises.rm(filePath, { force: true });
+          }
+          continue;
+        }
         await fs.promises.rename(filePath, restorePath);
       } else if (stats.mtimeMs <= cutoff) {
         await fs.promises.rm(filePath, { force: true });
