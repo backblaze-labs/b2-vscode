@@ -57,6 +57,7 @@ import { withCancellableTransferProgress } from "../../services/transferProgress
 import { createActivityAbortSignal, withTimeout } from "../../services/transferTimeout";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import {
+  assertSafeFileWritePath,
   ensurePrivateDirectory,
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
@@ -226,6 +227,27 @@ suite("B2 utility helpers", () => {
       isPathInsideOrEqual(path.join(root, "tmp", "base"), path.join(root, "tmp", "base2")),
       false,
     );
+  });
+
+  test("rejects safe write paths through symlinked parents", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-safe-write-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-safe-write-outside-"));
+    const linkPath = path.join(workspaceDir, "linked");
+    const symlinkCreated = createDirectorySymlink(outsideDir, linkPath);
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await assert.rejects(
+        () => assertSafeFileWritePath(workspaceDir, path.join(linkPath, "file.txt")),
+        /outside the workspace|outside the allowed root|real workspace directory|symlink/i,
+      );
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
 

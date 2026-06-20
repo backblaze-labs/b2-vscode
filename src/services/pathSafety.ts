@@ -480,6 +480,13 @@ export async function assertSafeWritePath(
     throw new UnsafePathError(`${label} resolves outside the allowed root.`);
   }
 
+  const controlDirectory = findWorkspaceControlDirectory(root, candidate);
+  if (controlDirectory) {
+    throw new UnsafePathError(
+      `${label} must not target workspace control directory ${controlDirectory}.`,
+    );
+  }
+
   const realRoot = await fs.promises.realpath(root);
   const existingPath = await nearestExistingPath(candidate);
   if (path.resolve(existingPath.path) !== root && existingPath.stats.isSymbolicLink()) {
