@@ -146,15 +146,16 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
+    // Determine local save path before any remote request so invalid local
+    // paths fail without touching B2.
+    const destination = await workspacePath(params.path, params.localPath);
+    const savePath = destination.path;
+    const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
+
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
-
-    // Determine local save path
-    const destination = await workspacePath(params.path, params.localPath);
-    const savePath = destination.path;
-    const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
 
     let size: number;
     try {

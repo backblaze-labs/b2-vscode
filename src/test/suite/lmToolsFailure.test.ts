@@ -512,7 +512,11 @@ suite("B2 LM tool failure handling", () => {
       await withWorkspaceFolder(dir, async () => {
         for (const entry of operations.filter((operation) => operation.name !== "listBuckets")) {
           const input =
-            entry.name === "uploadFile" ? { bucket: "b", localPath: "a.txt" } : entry.input;
+            entry.name === "uploadFile"
+              ? { bucket: "b", localPath: "a.txt" }
+              : entry.name === "downloadFile"
+                ? { bucket: "b", path: "a.txt", localPath: "download.txt" }
+                : entry.input;
           await assert.rejects(
             () => entry.operation.execute(input, getMissingBucketExtras),
             /bucket .* not found/i,
@@ -527,6 +531,7 @@ suite("B2 LM tool failure handling", () => {
   test("download tool rejects workspace path traversal before writing", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-policy-"));
     let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
@@ -535,6 +540,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        bucketLookupWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -550,6 +556,7 @@ suite("B2 LM tool failure handling", () => {
           /path traversal|relative path inside/i,
         );
       });
+      assert.strictEqual(bucketLookupWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.existsSync(path.join(path.dirname(dir), "outside.txt")), false);
     } finally {
@@ -560,6 +567,7 @@ suite("B2 LM tool failure handling", () => {
   test("download tool rejects trailing localPath separators before downloading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-directory-path-"));
     let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
@@ -568,6 +576,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        bucketLookupWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -583,6 +592,7 @@ suite("B2 LM tool failure handling", () => {
           /file path, not a directory path/i,
         );
       });
+      assert.strictEqual(bucketLookupWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.existsSync(path.join(dir, "downloads")), false);
     } finally {
@@ -592,6 +602,7 @@ suite("B2 LM tool failure handling", () => {
 
   test("download tool requires an open workspace for local writes", async () => {
     let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
@@ -600,6 +611,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        bucketLookupWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -616,6 +628,7 @@ suite("B2 LM tool failure handling", () => {
       }
     });
 
+    assert.strictEqual(bucketLookupWasCalled, false);
     assert.strictEqual(downloadWasCalled, false);
   });
 
