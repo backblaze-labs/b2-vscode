@@ -16,6 +16,7 @@ import {
   assertSafeWritePath,
   prepareSafeFileWritePath,
   writeFileNoFollow,
+  writeFileNoFollowWithinRoot,
 } from "../../services/pathSafety";
 import { createPrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
@@ -231,6 +232,24 @@ test("safe writes create owner-only files and reject final symlinks", async () =
     await assert.rejects(() => assertSafeWritePath(root, danglingSymlinkPath));
     await assert.rejects(() => writeFileNoFollow(symlinkPath, Buffer.from("blocked")));
   }
+});
+
+test("root-bound no-follow writes require overwrite refusal", async () => {
+  const root = fs.mkdtempSync(path.join(propertyRoot, "root-bound-write-"));
+  const filePath = path.join(root, "file.txt");
+
+  await assert.rejects(
+    () => writeFileNoFollowWithinRoot(root, filePath, Buffer.from("blocked")),
+    /overwrite disabled/i,
+  );
+  assert.equal(fs.existsSync(filePath), false);
+
+  await writeFileNoFollowWithinRoot(root, filePath, Buffer.from("content"), { overwrite: false });
+  await assert.rejects(
+    () => writeFileNoFollowWithinRoot(root, filePath, Buffer.from("replace"), { overwrite: false }),
+    /EEXIST|file already exists/i,
+  );
+  assert.equal(fs.readFileSync(filePath, "utf8"), "content");
 });
 
 test("download default paths stay inside the workspace for arbitrary B2 names", async () => {

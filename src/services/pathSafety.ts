@@ -427,13 +427,16 @@ export async function writeFileNoFollowWithinRoot(
   options: { overwrite?: boolean; label?: string } = {},
 ): Promise<void> {
   const label = options.label ?? "path";
+  if (options.overwrite !== false) {
+    throw new UnsafePathError(`${label} must be written with overwrite disabled.`);
+  }
+
   await assertSafeFileWritePath(rootPath, filePath, label);
 
   const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
-  const overwriteFlag = options.overwrite === false ? fs.constants.O_EXCL : fs.constants.O_TRUNC;
   const fileHandle = await fs.promises.open(
     filePath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag,
     0o600,
   );
   let completed = false;
