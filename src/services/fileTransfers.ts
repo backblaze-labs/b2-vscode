@@ -313,14 +313,13 @@ function transferTempDirectory(
   defaultDirectory: string,
 ): {
   readonly directory: string;
-  readonly owned: boolean;
   readonly requiresPrivateDirectory: boolean;
 } {
   if (directory !== undefined) {
-    return { directory, owned: false, requiresPrivateDirectory: true };
+    return { directory, requiresPrivateDirectory: true };
   }
 
-  return { directory: defaultDirectory, owned: false, requiresPrivateDirectory: false };
+  return { directory: defaultDirectory, requiresPrivateDirectory: false };
 }
 
 async function ensureTransferTempDirectory(
@@ -841,7 +840,6 @@ async function downloadStreamToFileInternal(
   let temporaryRoot:
     | {
         readonly directory: string;
-        readonly owned: boolean;
         readonly requiresPrivateDirectory: boolean;
       }
     | undefined;
@@ -897,12 +895,6 @@ async function downloadStreamToFileInternal(
       activity,
     );
   } finally {
-    if (temporaryRoot?.owned) {
-      const temporaryDirectory = temporaryRoot.directory;
-      await fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch((error) => {
-        logError(`Could not remove private transfer temp directory: ${temporaryDirectory}`, error);
-      });
-    }
     activity.dispose();
   }
 }
