@@ -221,15 +221,6 @@ export function isPathInsideOrEqual(parentPath: string, childPath: string): bool
   return child === parent || child.startsWith(parentPrefix);
 }
 
-async function pathExists(candidatePath: string): Promise<boolean> {
-  try {
-    await fs.promises.access(candidatePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefined> {
   try {
     return await fs.promises.lstat(candidatePath);
@@ -239,6 +230,11 @@ async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefine
     }
     throw error;
   }
+}
+
+interface ExistingPath {
+  readonly path: string;
+  readonly stats: fs.Stats;
 }
 
 function isSameFilesystemEntry(left: fs.Stats, right: fs.Stats): boolean {
@@ -292,16 +288,17 @@ export async function openFileNoFollow(filePath: string, label = "file"): Promis
   }
 }
 
-async function nearestExistingPath(candidatePath: string): Promise<string> {
+async function nearestExistingPath(candidatePath: string): Promise<ExistingPath> {
   let currentPath = candidatePath;
   for (;;) {
-    if (await pathExists(currentPath)) {
-      return currentPath;
+    const stats = await lstatIfExists(currentPath);
+    if (stats) {
+      return { path: currentPath, stats };
     }
 
     const parentPath = path.dirname(currentPath);
     if (parentPath === currentPath) {
-      return currentPath;
+      return { path: currentPath, stats: await fs.promises.lstat(currentPath) };
     }
     currentPath = parentPath;
   }
@@ -334,7 +331,11 @@ export async function assertSafeWritePath(
 
   const realRoot = await fs.promises.realpath(root);
   const existingPath = await nearestExistingPath(candidate);
-  const realExistingPath = await fs.promises.realpath(existingPath);
+  if (path.resolve(existingPath.path) !== root && existingPath.stats.isSymbolicLink()) {
+    throw new UnsafePathError(`${label} resolves through a symlink.`);
+  }
+
+  const realExistingPath = await fs.promises.realpath(existingPath.path);
   if (!isPathInsideOrEqual(realRoot, realExistingPath)) {
     throw new UnsafePathError(`${label} resolves outside the allowed root through a symlink.`);
   }

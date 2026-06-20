@@ -1442,6 +1442,46 @@ suite("B2 transfer helpers", () => {
     assert.strictEqual(cancelCalls, 0);
   });
 
+  test("stale upload cleanup prunes old upload session markers", async () => {
+    const markerDirectory = path.join(os.tmpdir(), "b2-vscode-upload-sessions");
+    fs.mkdirSync(markerDirectory, { recursive: true, mode: 0o700 });
+
+    const unique = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const staleMarker = path.join(markerDirectory, `session-${unique}-stale.json`);
+    const freshMarker = path.join(markerDirectory, `session-${unique}-fresh.json`);
+    const unrelatedFile = path.join(markerDirectory, `unrelated-${unique}.json`);
+    fs.writeFileSync(staleMarker, "{}");
+    fs.writeFileSync(freshMarker, "{}");
+    fs.writeFileSync(unrelatedFile, "{}");
+
+    const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(staleMarker, staleTime, staleTime);
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        return { files: [], nextFileId: null };
+      },
+      file() {
+        assert.fail("Expected cleanup test not to open an upload stream");
+      },
+      async upload() {
+        assert.fail("Expected cleanup test not to upload a file");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await cleanupStaleUnfinishedUploads(bucket);
+
+      assert.strictEqual(fs.existsSync(staleMarker), false);
+      assert.strictEqual(fs.existsSync(freshMarker), true);
+      assert.strictEqual(fs.existsSync(unrelatedFile), true);
+    } finally {
+      for (const filePath of [staleMarker, freshMarker, unrelatedFile]) {
+        fs.rmSync(filePath, { force: true });
+      }
+    }
+  });
+
   test("stale upload cleanup reclaims locally marked interrupted sessions", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-reclaim-"));
     const localPath = path.join(dir, "file.bin");

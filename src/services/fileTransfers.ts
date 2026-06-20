@@ -49,6 +49,7 @@ const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
 const UNFINISHED_UPLOAD_STALE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
+const STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const UPLOAD_OWNER_INFO_KEY = "b2-vscode-upload-owner";
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 const UPLOAD_STARTED_MS_INFO_KEY = "b2-vscode-upload-started-ms";
@@ -1074,6 +1075,52 @@ function uploadSessionMarkerPath(remotePath: string, uploadSessionId: string): s
   );
 }
 
+async function cleanupStaleUploadSessionMarkers(
+  maxAgeMs = STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS,
+): Promise<void> {
+  const directory = uploadSessionMarkerDirectory();
+  try {
+    if (!(await pathExistsAsRealDirectory(directory, "Upload session marker directory"))) {
+      return;
+    }
+  } catch (error) {
+    logError(`Could not inspect upload session marker directory: ${directory}`, error);
+    return;
+  }
+
+  const cutoff = Date.now() - maxAgeMs;
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(directory);
+  } catch (error) {
+    logError(`Could not list upload session marker directory: ${directory}`, error);
+    return;
+  }
+
+  for (const entry of entries) {
+    if (
+      !entry.startsWith(UPLOAD_SESSION_MARKER_PREFIX) ||
+      !entry.endsWith(UPLOAD_SESSION_MARKER_SUFFIX)
+    ) {
+      continue;
+    }
+
+    const markerPath = path.join(directory, entry);
+    try {
+      const stats = await fs.promises.lstat(markerPath);
+      if ((!stats.isFile() && !stats.isSymbolicLink()) || stats.mtimeMs > cutoff) {
+        continue;
+      }
+
+      await fs.promises.rm(markerPath, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        logError(`Could not remove stale upload session marker: ${markerPath}`, error);
+      }
+    }
+  }
+}
+
 async function writeUploadSessionMarker(marker: UploadSessionMarker): Promise<void> {
   const directory = uploadSessionMarkerDirectory();
   await ensurePrivateDirectory(directory, "Upload session marker directory", {
@@ -1155,6 +1202,10 @@ export async function cleanupStaleUnfinishedUploads(
   bucket: UploadBucketHandle,
   options: StaleUnfinishedUploadCleanupOptions = {},
 ): Promise<void> {
+  await cleanupStaleUploadSessionMarkers().catch((error) => {
+    logError("Could not clean stale upload session markers", error);
+  });
+
   const cutoff =
     Date.now() - (options.unfinishedCleanupMaxAgeMs ?? STALE_UNFINISHED_UPLOAD_MAX_AGE_MS);
   let ignoredUnownedStaleUploadCount = 0;
