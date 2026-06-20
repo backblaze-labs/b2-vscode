@@ -209,7 +209,7 @@ export class TempFileManager implements vscode.Disposable {
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
     await prepareSafeFileWritePath(this.tempRoot, localPath);
 
-    await downloadStreamToFile(stream, localPath, options);
+    await downloadStreamToFile(stream, localPath, { ...options, destinationRoot: this.tempRoot });
 
     const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);

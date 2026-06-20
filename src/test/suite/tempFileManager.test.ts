@@ -188,6 +188,56 @@ suite("TempFileManager", () => {
     }
   });
 
+  test("rejects cache parent symlink swaps before the final move", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
+    const manager = new TempFileManager(tempRoot);
+    const symlinkPath = path.join(tempRoot, "bucket", "link");
+    const outsideFile = path.join(outsideRoot, "escape.txt");
+    const capabilityLink = path.join(tempRoot, "symlink-capability");
+    const originalMkdir = fs.promises.mkdir;
+    const mutablePromises = fs.promises as unknown as { mkdir: typeof fs.promises.mkdir };
+    let symlinkInjected = false;
+    let targetMkdirCalls = 0;
+
+    mutablePromises.mkdir = (async (...args: Parameters<typeof fs.promises.mkdir>) => {
+      const result = await originalMkdir(...args);
+      const targetPath = path.resolve(String(args[0]));
+      if (targetPath === symlinkPath) {
+        targetMkdirCalls += 1;
+      }
+      if (!symlinkInjected && targetPath === symlinkPath && targetMkdirCalls === 2) {
+        fs.rmSync(symlinkPath, { recursive: true, force: true });
+        symlinkInjected = createDirectorySymlink(outsideRoot, symlinkPath);
+      }
+      return result;
+    }) as typeof fs.promises.mkdir;
+
+    try {
+      if (!createDirectorySymlink(outsideRoot, capabilityLink)) {
+        return;
+      }
+      fs.rmSync(capabilityLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
+        /Destination directory.*real directory|outside the allowed root/i,
+      );
+      assert.strictEqual(symlinkInjected, true);
+      assert.strictEqual(fs.existsSync(outsideFile), false);
+      assert.strictEqual(
+        manager.getCachedPath("bucket", path.join("link", "escape.txt")),
+        undefined,
+      );
+    } finally {
+      mutablePromises.mkdir = originalMkdir;
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a symlinked cache root", () => {
     const tempParent = tempDir("b2-vscode-temp-parent-");
     const outsideRoot = tempDir("b2-vscode-temp-outside-");
