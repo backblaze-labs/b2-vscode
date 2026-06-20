@@ -8,7 +8,6 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Writable } from "stream";
 import * as vscode from "vscode";
 import {
   B2Client,
@@ -589,7 +588,32 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("aborts reserved destination copy on cancellation", async () => {
+  test("streams no-overwrite downloads directly to the reserved destination", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-direct-"));
+    const destination = path.join(dir, "file.bin");
+    const tempDir = path.join(dir, "tmp");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from([1, 2, 3]));
+        controller.close();
+      },
+    });
+
+    try {
+      const size = await downloadStreamToFile(stream, destination, {
+        overwrite: false,
+        temporaryDirectory: tempDir,
+      });
+
+      assert.strictEqual(size, 3);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+      assert.strictEqual(fs.existsSync(tempDir), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts reserved destination stream on cancellation", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-abort-"));
     const destination = path.join(dir, "file.bin");
     const controller = new AbortController();
@@ -600,7 +624,7 @@ suite("B2 transfer helpers", () => {
       },
     });
     const originalOpen = fs.promises.open;
-    let copyWriteStarted = false;
+    let destinationWriteStarted = false;
 
     fs.promises.open = async (
       filePath: fs.PathLike,
@@ -613,16 +637,11 @@ suite("B2 transfer helpers", () => {
       }
 
       return {
-        truncate: handle.truncate.bind(handle),
         close: handle.close.bind(handle),
-        createWriteStream() {
-          return new Writable({
-            write(chunk: Buffer, _encoding, callback) {
-              copyWriteStarted = true;
-              void handle.write(chunk).then(() => callback(), callback);
-              controller.abort(new DOMException("Cancelled", "AbortError"));
-            },
-          }) as unknown as fs.WriteStream;
+        write(buffer: Buffer) {
+          destinationWriteStarted = true;
+          controller.abort(new DOMException("Cancelled", "AbortError"));
+          return handle.write(buffer);
         },
       } as unknown as fs.promises.FileHandle;
     };
@@ -640,7 +659,7 @@ suite("B2 transfer helpers", () => {
         },
       );
 
-      assert.strictEqual(copyWriteStarted, true);
+      assert.strictEqual(destinationWriteStarted, true);
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
       fs.promises.open = originalOpen;

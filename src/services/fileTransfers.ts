@@ -8,7 +8,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Readable, Transform } from "stream";
+import { Readable, Transform, Writable } from "stream";
 import { pipeline } from "stream/promises";
 import {
   BufferSource,
@@ -206,11 +206,16 @@ function normalizedMaxBytes(maxBytes: number | undefined): number {
   return normalized;
 }
 
-function createDownloadSizeLimitTransform(maxBytes: number, destinationPath: string): Transform {
+function createDownloadSizeLimitTransform(
+  maxBytes: number,
+  destinationPath: string,
+  onBytes?: (bytes: number) => void,
+): Transform {
   let bytes = 0;
   return new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       bytes += chunk.byteLength;
+      onBytes?.(bytes);
       if (bytes > maxBytes) {
         callback(
           new DownloadSizeLimitError(
@@ -513,6 +518,14 @@ async function closeReservedDestination(reserved: ReservedDestinationFile): Prom
   await reserved.handle.close();
 }
 
+function createReservedDestinationWriteStream(handle: fs.promises.FileHandle): Writable {
+  return new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      void handle.write(chunk).then(() => callback(), callback);
+    },
+  });
+}
+
 async function removeReservedDestinationIfStillSafe(
   reserved: ReservedDestinationFile,
 ): Promise<void> {
@@ -531,23 +544,6 @@ async function cleanupReservedDestination(reserved: ReservedDestinationFile): Pr
     logError(`Could not close reserved download destination: ${reserved.path}`, error);
   });
   await removeReservedDestinationIfStillSafe(reserved);
-}
-
-async function writeTempFileToReservedDestination(
-  sourcePath: string,
-  reserved: ReservedDestinationFile,
-  options: { signal: AbortSignal; markActivity: () => void },
-): Promise<void> {
-  await assertReservedParentUnchanged(reserved);
-  await reserved.handle.truncate(0);
-  const readable = fs.createReadStream(sourcePath);
-  readable.on("data", options.markActivity);
-  await pipeline(readable, reserved.handle.createWriteStream({ autoClose: false, start: 0 }), {
-    signal: options.signal,
-  });
-  await assertReservedParentUnchanged(reserved);
-  await closeReservedDestination(reserved);
-  await removeTempFile(sourcePath);
 }
 
 async function replaceExistingDestination(
@@ -705,13 +701,33 @@ export async function downloadStreamToFile(
       options.allowedRootDirectory,
     );
 
-    await ensurePrivateDirectory(temporaryDirectory);
-    await cleanupTransferTempFilesForDownload(temporaryDirectory);
-
     await cleanupDestinationTempFilesForDownload(destinationDirectory);
     if (options.overwrite === false) {
       reservedDestination = await reserveDestinationFile(destinationPath, destinationDirectory);
+      await assertReservedParentUnchanged(reservedDestination);
+      const readable = Readable.fromWeb(
+        stream as unknown as Parameters<typeof Readable.fromWeb>[0],
+      );
+      let bytesWritten = 0;
+      readable.on("data", activity.markActivity);
+      await pipeline(
+        readable,
+        createDownloadSizeLimitTransform(maxBytes, destinationPath, (bytes) => {
+          bytesWritten = bytes;
+        }),
+        createReservedDestinationWriteStream(reservedDestination.handle),
+        {
+          signal: activity.signal,
+        },
+      );
+      await assertReservedParentUnchanged(reservedDestination);
+      await closeReservedDestination(reservedDestination);
+      reservedDestination = undefined;
+      return bytesWritten;
     }
+
+    await ensurePrivateDirectory(temporaryDirectory);
+    await cleanupTransferTempFilesForDownload(temporaryDirectory);
 
     temporaryPath = transferTempPath(temporaryDirectory);
     const readable = Readable.fromWeb(stream as unknown as Parameters<typeof Readable.fromWeb>[0]);
@@ -726,15 +742,6 @@ export async function downloadStreamToFile(
     );
 
     const stats = await fs.promises.stat(temporaryPath);
-    if (reservedDestination) {
-      await writeTempFileToReservedDestination(temporaryPath, reservedDestination, {
-        signal: activity.signal,
-        markActivity: activity.markActivity,
-      });
-      temporaryPath = "";
-      return stats.size;
-    }
-
     // Deliberately re-validate the parent directory after streaming so a
     // directory swap during the download is caught before path-based placement.
     await ensureDownloadDestinationDirectory(destinationPath, options.allowedRootDirectory);
