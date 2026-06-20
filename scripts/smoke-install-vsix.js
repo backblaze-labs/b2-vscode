@@ -8,7 +8,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { runVSCodeCommand } = require("@vscode/test-electron");
+const { spawn } = require("child_process");
+const {
+  downloadAndUnzipVSCode,
+  resolveCliPathFromVSCodeExecutablePath,
+} = require("@vscode/test-electron");
 const { manifestContract } = require("./release-contract");
 
 const repoRoot = path.join(__dirname, "..");
@@ -44,15 +48,49 @@ function assertInstalledFile(installedExtensionPath, relativePath) {
   }
 }
 
-async function runCodeCommand(args, label) {
-  try {
-    return await runVSCodeCommand(args, { version: "stable" });
-  } catch (error) {
-    if (error instanceof Error) {
-      error.message = `${label} failed: ${error.message}`;
-    }
-    throw error;
+function linuxCiArgs() {
+  if (process.platform !== "linux") {
+    return [];
   }
+
+  return ["--no-sandbox", "--disable-gpu"];
+}
+
+async function resolveCodeCliPath() {
+  const executablePath = await downloadAndUnzipVSCode({ version: "stable" });
+  return resolveCliPathFromVSCodeExecutablePath(executablePath);
+}
+
+async function runCodeCommand(codeCliPath, args, label) {
+  const cliArgs = [...linuxCiArgs(), ...args];
+
+  return await new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const shell = process.platform === "win32";
+    const child = spawn(shell ? `"${codeCliPath}"` : codeCliPath, cliArgs, {
+      stdio: "pipe",
+      shell,
+      windowsHide: true,
+    });
+
+    child.stdout?.setEncoding("utf8").on("data", (data) => {
+      stdout += data;
+    });
+    child.stderr?.setEncoding("utf8").on("data", (data) => {
+      stderr += data;
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n\n");
+      reject(new Error(`${label} failed with exit code ${code}${details ? `:\n${details}` : "."}`));
+    });
+  });
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -67,12 +105,16 @@ async function main(argv = process.argv.slice(2)) {
   const profileArgs = [`--user-data-dir=${userDataDir}`, `--extensions-dir=${extensionsDir}`];
 
   try {
+    const codeCliPath = await resolveCodeCliPath();
+
     await runCodeCommand(
+      codeCliPath,
       [...profileArgs, "--install-extension", vsixPath, "--force"],
       "VSIX installation",
     );
 
     const installedExtensions = await runCodeCommand(
+      codeCliPath,
       [...profileArgs, "--list-extensions", "--show-versions"],
       "Installed extension listing",
     );
@@ -88,6 +130,7 @@ async function main(argv = process.argv.slice(2)) {
     }
 
     const locatedExtension = await runCodeCommand(
+      codeCliPath,
       [...profileArgs, "--locate-extension", extensionId],
       "Installed extension lookup",
     );
