@@ -204,9 +204,14 @@ suite("B2 commands error handling", () => {
       false,
     );
     assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({ code: "access_denied", message: "denied" }),
+      false,
+    );
+    assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous({ name: "B2SsrfError", message: "blocked" }),
       false,
     );
+    assert.strictEqual(isPostRequestB2MutationStateAmbiguous(new Error("opaque failure")), true);
   });
 });
 

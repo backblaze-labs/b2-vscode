@@ -301,10 +301,7 @@ function isTransientServiceFailure(error: unknown): boolean {
   );
 }
 
-/**
- * Whether a mutation's final state is uncertain because the client cannot
- * confirm whether B2 completed the request after the request was sent.
- */
+/** Error used when the client cannot confirm a mutation's final state in time. */
 export class B2MutationTimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -350,7 +347,7 @@ export function isPostRequestB2MutationStateAmbiguous(error: unknown): boolean {
     return false;
   }
 
-  return false;
+  return getB2Status(error) === undefined && getB2Code(error) === undefined;
 }
 
 function retryAfterText(error: unknown): string {
