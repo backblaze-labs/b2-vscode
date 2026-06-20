@@ -418,6 +418,10 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
       script.includes("npm-shrinkwrap.json is not supported"),
     `${workflowName} PR metadata download must reject npm-shrinkwrap.json.`,
   );
+  assert(
+    script.includes("'.npmrc'") && script.includes(".npmrc is not supported"),
+    `${workflowName} PR metadata download must reject .npmrc.`,
+  );
   for (const requiredFile of [
     ".github/CODEOWNERS",
     ".github/workflows/build-extension.yml",
@@ -880,6 +884,8 @@ function assertRawTestWorkflowText(text) {
     "getContentWithRetry",
     "'npm-shrinkwrap.json'",
     "npm-shrinkwrap.json is not supported by the audit gate",
+    "'.npmrc'",
+    ".npmrc is not supported by the audit gate",
     'node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"',
     'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
     "npm audit signatures --registry=https://registry.npmjs.org/",
@@ -920,6 +926,14 @@ function runNegativeRawWorkflowTests(testWorkflowText, prTestsWorkflowText) {
   );
   expectGuardFailure("raw workflow PR tests removed", () =>
     assertRawPrTestsWorkflowText(prTestsWorkflowText.replace("xvfb-run -a npm test", "true")),
+  );
+  expectGuardFailure("raw workflow npmrc rejection removed", () =>
+    assertRawTestWorkflowText(
+      testWorkflowText.replace(
+        ".npmrc is not supported by the audit gate",
+        "npmrc rejection removed",
+      ),
+    ),
   );
 }
 

@@ -99,14 +99,25 @@ jobs:
               }
             }
 
-            try {
-              await getContentWithRetry('npm-shrinkwrap.json');
-              throw new Error('npm-shrinkwrap.json is not supported by the audit gate; use package-lock.json.');
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
+            async function rejectUnsupportedMetadataFile(file, message) {
+              try {
+                await getContentWithRetry(file);
+                throw new Error(message);
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
               }
             }
+
+            await rejectUnsupportedMetadataFile(
+              'npm-shrinkwrap.json',
+              'npm-shrinkwrap.json is not supported by the audit gate; use package-lock.json.',
+            );
+            await rejectUnsupportedMetadataFile(
+              '.npmrc',
+              '.npmrc is not supported by the audit gate; npm config must not be controlled by PR metadata.',
+            );
 
             const files = [
               '.github/CODEOWNERS',
