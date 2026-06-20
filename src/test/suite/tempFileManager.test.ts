@@ -12,6 +12,19 @@ import { TempFileManager } from "../../services/tempFileManager";
 import { streamFromText } from "../../testSupport/streams";
 import { tempDir } from "../../testSupport/tempDir";
 
+function createDirectorySymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 suite("TempFileManager", () => {
   test("saves downloaded streams, returns cached paths, and clears cache on cleanup", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
@@ -112,7 +125,9 @@ suite("TempFileManager", () => {
 
     try {
       fs.mkdirSync(bucketRoot, { recursive: true });
-      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+      if (!createDirectorySymlink(outsideRoot, symlinkPath)) {
+        return;
+      }
 
       await assert.rejects(
         () =>
@@ -133,6 +148,7 @@ suite("TempFileManager", () => {
     const manager = new TempFileManager(tempRoot);
     const symlinkPath = path.join(tempRoot, "bucket", "new", "link");
     const outsideSubdir = path.join(outsideRoot, "sub");
+    const capabilityLink = path.join(tempRoot, "symlink-capability");
     const originalMkdir = fs.promises.mkdir;
     const mutablePromises = fs.promises as unknown as { mkdir: typeof fs.promises.mkdir };
     let symlinkInjected = false;
@@ -141,12 +157,16 @@ suite("TempFileManager", () => {
       const targetPath = path.resolve(String(args[0]));
       if (!symlinkInjected && targetPath === symlinkPath) {
         symlinkInjected = true;
-        fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+        createDirectorySymlink(outsideRoot, symlinkPath);
       }
       return originalMkdir(...args);
     }) as typeof fs.promises.mkdir;
 
     try {
+      if (!createDirectorySymlink(outsideRoot, capabilityLink)) {
+        return;
+      }
+      fs.rmSync(capabilityLink, { recursive: true, force: true });
       fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
 
       await assert.rejects(
@@ -174,7 +194,9 @@ suite("TempFileManager", () => {
     const symlinkRoot = path.join(tempParent, "b2-vscode");
 
     try {
-      fs.symlinkSync(outsideRoot, symlinkRoot, process.platform === "win32" ? "junction" : "dir");
+      if (!createDirectorySymlink(outsideRoot, symlinkRoot)) {
+        return;
+      }
 
       assert.throws(
         () => new TempFileManager(symlinkRoot),
