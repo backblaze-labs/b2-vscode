@@ -723,7 +723,13 @@ suite("B2 transfer helpers", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-root-"));
     const destination = path.join(dir, "nested", "file.bin");
     const existing = path.join(dir, "existing.bin");
+    const originalLink = fs.promises.link;
+    let linkCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
+    fs.promises.link = async (): Promise<void> => {
+      linkCalls += 1;
+      throw new Error("root-bound downloads must not hardlink into place");
+    };
 
     try {
       const size = await downloadStreamToNewFileWithinRoot(
@@ -738,6 +744,7 @@ suite("B2 transfer helpers", () => {
       );
 
       assert.strictEqual(size, 3);
+      assert.strictEqual(linkCalls, 0);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -765,6 +772,7 @@ suite("B2 transfer helpers", () => {
       );
       assert.deepStrictEqual([...fs.readFileSync(existing)], [1]);
     } finally {
+      fs.promises.link = originalLink;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
