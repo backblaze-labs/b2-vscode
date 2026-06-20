@@ -429,7 +429,7 @@
           "download"
         ],
         "toolReferenceName": "downloadFile",
-        "modelDescription": "Downloads a file from a B2 bucket to the local workspace without overwriting existing files. Returns the local file path where the file was saved.",
+        "modelDescription": "Downloads a file from a B2 bucket to the first open workspace folder. Returns the local file path where the file was saved.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -462,7 +462,7 @@
           "upload"
         ],
         "toolReferenceName": "uploadFile",
-        "modelDescription": "Uploads a local file to a B2 bucket. Returns the uploaded file info including file ID and size.",
+        "modelDescription": "Uploads a file from the first open workspace folder to a B2 bucket. Returns the uploaded file info including file ID and size.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",

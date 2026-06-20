@@ -650,6 +650,17 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
   workspaceRoot: string;
   maxAgeMs?: number;
 }): Promise<void> {
+  let workspaceRoot: string;
+  try {
+    workspaceRoot = await fs.promises.realpath(options.workspaceRoot);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP") {
+      logError(`Could not resolve workspace transfer temp root: ${options.workspaceRoot}`, error);
+    }
+    return;
+  }
+
   async function visit(directory: string): Promise<void> {
     await cleanupStaleDestinationTempFiles({
       directory,
@@ -685,7 +696,7 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     }
   }
 
-  await visit(path.resolve(options.workspaceRoot));
+  await visit(workspaceRoot);
 }
 
 async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {

@@ -3003,6 +3003,28 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("recovers orphaned destination backups from symlinked workspace roots", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-link-cleanup-"));
+    const workspaceRoot = path.join(dir, "workspace");
+    const linkRoot = path.join(dir, "workspace-link");
+    const backup = path.join(workspaceRoot, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.writeFileSync(backup, "report");
+
+    try {
+      if (!createDirectorySymlink(workspaceRoot, linkRoot)) {
+        return;
+      }
+
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: linkRoot });
+
+      assert.strictEqual(fs.existsSync(backup), false);
+      assert.strictEqual(fs.readFileSync(path.join(workspaceRoot, "report.txt"), "utf8"), "report");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("reports only requested progress cancellations as CancellationError", async () => {
     const tokenSource = new vscode.CancellationTokenSource();
     let restore = stubWithProgress(tokenSource);

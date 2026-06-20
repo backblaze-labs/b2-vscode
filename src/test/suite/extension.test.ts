@@ -177,10 +177,16 @@ suite("B2 Extension Test Suite", () => {
       unknown
     >;
     const uploadLocalPath = uploadFile.inputSchema.properties.localPath as Record<string, unknown>;
+    const downloadModel = downloadFile as unknown as { modelDescription?: unknown };
+    const uploadModel = uploadFile as unknown as { modelDescription?: unknown };
 
-    assert.match(String(downloadLocalPath.description), /open workspace folder/i);
-    assert.match(String(uploadLocalPath.description), /open workspace folder/i);
-    assert.doesNotMatch(String(downloadLocalPath.description), /absolute or workspace-relative/i);
-    assert.doesNotMatch(String(uploadLocalPath.description), /absolute or workspace-relative/i);
+    assert.match(String(downloadModel.modelDescription), /first open workspace folder/i);
+    assert.match(String(uploadModel.modelDescription), /first open workspace folder/i);
+    assert.match(String(downloadLocalPath.description), /workspace-relative/i);
+    assert.match(String(uploadLocalPath.description), /workspace-relative/i);
+    assert.match(String(downloadLocalPath.description), /first open workspace folder/i);
+    assert.match(String(uploadLocalPath.description), /first open workspace folder/i);
+    assert.match(String(downloadLocalPath.description), /absolute paths are rejected/i);
+    assert.match(String(uploadLocalPath.description), /absolute paths are rejected/i);
   });
 });
