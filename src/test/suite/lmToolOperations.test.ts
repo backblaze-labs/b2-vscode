@@ -577,6 +577,37 @@ suite("B2 LM tool operations with simulator", () => {
     assert.strictEqual(authorizationRequested, false);
   });
 
+  test("presignUrl accepts exact object entries with omitted action", async () => {
+    const bucket = {
+      async listFileNames(options: { prefix: string; pageSize: number }) {
+        assert.deepStrictEqual(options, { prefix: REMOTE_PATH, pageSize: 2 });
+        return {
+          files: [{ fileName: REMOTE_PATH }],
+          nextFileName: null,
+        };
+      },
+      async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
+        assert.strictEqual(fileNamePrefix, REMOTE_PATH);
+        assert.strictEqual(validDurationInSeconds, 123);
+        return { authorizationToken: "object-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    const presigned = await presignUrlOperation.execute(
+      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+      { getClient: () => client as never },
+    );
+
+    const url = new URL(presigned.url);
+    assert.strictEqual(url.searchParams.get("Authorization"), "object-token");
+  });
+
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {
     const { extras } = await createUploadedToolFixture();
 
