@@ -161,6 +161,7 @@ function assertCodeOwnerProtection() {
     "/scripts/npm-command.js",
     "/scripts/assert-audit-policy.js",
     "/scripts/assert-audit-workflow.js",
+    "/.github/workflows/pr-tests.yml",
   ]) {
     if (!protectedPaths.has(requiredPath)) {
       throw new Error(`CODEOWNERS must require review for ${requiredPath}.`);

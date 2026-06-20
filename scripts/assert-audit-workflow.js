@@ -109,6 +109,13 @@ function assertNoPullRequestTargetEvent(workflow, workflowName) {
   );
 }
 
+function assertNoPullRequestEvent(workflow, workflowName) {
+  assert(
+    !workflowHasEvent(workflow, "pull_request"),
+    `${workflowName} must not use pull_request when it contains trusted pull_request_target audit code.`,
+  );
+}
+
 function assertEventHasNoPathFilters(workflow, eventName, workflowName) {
   const config = eventConfig(workflow, eventName);
   assert(config !== undefined, `${workflowName} must run on ${eventName}.`);
@@ -416,6 +423,7 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
     ".github/workflows/build-extension.yml",
     ".github/workflows/code-quality.yml",
     ".github/workflows/docs.yml",
+    ".github/workflows/pr-tests.yml",
     ".github/workflows/release.yml",
     ".github/workflows/test.yml",
     "audit-policy.jsonc",
@@ -454,7 +462,7 @@ function assertTestWorkflow(testWorkflow) {
     "test workflow must include a scheduled audit run.",
   );
   assert(workflowHasEvent(testWorkflow, "push"), "test workflow must run on push.");
-  assertEventHasNoPathFilters(testWorkflow, "pull_request", "test workflow");
+  assertNoPullRequestEvent(testWorkflow, "test workflow");
   assertEventHasNoPathFilters(testWorkflow, "pull_request_target", "test workflow");
 
   for (const targetPath of [
@@ -469,27 +477,15 @@ function assertTestWorkflow(testWorkflow) {
     "scripts/run-npm-audit.js",
     "scripts/retry.sh",
     "scripts/npm-command.js",
+    ".github/workflows/pr-tests.yml",
   ]) {
     assertPathFilterCovers(testWorkflow, "push", targetPath);
   }
 
   const auditJob = job(testWorkflow, "dependency-audit");
-  const testJob = job(testWorkflow, "vscode-tests");
   assert(
     auditJob.name === "Dependency Audit Gate",
     "trusted dependency audit job must have a distinct check name.",
-  );
-  assert(
-    String(auditJob.if ?? "").includes("github.event_name != 'pull_request'"),
-    "trusted dependency audit job must not run on PR-controlled pull_request workflows.",
-  );
-  assert(
-    testJob.name === "VS Code Extension Tests",
-    "unprivileged test job must keep the required VS Code Extension Tests check name.",
-  );
-  assert(
-    String(testJob.if ?? "").includes("github.event_name != 'pull_request_target'"),
-    "VS Code tests job must not run in the privileged pull_request_target workflow.",
   );
 
   const sourceCheckoutIndex = assertPrTargetSourceCheckoutIsSkipped(auditJob, "test workflow");
@@ -610,7 +606,21 @@ function assertTestWorkflow(testWorkflow) {
   ]) {
     assertRunsInSource(label, stepByIndex(auditJob, index));
   }
+}
 
+function assertPrTestsWorkflow(prTestsWorkflow) {
+  assertEventHasNoPathFilters(prTestsWorkflow, "pull_request", "PR tests workflow");
+  assertNoPullRequestTargetEvent(prTestsWorkflow, "PR tests workflow");
+
+  const testJob = job(prTestsWorkflow, "vscode-tests");
+  assert(
+    testJob.name === "VS Code Extension Tests",
+    "unprivileged test job must keep the required VS Code Extension Tests check name.",
+  );
+  assert(
+    testJob.if === undefined,
+    "VS Code Extension Tests job must run for every pull_request event.",
+  );
   const testSourceCheckoutIndex = assertUnprivilegedSourceCheckout(testJob, "VS Code test job");
   const testSetupNodeIndex = stepIndex(testJob, "VS Code test node setup", (step) =>
     String(step.uses ?? "").startsWith("actions/setup-node@"),
@@ -864,11 +874,7 @@ function assertRawContains(text, label, snippets) {
 function assertRawTestWorkflowText(text) {
   assertRawContains(text, "test", [
     "pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.",
-    "pull_request:",
     "name: Dependency Audit Gate",
-    "if: github.event_name != 'pull_request'",
-    "name: VS Code Extension Tests",
-    "if: github.event_name != 'pull_request_target'",
     "path: trusted-source",
     "path: source",
     "getContentWithRetry",
@@ -877,6 +883,14 @@ function assertRawTestWorkflowText(text) {
     'node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"',
     'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
     "npm audit signatures --registry=https://registry.npmjs.org/",
+  ]);
+}
+
+function assertRawPrTestsWorkflowText(text) {
+  assertRawContains(text, "PR tests", [
+    "pull_request:",
+    "name: VS Code Extension Tests",
+    "path: source",
     "npm run compile",
     "npm run lint",
     "xvfb-run -a npm test",
@@ -895,7 +909,7 @@ function assertDependencyGateDocs() {
   );
 }
 
-function runNegativeRawWorkflowTests(testWorkflowText) {
+function runNegativeRawWorkflowTests(testWorkflowText, prTestsWorkflowText) {
   expectGuardFailure("raw workflow audit command removed", () =>
     assertRawTestWorkflowText(
       testWorkflowText.replace(
@@ -905,13 +919,13 @@ function runNegativeRawWorkflowTests(testWorkflowText) {
     ),
   );
   expectGuardFailure("raw workflow PR tests removed", () =>
-    assertRawTestWorkflowText(testWorkflowText.replace("xvfb-run -a npm test", "true")),
+    assertRawPrTestsWorkflowText(prTestsWorkflowText.replace("xvfb-run -a npm test", "true")),
   );
 }
 
-function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
+function runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildWorkflow) {
   const mutablePrWorkflow = clone(testWorkflow);
-  job(mutablePrWorkflow, "dependency-audit").if = undefined;
+  workflowOn(mutablePrWorkflow).pull_request = { branches: ["main"] };
   expectGuardFailure("trusted audit runs on PR-controlled workflow trigger", () =>
     assertTestWorkflow(mutablePrWorkflow),
   );
@@ -946,19 +960,19 @@ function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
     assertTestWorkflow(envOverrideWorkflow);
   });
 
-  const skippedTestsWorkflow = clone(testWorkflow);
+  const skippedTestsWorkflow = clone(prTestsWorkflow);
   job(skippedTestsWorkflow, "vscode-tests").if = "github.event_name == 'push'";
   expectGuardFailure("PR test job skipped for pull_request", () =>
-    assertTestWorkflow(skippedTestsWorkflow),
+    assertPrTestsWorkflow(skippedTestsWorkflow),
   );
 
-  const removedTestStepWorkflow = clone(testWorkflow);
+  const removedTestStepWorkflow = clone(prTestsWorkflow);
   job(removedTestStepWorkflow, "vscode-tests").steps = job(
     removedTestStepWorkflow,
     "vscode-tests",
   ).steps.filter((step) => !normalizedRun(step).includes("xvfb-run -a npm test"));
   expectGuardFailure("required PR test step removed", () =>
-    assertTestWorkflow(removedTestStepWorkflow),
+    assertPrTestsWorkflow(removedTestStepWorkflow),
   );
 
   const privilegedBuildWorkflow = clone(buildWorkflow);
@@ -974,6 +988,9 @@ function runGuardrails() {
   const { text: testWorkflowText, workflow: testWorkflow } = readWorkflow(
     ".github/workflows/test.yml",
   );
+  const { text: prTestsWorkflowText, workflow: prTestsWorkflow } = readWorkflow(
+    ".github/workflows/pr-tests.yml",
+  );
   const { workflow: releaseWorkflow } = readWorkflow(".github/workflows/release.yml");
   const { workflow: buildExtensionWorkflow } = readWorkflow(
     ".github/workflows/build-extension.yml",
@@ -983,14 +1000,15 @@ function runGuardrails() {
 
   const workflows = [
     ["test workflow", testWorkflow],
+    ["PR tests workflow", prTestsWorkflow],
     ["release workflow", releaseWorkflow],
     ["build-extension workflow", buildExtensionWorkflow],
     ["code-quality workflow", codeQualityWorkflow],
     ["docs workflow", docsWorkflow],
   ];
 
-  runNegativeWorkflowTests(testWorkflow, buildExtensionWorkflow);
-  runNegativeRawWorkflowTests(testWorkflowText);
+  runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildExtensionWorkflow);
+  runNegativeRawWorkflowTests(testWorkflowText, prTestsWorkflowText);
   for (const [workflowName, workflow] of workflows) {
     assertNoAuditCi(workflow, workflowName);
     assertNoEventEnvOverride(workflow, workflowName);
@@ -1001,6 +1019,8 @@ function runGuardrails() {
   assertNoPlainNpmCi(releaseWorkflow, "release workflow");
   assertTestWorkflow(testWorkflow);
   assertRawTestWorkflowText(testWorkflowText);
+  assertPrTestsWorkflow(prTestsWorkflow);
+  assertRawPrTestsWorkflowText(prTestsWorkflowText);
   assertDependencyGateDocs();
   assertBuildExtensionWorkflow(buildExtensionWorkflow);
   assertReleaseWorkflow(releaseWorkflow);

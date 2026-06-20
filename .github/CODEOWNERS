@@ -10,5 +10,6 @@
 /scripts/assert-audit-policy.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-workflow.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/build-extension.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/.github/workflows/pr-tests.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/test.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/release.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
