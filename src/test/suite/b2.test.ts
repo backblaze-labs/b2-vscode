@@ -8,6 +8,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { Writable } from "stream";
 import * as vscode from "vscode";
 import {
   B2Client,
@@ -541,6 +542,65 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts reserved destination copy on cancellation", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-abort-"));
+    const destination = path.join(dir, "file.bin");
+    const controller = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(Buffer.from("downloaded"));
+        streamController.close();
+      },
+    });
+    const originalOpen = fs.promises.open;
+    let copyWriteStarted = false;
+
+    fs.promises.open = async (
+      filePath: fs.PathLike,
+      flags?: string | number,
+      mode?: fs.Mode,
+    ): Promise<fs.promises.FileHandle> => {
+      const handle = await originalOpen(filePath, flags, mode);
+      if (path.resolve(String(filePath)) !== path.resolve(destination)) {
+        return handle;
+      }
+
+      return {
+        truncate: handle.truncate.bind(handle),
+        close: handle.close.bind(handle),
+        createWriteStream() {
+          return new Writable({
+            write(chunk: Buffer, _encoding, callback) {
+              copyWriteStarted = true;
+              void handle.write(chunk).then(() => callback(), callback);
+              controller.abort(new DOMException("Cancelled", "AbortError"));
+            },
+          }) as unknown as fs.WriteStream;
+        },
+      } as unknown as fs.promises.FileHandle;
+    };
+
+    try {
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            overwrite: false,
+            signal: controller.signal,
+          }),
+        (error) => {
+          assert.strictEqual((error as { name?: unknown }).name, "AbortError");
+          return true;
+        },
+      );
+
+      assert.strictEqual(copyWriteStarted, true);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.promises.open = originalOpen;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

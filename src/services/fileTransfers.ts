@@ -514,13 +514,15 @@ async function cleanupReservedDestination(reserved: ReservedDestinationFile): Pr
 async function writeTempFileToReservedDestination(
   sourcePath: string,
   reserved: ReservedDestinationFile,
+  options: { signal: AbortSignal; markActivity: () => void },
 ): Promise<void> {
   await assertReservedParentUnchanged(reserved);
   await reserved.handle.truncate(0);
-  await pipeline(
-    fs.createReadStream(sourcePath),
-    reserved.handle.createWriteStream({ autoClose: false, start: 0 }),
-  );
+  const readable = fs.createReadStream(sourcePath);
+  readable.on("data", options.markActivity);
+  await pipeline(readable, reserved.handle.createWriteStream({ autoClose: false, start: 0 }), {
+    signal: options.signal,
+  });
   await assertReservedParentUnchanged(reserved);
   await closeReservedDestination(reserved);
   await removeTempFile(sourcePath);
@@ -702,7 +704,10 @@ export async function downloadStreamToFile(
 
     const stats = await fs.promises.stat(temporaryPath);
     if (reservedDestination) {
-      await writeTempFileToReservedDestination(temporaryPath, reservedDestination);
+      await writeTempFileToReservedDestination(temporaryPath, reservedDestination, {
+        signal: activity.signal,
+        markActivity: activity.markActivity,
+      });
       temporaryPath = "";
       return stats.size;
     }
