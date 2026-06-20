@@ -7,10 +7,7 @@
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
-import {
-  DEFAULT_DOWNLOAD_MAX_BYTES,
-  DownloadSizeLimitError,
-} from "../../services/fileTransfers";
+import { DEFAULT_DOWNLOAD_MAX_BYTES, DownloadSizeLimitError } from "../../services/fileTransfers";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import { createDirectorySymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
@@ -102,6 +99,29 @@ suite("TempFileManager", () => {
       assert.strictEqual(savedPath, localPath);
       assert.strictEqual(fs.readFileSync(localPath, "utf8"), "fresh");
       assert.strictEqual(manager.getCachedPath("bucket", "cached.txt"), localPath);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses stale cache directory collisions without deleting children", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+    const directoryPath = path.join(tempRoot, "bucket", "folder");
+    const childPath = path.join(directoryPath, "child.txt");
+
+    try {
+      fs.mkdirSync(directoryPath, { recursive: true });
+      fs.writeFileSync(childPath, "keep");
+
+      await assert.rejects(
+        () => manager.saveStream("bucket", "folder", streamFromText("fresh")),
+        /cache path is a directory/i,
+      );
+
+      assert.strictEqual(fs.readFileSync(childPath, "utf8"), "keep");
+      assert.strictEqual(manager.getCachedPath("bucket", "folder"), undefined);
     } finally {
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });

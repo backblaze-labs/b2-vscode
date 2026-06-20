@@ -126,13 +126,21 @@ async function removeStaleCacheEntries(
 }
 
 async function removeExistingCachePath(filePath: string): Promise<void> {
+  let stats: fs.Stats;
   try {
-    await fs.promises.rm(filePath, { recursive: true, force: true });
+    stats = await fs.promises.lstat(filePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
     }
+    throw error;
   }
+
+  if (stats.isDirectory() && !stats.isSymbolicLink()) {
+    throw new Error(`Temp file cache path is a directory, not a cached file: ${filePath}`);
+  }
+
+  await fs.promises.rm(filePath, { force: true });
 }
 
 export async function cleanupStaleTempFileCache(
