@@ -84,7 +84,6 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
 }
 
 function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
-  ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
   const allowedRoots = [
     workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
     { root: EXTENSION_TEMP_ROOT, description: "the extension tools temporary directory" },
@@ -92,7 +91,15 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
     (candidate): candidate is { root: string; description: string } => candidate !== undefined,
   );
 
+  const resolvedAbsolutePath = path.resolve(absolutePath);
   for (const allowedRoot of allowedRoots) {
+    if (allowedRoot.root === EXTENSION_TEMP_ROOT) {
+      if (!isPathInside(EXTENSION_TEMP_ROOT, resolvedAbsolutePath)) {
+        continue;
+      }
+      ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
+    }
+
     try {
       const resolved = resolvePathInsideReal(
         allowedRoot.root,

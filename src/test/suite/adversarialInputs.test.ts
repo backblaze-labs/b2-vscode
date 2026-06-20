@@ -578,15 +578,46 @@ suite("Adversarial untrusted input fuzzing", () => {
   test("absolute local paths outside the allow-list are rejected", () => {
     const sensitivePath = path.join(os.homedir(), ".ssh", "authorized_keys");
     const arbitraryTempPath = path.join(os.tmpdir(), "session-token.txt");
+    const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
 
-    assert.throws(
-      () => resolveToolLocalPath(sensitivePath, "workspace required"),
-      /localPath must stay within the current workspace or extension tools temporary directory/,
+    try {
+      fs.rmSync(toolRoot, { recursive: true, force: true });
+      assert.throws(
+        () => resolveToolLocalPath(sensitivePath, "workspace required"),
+        /localPath must stay within the current workspace or extension tools temporary directory/,
+      );
+      assert.throws(
+        () => resolveToolLocalPath(arbitraryTempPath, "workspace required"),
+        /localPath must stay within the current workspace or extension tools temporary directory/,
+      );
+      assert.strictEqual(fs.existsSync(toolRoot), false);
+    } finally {
+      fs.rmSync(toolRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("absolute workspace local paths do not initialize the tools temp root", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "b2-vscode-absolute-workspace-"),
     );
-    assert.throws(
-      () => resolveToolLocalPath(arbitraryTempPath, "workspace required"),
-      /localPath must stay within the current workspace or extension tools temporary directory/,
-    );
+    const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const workspacePath = path.join(workspaceRoot, "download.bin");
+
+    try {
+      await fs.promises.rm(toolRoot, { recursive: true, force: true });
+      const resolved = await withWorkspaceFolder(workspaceRoot, async () =>
+        resolveToolLocalPath(workspacePath, "workspace required"),
+      );
+
+      assert.strictEqual(
+        resolved,
+        path.join(fs.realpathSync.native(workspaceRoot), "download.bin"),
+      );
+      assert.strictEqual(fs.existsSync(toolRoot), false);
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.promises.rm(toolRoot, { recursive: true, force: true });
+    }
   });
 
   test("absolute local paths may target the extension tools temp root", () => {
