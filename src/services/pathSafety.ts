@@ -6,7 +6,6 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Buffer } from "buffer";
 import type { FileHandle } from "fs/promises";
 import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
@@ -254,6 +253,44 @@ async function writeStreamChunk(fileHandle: FileHandle, chunk: unknown): Promise
   throw new TypeError("Safe file write streams must yield string or Uint8Array chunks.");
 }
 
+async function writeFileNoFollowInternal(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+  options: {
+    readonly overwrite: boolean;
+    readonly beforeWrite?: () => Promise<void>;
+  },
+): Promise<void> {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const overwriteFlag = options.overwrite ? fs.constants.O_TRUNC : fs.constants.O_EXCL;
+  const fileHandle = await fs.promises.open(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
+    0o600,
+  );
+  let completed = false;
+
+  try {
+    await options.beforeWrite?.();
+    if (typeof data === "string" || data instanceof Uint8Array) {
+      await fileHandle.writeFile(data);
+    } else {
+      for await (const chunk of data) {
+        await writeStreamChunk(fileHandle, chunk);
+      }
+    }
+    completed = true;
+  } finally {
+    try {
+      await fileHandle.close();
+    } finally {
+      if (!completed && !options.overwrite) {
+        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+}
+
 export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
   const beforeStats = await fs.promises.lstat(filePath);
   if (beforeStats.isSymbolicLink() || !beforeStats.isFile()) {
@@ -379,33 +416,7 @@ export async function writeFileNoFollow(
   data: string | Uint8Array | NodeJS.ReadableStream,
   options: { overwrite?: boolean } = {},
 ): Promise<void> {
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
-  const overwriteFlag = options.overwrite === false ? fs.constants.O_EXCL : fs.constants.O_TRUNC;
-  const fileHandle = await fs.promises.open(
-    filePath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
-    0o600,
-  );
-  let completed = false;
-
-  try {
-    if (typeof data === "string" || data instanceof Uint8Array) {
-      await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
-    } else {
-      for await (const chunk of data) {
-        await writeStreamChunk(fileHandle, chunk);
-      }
-    }
-    completed = true;
-  } finally {
-    try {
-      await fileHandle.close();
-    } finally {
-      if (!completed && options.overwrite === false) {
-        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
-      }
-    }
-  }
+  await writeFileNoFollowInternal(filePath, data, { overwrite: options.overwrite !== false });
 }
 
 export async function writeFileNoFollowWithinRoot(
@@ -420,34 +431,10 @@ export async function writeFileNoFollowWithinRoot(
   }
 
   await assertSafeFileWritePath(rootPath, filePath, label);
-
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
-  const fileHandle = await fs.promises.open(
-    filePath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag,
-    0o600,
-  );
-  let completed = false;
-
-  try {
-    await assertSafeFileWritePath(rootPath, filePath, label);
-    if (typeof data === "string" || data instanceof Uint8Array) {
-      await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
-    } else {
-      for await (const chunk of data) {
-        await writeStreamChunk(fileHandle, chunk);
-      }
-    }
-    completed = true;
-  } finally {
-    try {
-      await fileHandle.close();
-    } finally {
-      if (!completed && options.overwrite === false) {
-        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
-      }
-    }
-  }
+  await writeFileNoFollowInternal(filePath, data, {
+    overwrite: false,
+    beforeWrite: () => assertSafeFileWritePath(rootPath, filePath, label),
+  });
 }
 
 export function findWorkspaceControlDirectory(

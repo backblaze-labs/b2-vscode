@@ -525,7 +525,7 @@
           "url"
         ],
         "toolReferenceName": "presignUrl",
-        "modelDescription": "Generates a pre-signed B2 download URL using a name-prefix authorization token. The token can download any object whose name starts with the supplied path. The URL is valid for the specified duration (default: 1 hour).",
+        "modelDescription": "Generates a pre-signed B2 download URL using a name-prefix authorization token. The token can download any object whose name starts with the supplied path. The URL is valid for the specified duration (default: 5 minutes).",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -542,7 +542,7 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 604800,
-              "description": "URL validity duration in seconds. Default: 3600 (1 hour). Maximum: 604800 (7 days)."
+              "description": "URL validity duration in seconds. Default: 300 (5 minutes). Maximum: 604800 (7 days)."
             }
           },
           "required": [

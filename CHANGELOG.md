@@ -13,6 +13,8 @@
   Node 22, matching the SDK's runtime requirement.
 - Download and temp-open paths now preserve natural B2 object basenames while
   sanitizing traversal and platform-unsafe path segments before writing locally.
+  Characters that are unsafe on Windows, such as `:`, `?`, and `*`, are encoded
+  on every host so downloaded names remain portable.
 - Copilot `downloadFile` / `uploadFile` local paths are workspace-relative;
   absolute local paths are no longer accepted, download destinations are
   sanitized before writing, and existing local files are not overwritten.
@@ -66,7 +68,8 @@
   workspace-relative files.
 - `presignUrl` now rejects empty or slash-terminated paths, validates
   `expiresIn` between 1 and 604800 seconds, and explicitly reports that B2
-  download authorization tokens are name-prefix scoped.
+  download authorization tokens are name-prefix scoped. Presigned URLs default
+  to 300 seconds; longer-lived links require an explicit `expiresIn`.
 - Temp-open downloads now use a private per-process cache directory with
   owner-only file permissions. Stale temp-root cleanup preserves active roots
   with live owner markers or recently updated child files.

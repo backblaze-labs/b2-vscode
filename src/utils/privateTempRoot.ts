@@ -75,19 +75,6 @@ export function releasePrivateTempRoot(tempRoot: string): void {
   }
 }
 
-function processIsRunning(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 async function hasLiveOwnerMarker(tempRoot: string, cutoff: number): Promise<boolean> {
   const markerPath = ownerMarkerPath(tempRoot);
   let stats: fs.Stats;
@@ -104,12 +91,7 @@ async function hasLiveOwnerMarker(tempRoot: string, cutoff: number): Promise<boo
     return true;
   }
 
-  try {
-    const marker = JSON.parse(await fs.promises.readFile(markerPath, "utf8")) as { pid?: unknown };
-    return typeof marker.pid === "number" && processIsRunning(marker.pid);
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 async function hasRecentChildActivity(rootPath: string, cutoff: number): Promise<boolean> {

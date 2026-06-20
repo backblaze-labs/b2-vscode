@@ -42,7 +42,9 @@ import {
   getUnfinishedUploadCleanupDiagnostics,
   openUploadSourceFile,
   STREAMING_UPLOAD_PART_SIZE,
+  TRANSFER_TEMP_DIR_NAME,
   TransferStallTimeoutError,
+  uploadFileHandle,
   uploadFileFromDisk,
   withTransferStallTimeout,
   type UploadBucketHandle,
@@ -55,7 +57,11 @@ import {
   isPathInsideOrEqual,
 } from "../../services/pathSafety";
 import { humanSize } from "../../utils/humanSize";
-import { cleanupStalePrivateTempRoots } from "../../utils/privateTempRoot";
+import {
+  cleanupStalePrivateTempRoots,
+  createPrivateTempRoot,
+  releasePrivateTempRoot,
+} from "../../utils/privateTempRoot";
 import type { B2Credentials } from "../../services/authService";
 import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
 
@@ -733,6 +739,15 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
+      assert.deepStrictEqual(
+        fs.readdirSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
+        [],
+        "root-bound downloads should stage in the workspace transfer directory",
+      );
+      assert.deepStrictEqual(
+        fs.readdirSync(path.dirname(destination)).filter((name) => name.startsWith("b2-transfer-")),
+        [],
+      );
 
       await assert.rejects(
         () =>
@@ -1406,6 +1421,68 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("continues upload when session marker cannot be written", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-marker-fail-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([4, 5, 6]));
+    const fileHandle = await fs.promises.open(localPath, "r");
+    const originalOpen = fs.promises.open;
+    const uploaded: number[] = [];
+
+    fs.promises.open = (async (
+      filePath: fs.PathLike,
+      flags: fs.OpenMode,
+      mode?: fs.Mode,
+    ): Promise<fs.promises.FileHandle> => {
+      if (String(filePath).includes("b2-vscode-upload-sessions")) {
+        throw Object.assign(new Error("marker storage full"), { code: "ENOSPC" });
+      }
+      return originalOpen(filePath, flags, mode);
+    }) as typeof fs.promises.open;
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        return { files: [], nextFileId: null };
+      },
+      file(fileName: string) {
+        let resolveDone: (value: FileVersion) => void = () => undefined;
+        const done = new Promise<FileVersion>((resolve) => {
+          resolveDone = resolve;
+        });
+
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write(chunk) {
+                  uploaded.push(...chunk);
+                },
+                close() {
+                  resolveDone(fakeFileVersion(fileName, uploaded.length, "uploaded-id"));
+                },
+              }),
+              done,
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      const result = await uploadFileHandle(bucket, fileHandle, localPath, "remote/file.bin");
+
+      assert.strictEqual(result.fileId, "uploaded-id");
+      assert.deepStrictEqual(uploaded, [4, 5, 6]);
+    } finally {
+      fs.promises.open = originalOpen;
+      await fileHandle.close().catch(() => undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("stale upload cleanup ignores attacker-supplied started markers", async () => {
     const staleId = largeFileId("stale-upload");
     let cancelCalls = 0;
@@ -1714,6 +1791,101 @@ suite("B2 transfer helpers", () => {
       assert.ok(
         diagnosticsAfter.queuedOwnedCleanupCount > diagnosticsBefore.queuedOwnedCleanupCount,
       );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts timed-out unfinished upload list operations", async () => {
+    let listSignal: AbortSignal | undefined;
+    let resolveAborted: (value: boolean) => void = () => undefined;
+    const aborted = new Promise<boolean>((resolve) => {
+      resolveAborted = resolve;
+    });
+    const bucket = {
+      listUnfinishedLargeFiles(options) {
+        listSignal = options?.signal;
+        listSignal?.addEventListener("abort", () => resolveAborted(true), { once: true });
+        return new Promise<never>(() => undefined);
+      },
+      file() {
+        assert.fail("Expected cleanup test not to open an upload stream");
+      },
+      async upload() {
+        assert.fail("Expected cleanup test not to upload a file");
+      },
+    } satisfies UploadBucketHandle;
+
+    await Promise.all([
+      assert.rejects(
+        () => cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupTimeoutMs: 20 }),
+        /timed out/i,
+      ),
+      aborted,
+    ]);
+    assert.strictEqual(listSignal?.aborted, true);
+  });
+
+  test("owned unfinished upload cleanup scans beyond the audit page cap", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-owned-upload-pages-"));
+    const localPath = path.join(dir, "file.bin");
+    const remotePath = "remote/file.bin";
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let streamCreated = false;
+    let listCallsAfterStream = 0;
+    const canceled: unknown[] = [];
+    let capturedSessionId = "";
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        if (!streamCreated) {
+          return { files: [], nextFileId: null };
+        }
+
+        listCallsAfterStream += 1;
+        const isTargetPage = listCallsAfterStream === 4;
+        return {
+          files: isTargetPage
+            ? [
+                {
+                  fileId: largeFileId("owned-target"),
+                  fileName: remotePath,
+                  fileInfo: { "b2-vscode-upload-session-id": capturedSessionId },
+                },
+              ]
+            : [],
+          nextFileId: isTargetPage ? null : largeFileId(`next-${listCallsAfterStream}`),
+        };
+      },
+      async cancelLargeFile(fileId) {
+        canceled.push(fileId);
+      },
+      file() {
+        return {
+          createWriteStream(options) {
+            streamCreated = true;
+            capturedSessionId = options?.fileInfo?.["b2-vscode-upload-session-id"] ?? "";
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("pipe failed");
+                },
+              }),
+              done: new Promise<FileVersion>(() => undefined),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(() => uploadFileFromDisk(bucket, localPath, remotePath), /pipe failed/i);
+
+      assert.strictEqual(listCallsAfterStream, 4);
+      assert.deepStrictEqual(canceled, [largeFileId("owned-target")]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2210,6 +2382,40 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(activeFile, "utf8"), "active");
     } finally {
       fs.rmSync(activeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps stale private temp roots with fresh owner heartbeats", async () => {
+    const prefix = `b2-vscode-active-owner-${process.pid}`;
+    const activeRoot = createPrivateTempRoot(prefix);
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(activeRoot, oldTime, oldTime);
+
+    try {
+      await cleanupStalePrivateTempRoots(prefix, { maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(activeRoot), true);
+    } finally {
+      releasePrivateTempRoot(activeRoot);
+      fs.rmSync(activeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("reclaims stale private temp roots even when marker pid is live", async () => {
+    const prefix = `b2-vscode-reused-pid-${process.pid}`;
+    const staleRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+    const markerPath = path.join(staleRoot, ".b2-vscode-owner.json");
+    fs.writeFileSync(markerPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(markerPath, oldTime, oldTime);
+    fs.utimesSync(staleRoot, oldTime, oldTime);
+
+    try {
+      await cleanupStalePrivateTempRoots(prefix, { maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(staleRoot), false);
+    } finally {
+      fs.rmSync(staleRoot, { recursive: true, force: true });
     }
   });
 

@@ -7,7 +7,10 @@
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import { buildB2DownloadUrl } from "../../utils/urlEncoding";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../presignUrlLimits";
+import {
+  DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
+  MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+} from "../presignUrlLimits";
 
 interface PresignUrlParams {
   bucket: string;
@@ -24,7 +27,7 @@ interface PresignUrlResult {
 
 export function normalizePresignUrlExpiration(expiresIn: number | undefined): number {
   if (expiresIn === undefined) {
-    return 3600;
+    return DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS;
   }
 
   if (
@@ -53,13 +56,6 @@ export function normalizePresignUrlPath(filePath: string): string {
   }
 
   return filePath;
-}
-
-export function objectNameMatchesDownloadAuthorizationPrefix(
-  authorizedPrefix: string,
-  fileName: string,
-): boolean {
-  return fileName.startsWith(authorizedPrefix);
 }
 
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {

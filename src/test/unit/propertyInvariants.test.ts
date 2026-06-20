@@ -21,10 +21,7 @@ import {
 import { createPrivateTempRoot, releasePrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
-import {
-  objectNameMatchesDownloadAuthorizationPrefix,
-  presignUrlOperation,
-} from "../../tools/operations/presignUrl";
+import { presignUrlOperation } from "../../tools/operations/presignUrl";
 import type { ToolExtras } from "../../tools/types";
 
 const PROPERTY_RUNS = 1000;
@@ -131,6 +128,19 @@ test("natural B2 basenames are preserved for default download and temp paths", a
   assert.notEqual(bucketPathSegments[0], "bucket/with\\slash");
   assert.notEqual(bucketPathSegments[0], "");
   assert.equal(bucketPathSegments[1], "safe.txt");
+});
+
+test("Windows-unsafe B2 basenames are encoded on every host", async () => {
+  const timestampedName = "backup-2024-01-01T12:00:00Z.log";
+
+  assert.match(
+    path.basename(await resolveDownloadSavePath(workspaceRoot, `reports/${timestampedName}`)),
+    /^__b2_/,
+  );
+  assert.match(
+    path.basename(buildTempFilePath(tempRoot, "bucket", `reports/${timestampedName}`)),
+    /^__b2_/,
+  );
 });
 
 test("unsafe B2 basenames are encoded for default downloads", async () => {
@@ -442,22 +452,34 @@ test("presign operation documents B2 prefix authorization scope", async () => {
 
   assert.deepEqual(authorizationRequests, [["customers/123", 120]]);
   assert.equal(result.authorizedPrefix, "customers/123");
-  assert.equal(
-    objectNameMatchesDownloadAuthorizationPrefix(result.authorizedPrefix, "customers/1234/tax.pdf"),
-    true,
-  );
-  assert.equal(
-    objectNameMatchesDownloadAuthorizationPrefix(
-      result.authorizedPrefix,
-      "customers/123/secret.txt",
-    ),
-    true,
-  );
-  assert.equal(
-    objectNameMatchesDownloadAuthorizationPrefix(result.authorizedPrefix, "customers/124/tax.pdf"),
-    false,
-  );
+  assert.equal("customers/1234/tax.pdf".startsWith(result.authorizedPrefix), true);
+  assert.equal("customers/123/secret.txt".startsWith(result.authorizedPrefix), true);
+  assert.equal("customers/124/tax.pdf".startsWith(result.authorizedPrefix), false);
   assert.match(result.message, /object names starting with customers\/123/);
+});
+
+test("presign operation defaults to short-lived prefix authorization", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute({ bucket: "bucket", path: "file.txt" }, extras);
+
+  assert.deepEqual(authorizationRequests, [["file.txt", 300]]);
+  assert.equal(result.expiresIn, 300);
 });
 
 test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {

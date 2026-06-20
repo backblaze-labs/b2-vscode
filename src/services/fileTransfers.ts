@@ -1,6 +1,11 @@
 /**
  * Filesystem-backed B2 transfer helpers.
  *
+ * This module intentionally keeps transfer timeout, local staging, placement,
+ * and multipart cleanup orchestration together because their ordering is part
+ * of the transfer contract. Keep the exported surface narrow if these helpers
+ * are split into focused modules later.
+ *
  * @module services/fileTransfers
  */
 
@@ -36,6 +41,8 @@ export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 export const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
+const TRANSFER_TEMP_RANDOM_BYTES = 12;
+const TRANSFER_TEMP_RANDOM_HEX_LENGTH = TRANSFER_TEMP_RANDOM_BYTES * 2;
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -74,6 +81,10 @@ const unfinishedUploadCleanupDiagnostics = {
 
 export function getUnfinishedUploadCleanupDiagnostics(): UnfinishedUploadCleanupDiagnostics {
   return { ...unfinishedUploadCleanupDiagnostics };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export class TransferStallTimeoutError extends Error {
@@ -348,7 +359,7 @@ async function ensureTransferTempDirectory(
 }
 
 function transferTempPath(directory: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(TRANSFER_TEMP_RANDOM_BYTES).toString("hex");
   return path.join(
     directory,
     `${TRANSFER_TEMP_PREFIX}${process.pid}-${random}${TRANSFER_TEMP_SUFFIX}`,
@@ -374,7 +385,11 @@ function destinationReplaceBackupPath(destinationPath: string): string {
 }
 
 function isTransferTempFile(name: string): boolean {
-  return /^b2-transfer-\d+-[a-f0-9]{24}\.tmp$/u.test(name);
+  const pattern = new RegExp(
+    `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
+    "u",
+  );
+  return pattern.test(name);
 }
 
 function isDestinationTempFile(name: string): boolean {
@@ -953,6 +968,31 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
   }
 }
 
+export async function uploadFileHandle(
+  bucket: UploadBucketHandle,
+  fileHandle: fs.promises.FileHandle,
+  localPath: string,
+  remotePath: string,
+  options: UploadFileFromDiskOptions = {},
+): Promise<FileVersion> {
+  const stats = await fileHandle.stat();
+  if (!stats.isFile()) {
+    throw new Error(`Local path is not a file: ${localPath}`);
+  }
+
+  const pathStats = await assertRealUploadSourcePath(localPath);
+  if (!sameFileIdentity(stats, pathStats)) {
+    throw new Error(`Local path changed while opening upload source: ${localPath}`);
+  }
+
+  return uploadFileFromDisk(
+    bucket,
+    { path: localPath, handle: fileHandle, stats },
+    remotePath,
+    options,
+  );
+}
+
 export async function assertUploadSourcePathUnchanged(source: UploadSourceFile): Promise<void> {
   const pathStats = await fs.promises.stat(source.path);
   if (!sameFileIdentity(source.stats, pathStats)) {
@@ -1180,6 +1220,10 @@ async function cancelLargeFileSafely(
     );
     return true;
   } catch (error) {
+    if (error instanceof CleanupOperationTimeoutError) {
+      recordUnfinishedUploadCleanupTimeout(description, error);
+      return false;
+    }
     logError(`Could not cancel unfinished large file ${fileId}`, error);
     return false;
   }
@@ -1453,6 +1497,7 @@ export async function uploadFileFromDisk(
   );
   const uploadSessionId = crypto.randomUUID();
   const uploadStartedMs = Date.now();
+  let uploadSessionMarkerWritten = false;
   let uploadDoneError: unknown;
   let uploadDone: Promise<FileVersion> | undefined;
   let uploadStreamWasCreated = false;
@@ -1475,7 +1520,15 @@ export async function uploadFileFromDisk(
     await cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, options).catch((error) => {
       logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
     });
-    await writeUploadSessionMarker({ remotePath, uploadSessionId, startedMs: uploadStartedMs });
+    try {
+      await writeUploadSessionMarker({ remotePath, uploadSessionId, startedMs: uploadStartedMs });
+      uploadSessionMarkerWritten = true;
+    } catch (error) {
+      logError(
+        `Could not write upload session marker for ${remotePath}; upload will continue without restart cleanup marker.`,
+        error,
+      );
+    }
 
     const { writable, done } = bucket.file(remotePath).createWriteStream({
       partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
@@ -1500,7 +1553,9 @@ export async function uploadFileFromDisk(
 
     await readable.pipeTo(writable, { signal: activity.signal });
     const result = await done;
-    await removeUploadSessionMarker(remotePath, uploadSessionId);
+    if (uploadSessionMarkerWritten) {
+      await removeUploadSessionMarker(remotePath, uploadSessionId);
+    }
     return result;
   } catch (error) {
     let canceledCount = 0;
@@ -1515,7 +1570,7 @@ export async function uploadFileFromDisk(
         return 0;
       });
     }
-    if (!uploadStreamWasCreated || canceledCount > 0) {
+    if (uploadSessionMarkerWritten && (!uploadStreamWasCreated || canceledCount > 0)) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
     normalizeTransferError(
