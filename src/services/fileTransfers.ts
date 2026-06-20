@@ -700,13 +700,14 @@ export async function downloadStreamToFile(
 
   try {
     const maxBytes = normalizedMaxBytes(options.maxBytes);
-    await ensurePrivateDirectory(temporaryDirectory);
-    await cleanupTransferTempFilesForDownload(temporaryDirectory);
-
     const destinationDirectory = await ensureDownloadDestinationDirectory(
       destinationPath,
       options.allowedRootDirectory,
     );
+
+    await ensurePrivateDirectory(temporaryDirectory);
+    await cleanupTransferTempFilesForDownload(temporaryDirectory);
+
     await cleanupDestinationTempFilesForDownload(destinationDirectory);
     if (options.overwrite === false) {
       reservedDestination = await reserveDestinationFile(destinationPath, destinationDirectory);

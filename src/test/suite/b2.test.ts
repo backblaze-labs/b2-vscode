@@ -501,6 +501,44 @@ suite("B2 transfer helpers", () => {
     assert.strictEqual(DEFAULT_DOWNLOAD_MAX_BYTES, 1024 * 1024 * 1024);
   });
 
+  test("validates destination parent before creating adjacent temp directory", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-bind-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-download-temp-bind-outside-"),
+    );
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const destination = path.join(downloadDir, "payload.bin");
+    const tempDir = path.join(downloadDir, ".b2-vscode-transfers");
+    const outsideTempDir = path.join(outsideDir, ".b2-vscode-transfers");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not create temp outside"));
+        controller.close();
+      },
+    });
+
+    try {
+      const symlinkSupported = createDirectorySymlink(outsideDir, downloadDir);
+      if (!symlinkSupported) {
+        return;
+      }
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            temporaryDirectory: tempDir,
+          }),
+        /inside Workspace download directory|real directory|symlink/i,
+      );
+
+      assert.strictEqual(fs.existsSync(outsideTempDir), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("does not write outside when destination parent is swapped after reservation", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-bind-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-bind-outside-"));
