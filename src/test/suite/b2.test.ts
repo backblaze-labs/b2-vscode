@@ -33,7 +33,6 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
-  cleanupStaleUnfinishedUploads,
   downloadStreamToFile,
   STREAMING_UPLOAD_PART_SIZE,
   TransferStallTimeoutError,
@@ -798,9 +797,7 @@ suite("B2 transfer helpers", () => {
     } satisfies UploadBucketHandle;
 
     try {
-      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
-        unfinishedCleanupMaxAgeMs: 1_000,
-      });
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
 
       assert.strictEqual(result.fileId, "uploaded-id");
       assert.strictEqual(cancelCalls, 0);
@@ -811,31 +808,33 @@ suite("B2 transfer helpers", () => {
   });
 
   test("does not trust spoofable remote unfinished upload metadata", async () => {
-    const staleId = largeFileId("stale-upload");
-    const freshId = largeFileId("fresh-upload");
-    const unmarkedId = largeFileId("unmarked-upload");
+    const spoofedId = largeFileId("spoofed-upload");
+    const otherSessionId = largeFileId("other-session-upload");
     const canceled: unknown[] = [];
     const now = Date.now();
+    const spoofedFileInfo: Record<string, string> = {
+      "b2-vscode-upload-started-ms": String(now - 10_000),
+    };
+    const otherSessionFileInfo: Record<string, string> = {
+      "b2-vscode-upload-session-id": "different-session",
+    };
     let listCalls = 0;
 
     const bucket = {
-      async listUnfinishedLargeFiles() {
+      async listUnfinishedLargeFiles(options) {
         listCalls += 1;
+        assert.strictEqual(options?.namePrefix, "remote/file.bin");
         return {
           files: [
             {
-              fileId: staleId,
-              fileName: "remote/stale.bin",
-              fileInfo: { "b2-vscode-upload-started-ms": String(now - 10_000) },
+              fileId: spoofedId,
+              fileName: "remote/file.bin",
+              fileInfo: spoofedFileInfo,
             },
             {
-              fileId: freshId,
-              fileName: "remote/fresh.bin",
-              fileInfo: { "b2-vscode-upload-started-ms": String(now) },
-            },
-            {
-              fileId: unmarkedId,
-              fileName: "remote/unmarked.bin",
+              fileId: otherSessionId,
+              fileName: "remote/file.bin",
+              fileInfo: otherSessionFileInfo,
             },
           ],
           nextFileId: null,
@@ -845,17 +844,39 @@ suite("B2 transfer helpers", () => {
         canceled.push(fileId);
       },
       file() {
-        assert.fail("Expected cleanup test not to open an upload stream");
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("simulated upload failure");
+                },
+              }),
+              done: Promise.reject(new Error("simulated upload failure")),
+            };
+          },
+        };
       },
       async upload() {
         assert.fail("Expected cleanup test not to upload a file");
       },
     } satisfies UploadBucketHandle;
 
-    await cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupMaxAgeMs: 1_000 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-spoofed-upload-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
 
-    assert.strictEqual(listCalls, 0);
-    assert.deepStrictEqual(canceled, []);
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(bucket, localPath, "remote/file.bin"),
+        /simulated upload failure/i,
+      );
+
+      assert.strictEqual(listCalls, 1);
+      assert.deepStrictEqual(canceled, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("uses single-upload path for empty files", async () => {

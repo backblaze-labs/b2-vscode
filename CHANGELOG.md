@@ -38,6 +38,9 @@
   modal warning plus exact bucket-name confirmation. Ambiguous failures after a
   public visibility request refresh the bucket tree and warn that the bucket may
   already be public.
+- Automatic global cleanup of stale unfinished multipart uploads has been
+  removed because B2 file info is caller-controlled; failed uploads now only
+  cancel unfinished uploads that match the active upload session.
 
 ## [0.0.1] — 2026-03-25
 

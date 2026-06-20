@@ -47,17 +47,30 @@ function labelForQuickPickItem(item: unknown): string {
   return "";
 }
 
+function labelForWarningMessageItem(item: string | vscode.MessageItem): string {
+  return typeof item === "string" ? item : item.title;
+}
+
+function isWarningMessageOptions(value: unknown): value is vscode.MessageOptions {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !("title" in value && typeof (value as { title?: unknown }).title === "string")
+  );
+}
+
 function parseWarningMessageCall(
   message: string,
-  optionsOrFirstItem?: vscode.MessageOptions | string,
-  restItems: readonly string[] = [],
+  optionsOrFirstItem?: vscode.MessageOptions | string | vscode.MessageItem,
+  restItems: readonly (string | vscode.MessageItem)[] = [],
 ): WarningMessageCall {
-  const hasOptions = typeof optionsOrFirstItem === "object" && optionsOrFirstItem !== null;
+  const hasOptions = isWarningMessageOptions(optionsOrFirstItem);
   const options = hasOptions ? optionsOrFirstItem : undefined;
-  const items =
+  const rawItems =
     !hasOptions && optionsOrFirstItem !== undefined
       ? [optionsOrFirstItem, ...restItems]
       : restItems;
+  const items = rawItems.map(labelForWarningMessageItem);
 
   return { message, options, items };
 }
@@ -73,8 +86,8 @@ export function stubWarningMessage(
 
   mutableWindow.showWarningMessage = ((
     message: string,
-    optionsOrFirstItem?: vscode.MessageOptions | string,
-    ...restItems: string[]
+    optionsOrFirstItem?: vscode.MessageOptions | string | vscode.MessageItem,
+    ...restItems: (string | vscode.MessageItem)[]
   ) => {
     onCall?.(parseWarningMessageCall(message, optionsOrFirstItem, restItems));
 
@@ -136,8 +149,8 @@ export async function withWindowUiStubs(
 
   mutableWindow.showWarningMessage = ((
     message: string,
-    optionsOrFirstItem?: vscode.MessageOptions | string,
-    ...restItems: string[]
+    optionsOrFirstItem?: vscode.MessageOptions | string | vscode.MessageItem,
+    ...restItems: (string | vscode.MessageItem)[]
   ) => {
     warnings.push(parseWarningMessageCall(message, optionsOrFirstItem, restItems));
     return Promise.resolve(warningValues.shift());

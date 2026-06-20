@@ -36,7 +36,6 @@ const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 3;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
-const UPLOAD_SESSION_STARTED_INFO_KEY = "b2-vscode-upload-started-ms";
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 
 const lastCleanupByDirectory = new Map<string, number>();
@@ -64,7 +63,6 @@ export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
   readonly partSize?: number;
   readonly unfinishedCleanupMaxPages?: number;
   readonly unfinishedCleanupTimeoutMs?: number;
-  readonly unfinishedCleanupMaxAgeMs?: number;
 }
 
 export interface UploadBucketHandle {
@@ -619,24 +617,6 @@ async function withTimeout<T>(
   }
 }
 
-interface StaleUnfinishedUploadCleanupOptions extends Pick<
-  UploadFileFromDiskOptions,
-  "unfinishedCleanupMaxAgeMs" | "unfinishedCleanupMaxPages" | "unfinishedCleanupTimeoutMs"
-> {
-  readonly remotePath?: string;
-}
-
-export async function cleanupStaleUnfinishedUploads(
-  bucket: UploadBucketHandle,
-  options: StaleUnfinishedUploadCleanupOptions = {},
-): Promise<void> {
-  void bucket;
-  void options;
-  // Remote fileInfo is caller-controlled metadata, so it cannot prove that an
-  // unfinished upload belongs to this extension instance. Automatic cleanup is
-  // limited to the in-memory session ID created by the active upload below.
-}
-
 async function cleanupOwnedUnfinishedUpload(
   bucket: UploadBucketHandle,
   remotePath: string,
@@ -709,7 +689,6 @@ export async function uploadFileFromDisk(
   const { writable, done } = bucket.file(remotePath).createWriteStream({
     partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
     fileInfo: {
-      [UPLOAD_SESSION_STARTED_INFO_KEY]: String(Date.now()),
       [UPLOAD_SESSION_ID_INFO_KEY]: uploadSessionId,
     },
     signal: activity.signal,
