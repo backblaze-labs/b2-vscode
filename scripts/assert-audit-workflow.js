@@ -74,7 +74,8 @@ const policyHelperPathFilterCount = (testWorkflow.match(/- "scripts\/audit-polic
   .length;
 const auditScriptPathFilterCount = (testWorkflow.match(/- "scripts\/run-npm-audit\.js"/g) || [])
   .length;
-const npmCommandPathFilterCount = (testWorkflow.match(/- "scripts\/npm-command\.js"/g) || []).length;
+const npmCommandPathFilterCount = (testWorkflow.match(/- "scripts\/npm-command\.js"/g) || [])
+  .length;
 
 assert(testWorkflow.includes("schedule:"), "test workflow must include a scheduled audit run.");
 assert(
