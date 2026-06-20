@@ -673,6 +673,21 @@ interface MoveIntoPlaceOptions {
   readonly overwrite?: boolean;
 }
 
+const HARDLINK_COPY_FALLBACK_ERROR_CODES = new Set([
+  "EXDEV",
+  "EPERM",
+  "EOPNOTSUPP",
+  "ENOTSUP",
+  "EINVAL",
+  "EACCES",
+  "ENOSYS",
+]);
+
+function shouldFallbackToCopyAfterHardlinkError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && HARDLINK_COPY_FALLBACK_ERROR_CODES.has(code);
+}
+
 async function renameIntoPlace(
   sourcePath: string,
   destinationPath: string,
@@ -712,7 +727,7 @@ async function moveIntoPlaceWithoutOverwrite(
   try {
     await fs.promises.link(sourcePath, destinationPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+    if (!shouldFallbackToCopyAfterHardlinkError(error)) {
       throw error;
     }
 

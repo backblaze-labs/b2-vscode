@@ -764,31 +764,37 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("falls back to no-follow copy when hardlink crosses devices", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-link-exdev-"));
-    const destination = path.join(dir, "file.bin");
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array([9, 8, 7]));
-        controller.close();
-      },
-    });
+  test("falls back to no-follow copy when hardlink is unavailable", async () => {
     const originalLink = fs.promises.link;
-    let linkCalls = 0;
-    fs.promises.link = async (): Promise<void> => {
-      linkCalls += 1;
-      throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
-    };
 
     try {
-      const size = await downloadStreamToFile(stream, destination, { overwrite: false });
+      for (const code of ["EXDEV", "EPERM", "EOPNOTSUPP", "ENOTSUP", "EINVAL", "EACCES"]) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-link-fallback-"));
+        const destination = path.join(dir, "file.bin");
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([9, 8, 7]));
+            controller.close();
+          },
+        });
+        let linkCalls = 0;
+        fs.promises.link = async (): Promise<void> => {
+          linkCalls += 1;
+          throw Object.assign(new Error(`hardlink unavailable: ${code}`), { code });
+        };
 
-      assert.strictEqual(size, 3);
-      assert.strictEqual(linkCalls, 1);
-      assert.deepStrictEqual([...fs.readFileSync(destination)], [9, 8, 7]);
+        try {
+          const size = await downloadStreamToFile(stream, destination, { overwrite: false });
+
+          assert.strictEqual(size, 3);
+          assert.strictEqual(linkCalls, 1);
+          assert.deepStrictEqual([...fs.readFileSync(destination)], [9, 8, 7]);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
     } finally {
       fs.promises.link = originalLink;
-      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
