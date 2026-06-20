@@ -10,6 +10,8 @@ import type { FileHandle } from "fs/promises";
 import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
 export class UnsafePathError extends Error {
+  readonly code = "ERR_B2_TOOL_INPUT";
+
   constructor(message: string) {
     super(message);
     this.name = "UnsafePathError";
@@ -108,10 +110,16 @@ export async function ensureRealDirectory(
     return;
   }
 
-  await fs.promises.mkdir(directory, {
-    recursive: options.recursive ?? false,
-    ...(options.mode !== undefined ? { mode: options.mode } : {}),
-  });
+  try {
+    await fs.promises.mkdir(directory, {
+      recursive: options.recursive ?? false,
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
   assertRealDirectory(await fs.promises.lstat(directory), directory, label);
 }
 

@@ -52,7 +52,9 @@ function existingDestinationError(savePath: string): Error {
 function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
   const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
   if (blocked) {
-    throw new Error(`downloadFile refuses to write inside workspace control directory: ${blocked}`);
+    throw new Error(
+      `downloadFile refuses to write inside workspace control directories: ${blocked}`,
+    );
   }
 }
 
