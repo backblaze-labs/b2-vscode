@@ -12,7 +12,7 @@ export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
   displayName: "B2: Pre-sign URL",
   description:
-    "Generates a pre-signed download URL for one file in a B2 bucket. Folder-prefix and bucket-wide authorization tokens are rejected. The URL is valid for the specified duration (default: 1 hour).",
+    "Generates a pre-signed B2 download URL using a name-prefix authorization token. The token can download any object whose name starts with the supplied path. The URL is valid for the specified duration (default: 1 hour).",
   parameters: {
     type: "object",
     properties: {
@@ -23,7 +23,7 @@ export const presignUrlTool: B2ToolDefinition = {
       path: {
         type: "string",
         description:
-          'Full single-file path within the bucket. Must not be empty or end with "/". Example: "reports/q4.pdf"',
+          'B2 object name prefix to authorize. Supplying a full file name still grants prefix scope, so "reports/q4.pdf" also authorizes names such as "reports/q4.pdf.bak". Must not be empty or end with "/".',
       },
       expiresIn: {
         type: "integer",
@@ -37,5 +37,5 @@ export const presignUrlTool: B2ToolDefinition = {
   tags: ["b2", "file", "presign", "url"],
   risk: "exfiltration",
   describeEffect: (input) =>
-    `create a shareable download URL for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
+    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
 };

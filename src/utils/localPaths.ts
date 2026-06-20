@@ -16,6 +16,7 @@ import {
   resolveInsideRoot,
   UnsafePathError,
 } from "../services/pathSafety";
+import { isWorkspaceControlDirectorySegment } from "./workspaceControlDirectories";
 
 const ENCODED_SEGMENT_PREFIX = "__b2_";
 const HASHED_ENCODED_SEGMENT_PREFIX = "__b2h_";
@@ -25,7 +26,6 @@ const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F\u007F<>:"|?*\\/]/g;
 const UNSAFE_BIDI_CONTROL_CHARACTERS = /[\u202A-\u202E\u2066-\u2069]/g;
 const UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS = /[. ]+$/;
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-const WORKSPACE_CONTROL_DIRECTORY_SEGMENTS = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 function encodeRawLocalPathSegment(segment: string): string {
   if (!segment) {
@@ -54,7 +54,7 @@ export function sanitizeLocalPathSegment(segment: string): string {
     !wellFormedSegment ||
     sanitized !== wellFormedSegment ||
     WINDOWS_RESERVED_NAME.test(sanitized) ||
-    WORKSPACE_CONTROL_DIRECTORY_SEGMENTS.has(sanitized.toLowerCase()) ||
+    isWorkspaceControlDirectorySegment(sanitized) ||
     sanitized.startsWith(ENCODED_SEGMENT_PREFIX) ||
     sanitized.startsWith(HASHED_ENCODED_SEGMENT_PREFIX)
   ) {
@@ -62,6 +62,11 @@ export function sanitizeLocalPathSegment(segment: string): string {
   }
 
   return sanitized;
+}
+
+export function portablePathBasename(filePath: string, fallback = ""): string {
+  const segments = filePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  return segments[segments.length - 1] ?? fallback;
 }
 
 function safeB2FileSegments(fileName: string): string[] {

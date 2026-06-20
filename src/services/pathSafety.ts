@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Buffer } from "buffer";
 import type { FileHandle } from "fs/promises";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
 export class UnsafePathError extends Error {
   constructor(message: string) {
@@ -44,20 +45,6 @@ function portableSegments(relativePath: string, label: string): string[] {
 
   return segments;
 }
-
-const WORKSPACE_CONTROL_DIRECTORIES = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  ".vscode",
-  ".idea",
-  ".github",
-  ".devcontainer",
-  ".husky",
-  ".circleci",
-  ".gitlab",
-  ".gitea",
-]);
 
 export interface EnsureRealDirectoryOptions {
   readonly mode?: number;
@@ -470,9 +457,7 @@ export function findWorkspaceControlDirectory(
   return relative
     .split(path.sep)
     .filter((segment) => segment.length > 0)
-    .find((segment) =>
-      WORKSPACE_CONTROL_DIRECTORIES.has(segment.toLowerCase().replace(/[. ]+$/u, "")),
-    );
+    .find(isWorkspaceControlDirectorySegment);
 }
 
 export function resolveContainedRelativePath(
@@ -488,14 +473,4 @@ export function resolveContainedRelativePath(
   }
 
   return resolved;
-}
-
-export function b2KeyBasename(fileName: string): string {
-  assertNoNul(fileName, "B2 file name");
-
-  const segments = fileName
-    .split(/[\\/]+/)
-    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-
-  return segments[segments.length - 1] ?? "download";
 }

@@ -21,7 +21,7 @@ import {
   prepareSafeFileWritePath,
 } from "./pathSafety";
 import { buildTempFilePath } from "../utils/localPaths";
-import { createPrivateTempRoot } from "../utils/privateTempRoot";
+import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
@@ -213,6 +213,7 @@ export class TempFileManager implements vscode.Disposable {
    * Remove the entire temp directory.
    */
   cleanup(): void {
+    releasePrivateTempRoot(this.tempRoot);
     try {
       if (fs.existsSync(this.tempRoot)) {
         fs.rmSync(this.tempRoot, { recursive: true, force: true });

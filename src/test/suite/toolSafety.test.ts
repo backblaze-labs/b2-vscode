@@ -159,6 +159,16 @@ suite("LM Tool Safety", () => {
     assert.doesNotMatch(text, /\(file name\)/);
   });
 
+  test("uploadFile derives the default remote key from portable separators", async () => {
+    const text = await confirmText(uploadFileTool, {
+      localPath: "reports\\out.csv",
+      bucket: "my-bucket",
+    });
+
+    assert.match(text, /my-bucket\/out\.csv/);
+    assert.doesNotMatch(text, /my-bucket\/reports\\out\.csv/);
+  });
+
   test("downloadFile names an explicit localPath destination", async () => {
     const text = await confirmText(downloadFileTool, {
       bucket: "my-bucket",

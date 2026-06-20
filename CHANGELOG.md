@@ -16,6 +16,9 @@
 - Copilot `downloadFile` / `uploadFile` local paths are workspace-relative;
   absolute local paths are no longer accepted, download destinations are
   sanitized before writing, and existing local files are not overwritten.
+- Streaming downloads stage temporary files beside the final destination by
+  default, avoiding RAM-backed system temp directories and cross-device recopy
+  for large downloads.
 
 ### Fixed
 
@@ -61,14 +64,16 @@
 - LM `downloadFile` writes only to workspace-relative paths and refuses to
   overwrite existing workspace files. LM `uploadFile` reads only
   workspace-relative files.
-- `presignUrl` now rejects empty or folder-prefix paths and validates
-  `expiresIn` between 1 and 604800 seconds before asking B2 for an
-  authorization token.
+- `presignUrl` now rejects empty or slash-terminated paths, validates
+  `expiresIn` between 1 and 604800 seconds, and explicitly reports that B2
+  download authorization tokens are name-prefix scoped.
 - Temp-open downloads now use a private per-process cache directory with
-  owner-only file permissions.
-- Interrupted large uploads are canceled automatically only while the extension
-  still owns the active upload session. Configure a B2 bucket lifecycle rule to
-  cancel stale unfinished large files after crashes or host termination.
+  owner-only file permissions. Stale temp-root cleanup preserves active roots
+  with live owner markers or recently updated child files.
+- Interrupted large uploads persist a local owner marker before multipart
+  transfer starts, so matching stale unfinished uploads can be reclaimed after
+  restart. Configure a B2 bucket lifecycle rule as a backstop for stale
+  unfinished large files after deleted local state or host termination.
 
 ## [0.0.1] — 2026-03-25
 

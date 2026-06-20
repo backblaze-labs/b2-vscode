@@ -8,7 +8,10 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
+import {
+  downloadStreamToNewFileWithinRoot,
+  withTransferStallTimeout,
+} from "../../services/fileTransfers";
 import { findWorkspaceControlDirectory, prepareSafeFileWritePath } from "../../services/pathSafety";
 import { resolveDownloadSavePath } from "../../utils/localPaths";
 import {
@@ -145,7 +148,6 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     // paths fail without touching B2.
     const destination = await workspacePath(params.path, params.localPath);
     const savePath = destination.path;
-    const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
@@ -171,16 +173,13 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
               }),
           );
 
-          return downloadStreamToFile(body, savePath, {
+          return downloadStreamToNewFileWithinRoot(body, savePath, destination.workspaceRoot, {
             signal,
-            overwrite: false,
-            allowedRootDirectory: destination.workspaceRoot,
-            temporaryDirectory,
           });
         },
       );
     } catch (error) {
-      throw sanitizeWorkspaceDownloadError(error, destination, temporaryDirectory);
+      throw sanitizeWorkspaceDownloadError(error, destination);
     }
 
     return {

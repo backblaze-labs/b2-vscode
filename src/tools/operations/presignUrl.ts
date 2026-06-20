@@ -18,6 +18,7 @@ interface PresignUrlParams {
 interface PresignUrlResult {
   url: string;
   expiresIn: number;
+  authorizedPrefix: string;
   message: string;
 }
 
@@ -54,6 +55,13 @@ export function normalizePresignUrlPath(filePath: string): string {
   return filePath;
 }
 
+export function objectNameMatchesDownloadAuthorizationPrefix(
+  authorizedPrefix: string,
+  fileName: string,
+): boolean {
+  return fileName.startsWith(authorizedPrefix);
+}
+
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {
   async execute(params: PresignUrlParams, extras: ToolExtras): Promise<PresignUrlResult> {
     const client = extras.getClient();
@@ -75,7 +83,8 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
     return {
       url,
       expiresIn,
-      message: `Pre-signed URL for ${filePath} is valid for ${expiresIn}s.`,
+      authorizedPrefix: filePath,
+      message: `Pre-signed URL authorizes B2 object names starting with ${filePath} for ${expiresIn}s.`,
     };
   },
 };

@@ -18,10 +18,13 @@ import {
   writeFileNoFollow,
   writeFileNoFollowWithinRoot,
 } from "../../services/pathSafety";
-import { createPrivateTempRoot } from "../../utils/privateTempRoot";
+import { createPrivateTempRoot, releasePrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
-import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import {
+  objectNameMatchesDownloadAuthorizationPrefix,
+  presignUrlOperation,
+} from "../../tools/operations/presignUrl";
 import type { ToolExtras } from "../../tools/types";
 
 const PROPERTY_RUNS = 1000;
@@ -196,6 +199,7 @@ test("private temp roots are unpredictable and owner-only", () => {
       assert.equal(mode & 0o077, 0);
     }
   } finally {
+    releasePrivateTempRoot(privateRoot);
     fs.rmSync(fixedRoot, { recursive: true, force: true });
     fs.rmSync(privateRoot, { recursive: true, force: true });
   }
@@ -403,8 +407,53 @@ test("presign operation supports object names with empty path segments", async (
   assert.deepEqual(authorizationRequests, [["a//b.txt", 60]]);
   assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
   assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
+  assert.equal(result.authorizedPrefix, "a//b.txt");
+  assert.match(result.message, /starting with a\/\/b\.txt/);
   assert.equal(result.message.includes("token/with #spaces"), false);
   assert.equal(result.message.includes(result.url), false);
+});
+
+test("presign operation documents B2 prefix authorization scope", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute(
+    { bucket: "bucket", path: "customers/123", expiresIn: 120 },
+    extras,
+  );
+
+  assert.deepEqual(authorizationRequests, [["customers/123", 120]]);
+  assert.equal(result.authorizedPrefix, "customers/123");
+  assert.equal(
+    objectNameMatchesDownloadAuthorizationPrefix(result.authorizedPrefix, "customers/1234/tax.pdf"),
+    true,
+  );
+  assert.equal(
+    objectNameMatchesDownloadAuthorizationPrefix(
+      result.authorizedPrefix,
+      "customers/123/secret.txt",
+    ),
+    true,
+  );
+  assert.equal(
+    objectNameMatchesDownloadAuthorizationPrefix(result.authorizedPrefix, "customers/124/tax.pdf"),
+    false,
+  );
+  assert.match(result.message, /object names starting with customers\/123/);
 });
 
 test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {

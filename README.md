@@ -67,17 +67,17 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `downloadFile` — download a file to the workspace by default, or to a workspace-relative `localPath`; existing files are not overwritten
 - `uploadFile` — upload a workspace-relative file to a bucket
 - `deleteFile` — delete a file by name
-- `presignUrl` — generate a time-limited download URL
+- `presignUrl` — generate a time-limited, prefix-scoped download URL
 
 ### Tool safety
 
-Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable single-file download link with an expiration from 1 to 604800 seconds. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
+Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable B2 name-prefix download authorization with an expiration from 1 to 604800 seconds. A URL requested for `customers/123` can also download objects whose names start with that prefix, such as `customers/1234/tax.pdf` or `customers/123/ssn.csv`. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 
-Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
+Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed. Workspace downloads stage temporary files next to their final destination by default, so large downloads use the destination volume instead of a RAM-backed system temp directory.
 
-Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. The extension does not run age-based stale cleanup because it cannot prove another process is not actively writing an old unfinished upload. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. For large uploads, the extension also persists a local owner marker before starting a multipart upload and uses that marker to reclaim matching stale unfinished uploads on later cleanup. Configure a B2 bucket lifecycle rule as a backstop for stale unfinished large files left by deleted workstations, lost local temp state, older extension versions, crashes, power loss, or failed cleanup.
 
 ## Development
 
