@@ -2890,7 +2890,11 @@ suite("B2 transfer helpers", () => {
     }
 
     try {
-      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
+      await cleanupStaleDestinationTempFiles({
+        directory: dir,
+        maxAgeMs: 1_000,
+        restoreGraceMs: 0,
+      });
 
       assert.strictEqual(fs.existsSync(crossDevice), false);
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
@@ -2976,6 +2980,21 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("does not restore fresh destination backups from other processes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-fresh-backup-"));
+    const backup = path.join(dir, ".b2-replace-backup-active.bin-1-abcdefabcdef.tmp");
+    fs.writeFileSync(backup, "active");
+
+    try {
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 0 });
+
+      assert.strictEqual(fs.existsSync(backup), true);
+      assert.strictEqual(fs.existsSync(path.join(dir, "active.bin")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("recovers orphaned destination backups across a workspace tree", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
     const nested = path.join(dir, "nested", "downloads");
@@ -2984,7 +3003,7 @@ suite("B2 transfer helpers", () => {
     fs.writeFileSync(backup, "report");
 
     try {
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir });
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, restoreGraceMs: 0 });
 
       assert.strictEqual(fs.existsSync(backup), false);
       assert.strictEqual(fs.readFileSync(path.join(nested, "report.txt"), "utf8"), "report");
@@ -3033,7 +3052,7 @@ suite("B2 transfer helpers", () => {
     fs.writeFileSync(dependencyBackup, "dependency");
 
     try {
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir });
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, restoreGraceMs: 0 });
 
       assert.strictEqual(fs.existsSync(sourceBackup), false);
       assert.strictEqual(fs.readFileSync(path.join(sourceDir, "report.txt"), "utf8"), "report");
@@ -3074,7 +3093,7 @@ suite("B2 transfer helpers", () => {
         return;
       }
 
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: linkRoot });
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: linkRoot, restoreGraceMs: 0 });
 
       assert.strictEqual(fs.existsSync(backup), false);
       assert.strictEqual(fs.readFileSync(path.join(workspaceRoot, "report.txt"), "utf8"), "report");

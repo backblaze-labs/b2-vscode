@@ -52,6 +52,7 @@ const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_TRANSFER_TEMP_CLEANUP_BUDGET_MS = 2_000;
 const WORKSPACE_TRANSFER_TEMP_CLEANUP_MAX_ENTRIES = 2_000;
+const DESTINATION_BACKUP_RESTORE_GRACE_MS = 5_000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const STALE_CLEANUP_THROTTLE_MAX_ENTRIES = 256;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
@@ -620,9 +621,11 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
 export async function cleanupStaleDestinationTempFiles(options: {
   directory: string;
   maxAgeMs?: number;
+  restoreGraceMs?: number;
 }): Promise<void> {
   const directory = options.directory;
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
+  const restoreGraceMs = options.restoreGraceMs ?? DESTINATION_BACKUP_RESTORE_GRACE_MS;
 
   try {
     if (!(await pathExistsAsRealDirectory(directory, "Destination directory"))) {
@@ -644,7 +647,9 @@ export async function cleanupStaleDestinationTempFiles(options: {
     return;
   }
 
-  const cutoff = Date.now() - maxAgeMs;
+  const now = Date.now();
+  const cutoff = now - maxAgeMs;
+  const restoreCutoff = now - restoreGraceMs;
   for (const entry of entries) {
     if (!isDestinationTempFile(entry)) {
       continue;
@@ -655,6 +660,9 @@ export async function cleanupStaleDestinationTempFiles(options: {
       const stats = await fs.promises.lstat(filePath);
       const backup = backupDestinationInfo(directory, entry);
       if (backup?.processId === process.pid) {
+        continue;
+      }
+      if (backup && restoreGraceMs > 0 && stats.mtimeMs > restoreCutoff) {
         continue;
       }
       if (backup && (await restoreDestinationBackup(filePath, backup.restorePath))) {
@@ -674,6 +682,7 @@ export async function cleanupStaleDestinationTempFiles(options: {
 export async function cleanupWorkspaceDestinationTempFiles(options: {
   workspaceRoot: string;
   maxAgeMs?: number;
+  restoreGraceMs?: number;
   maxDirectories?: number;
   maxDurationMs?: number;
 }): Promise<void> {
@@ -709,6 +718,7 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     await cleanupStaleDestinationTempFiles({
       directory,
       ...(options.maxAgeMs !== undefined ? { maxAgeMs: options.maxAgeMs } : {}),
+      ...(options.restoreGraceMs !== undefined ? { restoreGraceMs: options.restoreGraceMs } : {}),
     });
 
     let entries: fs.Dirent[];
