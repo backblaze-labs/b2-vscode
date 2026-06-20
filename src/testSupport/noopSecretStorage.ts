@@ -23,5 +23,16 @@ export function createMemorySecretStorage(
 }
 
 export function createNoopSecretStorage(): vscode.SecretStorage {
-  return createMemorySecretStorage();
+  const onDidChange: vscode.Event<vscode.SecretStorageChangeEvent> = () => ({
+    dispose() {},
+  });
+
+  return {
+    onDidChange,
+    async get() {
+      return undefined;
+    },
+    async store() {},
+    async delete() {},
+  };
 }

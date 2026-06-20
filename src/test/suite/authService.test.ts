@@ -163,6 +163,22 @@ async function createB2CliCredentialDatabase(
 }
 
 suite("AuthService credential resolution and SQL.js loading", () => {
+  test("noop SecretStorage ignores mutations and change listeners", async () => {
+    const secrets = createNoopSecretStorage();
+    const changedKeys: string[] = [];
+    const listener = secrets.onDidChange((event) => changedKeys.push(event.key));
+
+    try {
+      await secrets.store(SECRET_KEY_ID, "stored-key-id");
+      assert.strictEqual(await secrets.get(SECRET_KEY_ID), undefined);
+
+      await secrets.delete(SECRET_KEY_ID);
+      assert.deepStrictEqual(changedKeys, []);
+    } finally {
+      listener.dispose();
+    }
+  });
+
   test("prefers SecretStorage credentials over environment variables", async () => {
     const service = new AuthService(
       createMemorySecretStorage({
