@@ -510,6 +510,8 @@ suite("B2 LM tool operations with simulator", () => {
     assert.ok(authorization);
     assert.strictEqual(presigned.message.includes(authorization), false);
     assert.match(presigned.message, /dedicated url field/i);
+    assert.match(presigned.message, /file-name prefix/i);
+    assert.match(presigned.message, /same prefix/i);
   });
 
   test("presignUrl rejects bucket and folder prefix authorizations", async () => {
@@ -540,7 +542,7 @@ suite("B2 LM tool operations with simulator", () => {
           { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
           extras,
         ),
-      /uniquely identify one existing B2 object/i,
+      /path prefix must match exactly one downloadable B2 file/i,
     );
   });
 
@@ -572,7 +574,7 @@ suite("B2 LM tool operations with simulator", () => {
           { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
           { getClient: () => client as never },
         ),
-      /uniquely identify one existing B2 object/i,
+      /path prefix must match exactly one downloadable B2 file/i,
     );
     assert.strictEqual(authorizationRequested, false);
   });

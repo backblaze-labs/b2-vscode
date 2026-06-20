@@ -67,11 +67,11 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `downloadFile` — download a file to the first open workspace folder by default, or to a workspace-relative `localPath`; existing files are not overwritten
 - `uploadFile` — upload a workspace-relative local file from the first open workspace folder to a bucket
 - `deleteFile` — delete a file by name
-- `presignUrl` — generate a time-limited prefix-scoped download URL
+- `presignUrl` — generate a time-limited prefix download URL after the prefix currently matches one file
 
 ### Tool safety
 
-Several tools change state or expose data: `uploadFile` reads a file from an open workspace folder and sends it to B2, `downloadFile` writes into an open workspace folder, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable download link for the requested B2 file-name prefix. A B2 download authorization is prefix-scoped, so a `presignUrl` token can download current and future objects whose names start with the requested path until the URL expires. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and destructive or data-exposing tools are flagged as irreversible or exfiltration-capable.
+Several tools change state or expose data: `uploadFile` reads a workspace-relative file from the first open workspace folder and sends it to B2, `downloadFile` writes a workspace-relative file into the first open workspace folder, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable prefix download link after validating that the prefix currently matches one B2 file. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and destructive or data-exposing tools are flagged as irreversible or exfiltration-capable.
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 

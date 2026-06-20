@@ -12,9 +12,9 @@
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
 - `presignUrl` now requires an integer expiration from 1 to 604800 seconds and
-  rejects empty or folder-like prefixes. The tool now documents that B2 download
-  authorization tokens are file-name-prefix scoped and can authorize current or
-  future objects whose names start with the requested path until expiry.
+  rejects empty paths, folder-like paths, and path prefixes that do not currently
+  match exactly one downloadable B2 file before issuing a prefix-based download
+  authorization.
 
 ### Fixed
 
