@@ -2965,6 +2965,35 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("removes symlinked destination backups without restoring their targets", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-backup-symlink-"));
+    const dir = path.join(root, "workspace");
+    const outside = path.join(root, "outside-secret.txt");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const destination = path.join(dir, "file.bin");
+    fs.mkdirSync(dir);
+    fs.writeFileSync(outside, "secret");
+    const symlinkCreated = createFileSymlink(outside, backup);
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await cleanupStaleDestinationTempFiles({
+        directory: dir,
+        maxAgeMs: 0,
+        restoreGraceMs: 0,
+      });
+
+      assert.strictEqual(fs.existsSync(backup), false);
+      assert.strictEqual(fs.existsSync(destination), false);
+      assert.strictEqual(fs.readFileSync(outside, "utf8"), "secret");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("does not restore destination backups from the current process", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-current-backup-"));
     const backup = path.join(dir, `.b2-replace-backup-active.bin-${process.pid}-abcdefabcdef.tmp`);
@@ -3012,7 +3041,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("does not restore symlink destination backups", async () => {
+  test("removes symlink destination backups without restoring them", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
     const target = path.join(dir, "target");
     const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
@@ -3031,7 +3060,7 @@ suite("B2 transfer helpers", () => {
       });
 
       assert.strictEqual(fs.existsSync(restored), false);
-      assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
+      assert.strictEqual(fs.existsSync(backup), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

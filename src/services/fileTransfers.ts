@@ -658,6 +658,11 @@ export async function cleanupStaleDestinationTempFiles(options: {
     const filePath = path.join(directory, entry);
     try {
       const stats = await fs.promises.lstat(filePath);
+      if (stats.isSymbolicLink()) {
+        await fs.promises.rm(filePath, { force: true });
+        continue;
+      }
+
       const backup = backupDestinationInfo(directory, entry);
       if (backup?.processId === process.pid) {
         continue;
