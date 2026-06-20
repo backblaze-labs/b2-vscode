@@ -2281,20 +2281,24 @@ suite("B2 transfer helpers", () => {
 
   test("cleans stale managed transfer temp files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-"));
-    const stale = path.join(dir, "b2-transfer-1-stale.tmp");
-    const fresh = path.join(dir, "b2-transfer-1-fresh.tmp");
+    const stale = path.join(dir, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");
+    const fresh = path.join(dir, "b2-transfer-1-111111111111111111111111.tmp");
+    const userLike = path.join(dir, "b2-transfer-1-stale.tmp");
     const complete = path.join(dir, "complete.bin");
     fs.writeFileSync(stale, "stale");
     fs.writeFileSync(fresh, "fresh");
+    fs.writeFileSync(userLike, "user data");
     fs.writeFileSync(complete, "complete");
     const oldTime = new Date(Date.now() - 10_000);
     fs.utimesSync(stale, oldTime, oldTime);
+    fs.utimesSync(userLike, oldTime, oldTime);
 
     try {
       await cleanupStaleTransferTempFiles({ directory: dir, maxAgeMs: 1_000 });
 
       assert.strictEqual(fs.existsSync(stale), false);
       assert.strictEqual(fs.existsSync(fresh), true);
+      assert.strictEqual(fs.readFileSync(userLike, "utf8"), "user data");
       assert.strictEqual(fs.existsSync(complete), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

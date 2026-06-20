@@ -375,7 +375,7 @@ function destinationReplaceBackupPath(destinationPath: string): string {
 }
 
 function isTransferTempFile(name: string): boolean {
-  return name.startsWith(TRANSFER_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
+  return /^b2-transfer-\d+-[a-f0-9]{24}\.tmp$/u.test(name);
 }
 
 function isDestinationTempFile(name: string): boolean {
