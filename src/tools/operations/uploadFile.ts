@@ -7,9 +7,18 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
+import { uploadFileFromDisk } from "../../services/fileTransfers";
+import {
+  findWorkspaceControlDirectory,
+  isPathInsideOrEqual,
+  resolveContainedRelativePath,
+} from "../../services/pathSafety";
+import {
+  createTransferProgressReporter,
+  withCancellableTransferProgress,
+} from "../../services/transferProgress";
 
 interface UploadFileParams {
   localPath: string;
@@ -24,24 +33,56 @@ interface UploadFileResult {
   message: string;
 }
 
+function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string): void {
+  const blocked = findWorkspaceControlDirectory(workspaceRoot, localPath);
+  if (blocked) {
+    throw new Error(`uploadFile refuses to read inside workspace control directory: ${blocked}`);
+  }
+}
+
+async function workspaceFilePath(relativePath: string): Promise<string> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    throw new Error("No workspace folder open. The uploadFile tool only reads workspace files.");
+  }
+
+  const lexicalPath = resolveContainedRelativePath(
+    workspaceFolder.uri.fsPath,
+    relativePath,
+    "localPath",
+  );
+  assertNoControlDirectoryRead(workspaceFolder.uri.fsPath, lexicalPath);
+  const [workspaceRealPath, localRealPath] = await Promise.all([
+    fs.promises.realpath(workspaceFolder.uri.fsPath),
+    fs.promises.realpath(lexicalPath),
+  ]);
+
+  if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
+    throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+  }
+
+  assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
+  return localRealPath;
+}
+
 export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileResult> = {
-  async execute(params: UploadFileParams, extras: ToolExtras): Promise<UploadFileResult> {
+  async execute(
+    params: UploadFileParams,
+    extras: ToolExtras,
+    token?: vscode.CancellationToken,
+  ): Promise<UploadFileResult> {
     const client = extras.getClient();
     if (!client) {
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    // Resolve local path (workspace-relative or absolute)
-    let localPath = params.localPath;
-    if (!path.isAbsolute(localPath)) {
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder) {
-        throw new Error("No workspace folder open. Please use an absolute path.");
-      }
-      localPath = path.join(workspaceFolder.uri.fsPath, localPath);
-    }
+    const localPath = await workspaceFilePath(params.localPath);
 
-    fs.accessSync(localPath, fs.constants.R_OK);
+    await fs.promises.access(localPath, fs.constants.R_OK);
+    const stats = await fs.promises.stat(localPath);
+    if (!stats.isFile()) {
+      throw new Error(`Local path is not a file: ${localPath}`);
+    }
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
@@ -51,18 +92,23 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
     // Resolve remote path
     const remotePath = params.remotePath ?? path.basename(localPath);
 
-    // Read and upload
-    const data = await fs.promises.readFile(localPath);
-    const result = await bucket.upload({
-      fileName: remotePath,
-      source: new BufferSource(data),
-    });
+    const result = await withCancellableTransferProgress(
+      {
+        title: `Uploading ${path.basename(localPath)} to b2://${params.bucket}/${remotePath}...`,
+        token,
+      },
+      ({ progress, signal }) =>
+        uploadFileFromDisk(bucket, localPath, remotePath, {
+          signal,
+          onProgress: createTransferProgressReporter(progress, stats.size),
+        }),
+    );
 
     return {
       fileId: result.fileId,
       fileName: result.fileName,
       size: result.contentLength,
-      message: `Uploaded ${localPath} to b2://${params.bucket}/${remotePath} (${data.length} bytes, ID: ${result.fileId})`,
+      message: `Uploaded ${localPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
     };
   },
 };

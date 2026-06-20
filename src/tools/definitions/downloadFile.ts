@@ -12,8 +12,8 @@ function localDestinationFor(input: Record<string, unknown>): string {
   if (typeof input.localPath !== "string" || input.localPath.length === 0) {
     return "your local workspace";
   }
-  return path.isAbsolute(input.localPath)
-    ? input.localPath
+  return path.isAbsolute(input.localPath) || path.win32.isAbsolute(input.localPath)
+    ? `absolute path ${input.localPath} (rejected by this tool)`
     : `workspace-relative path ${input.localPath}`;
 }
 
@@ -36,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional absolute or workspace-relative local path to save the file. Defaults to the workspace root with the same file name.",
+          "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same file name.",
       },
     },
     required: ["bucket", "path"],

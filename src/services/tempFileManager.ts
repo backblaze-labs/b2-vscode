@@ -12,6 +12,13 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
+import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
+import {
+  ensureContainedDirectoryPath,
+  ensureRealDirectorySync,
+  isPathInsideOrEqual,
+  resolveContainedRelativePath,
+} from "./pathSafety";
 
 /**
  * Manages a temp directory for caching B2 file downloads.
@@ -20,8 +27,38 @@ export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
 
-  constructor() {
-    this.tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME);
+  constructor(tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME)) {
+    this.tempRoot = path.resolve(tempRoot);
+    this.ensureManagedTempRoot();
+    this.ensurePrivateTempRoot();
+  }
+
+  private ensureManagedTempRoot(): void {
+    const systemTemp = path.resolve(os.tmpdir());
+    if (this.tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, this.tempRoot)) {
+      throw new Error(
+        `Temp file cache root must be a dedicated directory inside the system temp directory: ${this.tempRoot}`,
+      );
+    }
+  }
+
+  private ensurePrivateTempRoot(): void {
+    ensureRealDirectorySync(this.tempRoot, "Temp file cache root", {
+      recursive: true,
+      mode: 0o700,
+    });
+
+    try {
+      fs.chmodSync(this.tempRoot, 0o700);
+    } catch {
+      // Best effort: existing directories may not allow chmod on every platform.
+    }
+  }
+
+  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
+    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
+      mode: 0o700,
+    });
   }
 
   dispose(): void {
@@ -37,15 +74,19 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   /**
-   * Save downloaded file content to the temp directory and cache the path.
+   * Stream downloaded file content into the temp directory and cache the path.
    */
-  async saveFile(bucketName: string, fileName: string, content: Buffer): Promise<string> {
-    const localPath = path.join(this.tempRoot, bucketName, fileName);
-    const dir = path.dirname(localPath);
+  async saveStream(
+    bucketName: string,
+    fileName: string,
+    stream: ReadableStream<Uint8Array>,
+    options: DownloadStreamToFileOptions = {},
+  ): Promise<string> {
+    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
+    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
+    await this.ensureCacheDirectoryPath(path.dirname(localPath));
 
-    // Ensure parent directories exist
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(localPath, content);
+    await downloadStreamToFile(stream, localPath, options);
 
     const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
