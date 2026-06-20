@@ -87,6 +87,11 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const TRANSFER_TEMP_FILE_PATTERN = new RegExp(
+  `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
+  "u",
+);
+
 export class TransferStallTimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -385,11 +390,7 @@ function destinationReplaceBackupPath(destinationPath: string): string {
 }
 
 function isTransferTempFile(name: string): boolean {
-  const pattern = new RegExp(
-    `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
-    "u",
-  );
-  return pattern.test(name);
+  return TRANSFER_TEMP_FILE_PATTERN.test(name);
 }
 
 function isDestinationTempFile(name: string): boolean {
