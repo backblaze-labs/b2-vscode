@@ -440,6 +440,7 @@ async function readWithTimeout(
   let abortHandler: (() => void) | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => reject(new StreamIdleTimeoutError(timeoutMs)), timeoutMs);
+    timeout.unref?.();
   });
   const abortPromise = signal
     ? new Promise<never>((_, reject) => {
