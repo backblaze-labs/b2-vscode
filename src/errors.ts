@@ -456,7 +456,10 @@ export function formatB2UserMessage(error: unknown): string {
     return "The B2 request timed out before the extension could confirm the final state. Refresh the bucket tree and verify the bucket in Backblaze before retrying.";
   }
 
-  if (matchesErrorName(error, "DownloadSizeLimitError")) {
+  if (
+    matchesErrorName(error, "DownloadSizeLimitError") ||
+    matchesErrorName(error, "TransferStallTimeoutError")
+  ) {
     return redactSensitiveText(getErrorMessage(error));
   }
 

@@ -136,8 +136,11 @@ src/
 ├── commands/index.ts         # Command registrations
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
-│   ├── b2.ts                 # B2 SDK client factory + stream helper
-│   └── tempFileManager.ts    # Downloaded file cache
+│   ├── b2.ts                 # B2 SDK client factory
+│   ├── fileTransfers.ts      # Upload/download transfer helpers
+│   ├── pathSafety.ts         # Workspace and filesystem path containment
+│   ├── tempFileManager.ts    # Downloaded file cache
+│   └── transferProgress.ts   # VS Code transfer progress/cancellation
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider
 ├── models/
@@ -149,8 +152,10 @@ src/
 │   ├── b2ToolAdapter.ts
 │   ├── definitions/          # Tool schemas
 │   └── operations/           # Tool implementations
-└── ui/
-    └── statusBar.ts          # Status bar integration
+├── ui/
+│   └── statusBar.ts          # Status bar integration
+└── utils/
+    └── humanSize.ts          # Human-readable byte formatting
 ```
 
 Transfer orchestration is consolidated in `fileTransfers.ts` so timeout handling, temp-file

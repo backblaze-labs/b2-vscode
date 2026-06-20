@@ -47,6 +47,7 @@ import {
   TRANSFER_TEMP_DIR_NAME,
   TransferStallTimeoutError,
   UploadFinalizationIndeterminateError,
+  uploadEmptyObject,
   uploadFileHandle,
   uploadFileFromDisk,
   withTransferStallTimeout,
@@ -2839,6 +2840,62 @@ suite("B2 transfer helpers", () => {
         TransferStallTimeoutError,
       );
       assert.strictEqual(uploadSignal?.aborted, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("times out stalled empty object uploads", async () => {
+    const bucket = {
+      async upload(options) {
+        assert.strictEqual(options.fileName, "remote/.bzEmpty");
+        assert.strictEqual(options.contentType, "application/x-bzEmpty");
+        return new Promise<FileVersion>(() => undefined);
+      },
+      file() {
+        assert.fail("Expected empty objects to avoid the streaming write path");
+      },
+    } satisfies UploadBucketHandle;
+
+    await assert.rejects(
+      () =>
+        uploadEmptyObject(bucket, "remote/.bzEmpty", {
+          contentType: "application/x-bzEmpty",
+          stallTimeoutMs: 20,
+        }),
+      TransferStallTimeoutError,
+    );
+  });
+
+  test("times out stalled streaming upload finalization", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-finalize-stall-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+
+    const bucket = {
+      async upload() {
+        assert.fail("Expected non-empty files to use the streaming upload path");
+      },
+      file() {
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>(),
+              done: new Promise<FileVersion>(() => undefined),
+            };
+          },
+        };
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(
+        () =>
+          uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
+            stallTimeoutMs: 20,
+          }),
+        UploadFinalizationIndeterminateError,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

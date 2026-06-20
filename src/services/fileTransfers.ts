@@ -43,6 +43,7 @@ import {
   abortPromise,
   createActivityAbortSignal,
   normalizeTransferError,
+  withTransferStallTimeout,
   withTimeout,
   type TransferTimeoutOptions,
 } from "./transferTimeout";
@@ -182,10 +183,16 @@ interface UnfinishedLargeFile {
   readonly fileInfo?: Record<string, string>;
 }
 
+export interface UploadEmptyObjectOptions extends TransferTimeoutOptions {
+  readonly contentType?: string;
+  readonly onProgress?: ProgressListener;
+}
+
 export interface UploadBucketHandle {
   upload(options: {
     fileName: string;
     source: BufferSource;
+    contentType?: string;
     signal?: AbortSignal;
     onProgress?: ProgressListener;
   }): Promise<FileVersion>;
@@ -1861,6 +1868,24 @@ async function cleanupMatchingUnfinishedUploads(
   return canceledCount;
 }
 
+export async function uploadEmptyObject(
+  bucket: UploadBucketHandle,
+  remotePath: string,
+  options: UploadEmptyObjectOptions = {},
+): Promise<FileVersion> {
+  return withTransferStallTimeout(`Upload of ${remotePath}`, options, (signal, markActivity) =>
+    bucket.upload({
+      fileName: remotePath,
+      source: new BufferSource(new Uint8Array(0)),
+      signal,
+      ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
+      ...(options.onProgress !== undefined
+        ? { onProgress: withActivityProgress(options.onProgress, markActivity) }
+        : {}),
+    }),
+  );
+}
+
 /**
  * Upload a local file path or a pre-opened source file. Passing an
  * UploadSourceFile transfers ownership of its handle to this function; the
@@ -1892,17 +1917,10 @@ export async function uploadFileFromDisk(
 
   try {
     if (stats.size === 0) {
-      return await Promise.race([
-        bucket.upload({
-          fileName: remotePath,
-          source: new BufferSource(new Uint8Array(0)),
-          signal: activity.signal,
-          ...(options.onProgress !== undefined
-            ? { onProgress: withActivityProgress(options.onProgress, activity.markActivity) }
-            : {}),
-        }),
-        abortPromise(activity.signal),
-      ]);
+      return await uploadEmptyObject(bucket, remotePath, {
+        ...options,
+        signal: activity.signal,
+      });
     }
 
     scheduleStaleSameKeyUnfinishedUploadCleanup(bucket, remotePath, options);
