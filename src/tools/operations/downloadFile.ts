@@ -22,7 +22,7 @@ import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
-import { B2ResourceNotFoundError } from "../../errors";
+import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
 
 interface DownloadFileParams {
@@ -52,7 +52,7 @@ function existingDestinationError(savePath: string): Error {
 function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
   const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
   if (blocked) {
-    throw new Error(
+    throw new B2ToolInputError(
       `downloadFile refuses to write inside workspace control directories: ${blocked}`,
     );
   }

@@ -23,6 +23,7 @@ import {
   type ProgressListener,
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
+import { B2ToolInputError } from "../errors";
 import { log, logError } from "../logger";
 import { isMissingCapabilityError } from "../utils/b2Errors";
 import { humanSize } from "../utils/humanSize";
@@ -1107,7 +1108,7 @@ async function assertRealUploadSourcePath(localPath: string): Promise<fs.Stats> 
     throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
   }
   if (!pathStats.isFile()) {
-    throw new Error(`Local path is not a file: ${localPath}`);
+    throw new B2ToolInputError(`Local path is not a file: ${localPath}`);
   }
   return pathStats;
 }
@@ -1128,7 +1129,7 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) {
-      throw new Error(`Local path is not a file: ${localPath}`);
+      throw new B2ToolInputError(`Local path is not a file: ${localPath}`);
     }
 
     const pathStats = await assertRealUploadSourcePath(localPath);
