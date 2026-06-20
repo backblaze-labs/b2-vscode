@@ -1013,7 +1013,10 @@ suite("Adversarial untrusted input fuzzing", () => {
           assert.strictEqual(listed.files[0]?.name, filePath);
 
           const downloaded = await withWorkspaceFolder(outputRoot, () =>
-            downloadFileOperation.execute({ bucket: bucketName, path: filePath, localPath }, extras),
+            downloadFileOperation.execute(
+              { bucket: bucketName, path: filePath, localPath },
+              extras,
+            ),
           );
           assertInside(outputRoot, downloaded.localPath);
 
