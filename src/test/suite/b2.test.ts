@@ -47,7 +47,11 @@ import {
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
-import { isPathInsideOrEqual } from "../../services/pathSafety";
+import {
+  ensurePrivateDirectory,
+  ensurePrivateDirectorySync,
+  isPathInsideOrEqual,
+} from "../../services/pathSafety";
 import { humanSize } from "../../utils/humanSize";
 import type { B2Credentials } from "../../services/authService";
 import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
@@ -997,6 +1001,77 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(staleTargetFile, "utf8"), "do not delete");
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses transfer temp directories when permissions cannot be restricted", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-private-"));
+    const temporaryDirectory = path.join(dir, "shared");
+    const destination = path.join(dir, "download.bin");
+    fs.mkdirSync(temporaryDirectory, { mode: 0o777 });
+    const originalChmod = fs.promises.chmod;
+    fs.promises.chmod = async (target: fs.PathLike, mode: fs.Mode): Promise<void> => {
+      if (path.resolve(String(target)) === path.resolve(temporaryDirectory)) {
+        throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+      }
+      await originalChmod(target, mode);
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { temporaryDirectory }),
+        /permissions.*restricted/i,
+      );
+
+      assert.strictEqual(fs.existsSync(destination), false);
+      assert.deepStrictEqual(fs.readdirSync(temporaryDirectory), []);
+    } finally {
+      fs.promises.chmod = originalChmod;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts already-private directories when chmod is unsupported", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-private-chmod-"));
+    const asyncDirectory = path.join(dir, "async");
+    const syncDirectory = path.join(dir, "sync");
+    fs.mkdirSync(asyncDirectory, { mode: 0o700 });
+    fs.mkdirSync(syncDirectory, { mode: 0o700 });
+    fs.chmodSync(asyncDirectory, 0o700);
+    fs.chmodSync(syncDirectory, 0o700);
+
+    const mutableFs = require("fs") as typeof fs & {
+      chmodSync: (target: fs.PathLike, mode: fs.Mode) => void;
+    };
+    const originalAsyncChmod = fs.promises.chmod;
+    const originalSyncChmod = mutableFs.chmodSync;
+    fs.promises.chmod = async (target: fs.PathLike, mode: fs.Mode): Promise<void> => {
+      if (path.resolve(String(target)) === path.resolve(asyncDirectory)) {
+        throw Object.assign(new Error("chmod unsupported"), { code: "ENOTSUP" });
+      }
+      await originalAsyncChmod(target, mode);
+    };
+    mutableFs.chmodSync = (target: fs.PathLike, mode: fs.Mode): void => {
+      if (path.resolve(String(target)) === path.resolve(syncDirectory)) {
+        throw Object.assign(new Error("chmod unsupported"), { code: "ENOTSUP" });
+      }
+      originalSyncChmod(target, mode);
+    };
+
+    try {
+      await ensurePrivateDirectory(asyncDirectory, "Async private directory");
+      ensurePrivateDirectorySync(syncDirectory, "Sync private directory");
+    } finally {
+      fs.promises.chmod = originalAsyncChmod;
+      mutableFs.chmodSync = originalSyncChmod;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -158,13 +158,21 @@ export async function ensurePrivateDirectory(
     mode: options.mode ?? 0o700,
   });
 
+  let chmodFailed = false;
   try {
     await fs.promises.chmod(directory, options.mode ?? 0o700);
-  } catch (error) {
-    throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+  } catch {
+    chmodFailed = true;
   }
 
-  assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+  try {
+    assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+  } catch (error) {
+    if (chmodFailed) {
+      throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+    }
+    throw error;
+  }
 }
 
 export function ensurePrivateDirectorySync(
@@ -177,13 +185,21 @@ export function ensurePrivateDirectorySync(
     mode: options.mode ?? 0o700,
   });
 
+  let chmodFailed = false;
   try {
     fs.chmodSync(directory, options.mode ?? 0o700);
   } catch {
-    throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+    chmodFailed = true;
   }
 
-  assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
+  try {
+    assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
+  } catch (error) {
+    if (chmodFailed) {
+      throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+    }
+    throw error;
+  }
 }
 
 export async function ensureContainedDirectoryPath(
