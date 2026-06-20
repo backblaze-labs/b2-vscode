@@ -108,8 +108,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Run VS Code tests
         run: xvfb-run -a npm test
@@ -133,8 +133,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Run npm audit
         run: npm run audit:release
@@ -165,8 +165,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Build extension for analysis
         run: npm run compile
@@ -196,8 +196,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Package VSIX
         run: npm run vsix
@@ -240,8 +240,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -276,8 +276,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -374,8 +374,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
