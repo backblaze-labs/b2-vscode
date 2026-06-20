@@ -242,6 +242,19 @@ function isSameFilesystemEntry(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+async function writeStreamChunk(fileHandle: FileHandle, chunk: unknown): Promise<void> {
+  if (typeof chunk === "string") {
+    await fileHandle.write(chunk);
+    return;
+  }
+  if (chunk instanceof Uint8Array) {
+    await fileHandle.write(chunk);
+    return;
+  }
+
+  throw new TypeError("Safe file write streams must yield string or Uint8Array chunks.");
+}
+
 export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
   const beforeStats = await fs.promises.lstat(filePath);
   if (beforeStats.isSymbolicLink() || !beforeStats.isFile()) {
@@ -376,7 +389,7 @@ export async function writeFileNoFollow(
       await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
     } else {
       for await (const chunk of data) {
-        await fileHandle.write(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+        await writeStreamChunk(fileHandle, chunk);
       }
     }
     completed = true;
@@ -415,7 +428,7 @@ export async function writeFileNoFollowWithinRoot(
       await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
     } else {
       for await (const chunk of data) {
-        await fileHandle.write(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+        await writeStreamChunk(fileHandle, chunk);
       }
     }
     completed = true;
