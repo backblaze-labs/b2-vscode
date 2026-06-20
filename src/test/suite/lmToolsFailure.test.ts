@@ -600,6 +600,48 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool rejects invalid remote paths before B2 lookup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-remote-path-"));
+    let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        bucketLookupWasCalled = true;
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        for (const [remotePath, expectedError] of [
+          ["", /empty/i],
+          ["bad\0path", /NUL/i],
+          ["reports/", /folder path ending in slash/i],
+        ] as const) {
+          await assert.rejects(
+            () =>
+              downloadFileOperation.execute(
+                { bucket: "b", path: remotePath, localPath: "download.txt" },
+                { getClient: () => client },
+              ),
+            expectedError,
+          );
+        }
+      });
+      assert.strictEqual(bucketLookupWasCalled, false);
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(dir, "download.txt")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("download tool requires an open workspace for local writes", async () => {
     let downloadWasCalled = false;
     let bucketLookupWasCalled = false;

@@ -41,7 +41,7 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
 
 export function normalizePresignUrlPath(filePath: string): string {
   if (!filePath) {
-    throw new Error("path must name a single file and must not be empty.");
+    throw new Error("path must be a non-empty B2 object-name prefix.");
   }
 
   if (filePath.includes("\0")) {
@@ -49,7 +49,7 @@ export function normalizePresignUrlPath(filePath: string): string {
   }
 
   if (filePath.endsWith("/")) {
-    throw new Error("path must name a single file, not a folder prefix.");
+    throw new Error("path must not end with a slash because folder prefixes are rejected.");
   }
 
   return filePath;

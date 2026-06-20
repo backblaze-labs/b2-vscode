@@ -46,6 +46,22 @@ function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: 
   }
 }
 
+function normalizeDownloadFilePath(filePath: string): string {
+  if (!filePath) {
+    throw new Error("path must name a B2 object and must not be empty.");
+  }
+
+  if (filePath.includes("\0")) {
+    throw new Error("path must not contain NUL bytes.");
+  }
+
+  if (filePath.endsWith("/")) {
+    throw new Error("path must name a B2 object, not a folder path ending in slash.");
+  }
+
+  return filePath;
+}
+
 function relativeDisplayPath(
   workspaceRoot: string,
   absolutePath: string,
@@ -146,7 +162,8 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
 
     // Determine local save path before any remote request so invalid local
     // paths fail without touching B2.
-    const destination = await workspacePath(params.path, params.localPath);
+    const remotePath = normalizeDownloadFilePath(params.path);
+    const destination = await workspacePath(remotePath, params.localPath);
     const savePath = destination.path;
 
     const bucket = await client.getBucket(params.bucket);
@@ -157,14 +174,14 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     let size: number;
     try {
       size = await withCancellableTransferProgress(
-        { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
+        { title: `Downloading b2://${params.bucket}/${remotePath}...`, token },
         async ({ progress, signal }) => {
           const reporter = createTransferProgressReporter(progress);
           const { body } = await withTransferStallTimeout(
-            `Download request for b2://${params.bucket}/${params.path}`,
+            `Download request for b2://${params.bucket}/${remotePath}`,
             { signal },
             (requestSignal, markActivity) =>
-              bucket.download(params.path, {
+              bucket.download(remotePath, {
                 signal: requestSignal,
                 onProgress: (event) => {
                   markActivity();
@@ -185,7 +202,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     return {
       localPath: destination.relativePath,
       size,
-      message: `Downloaded ${params.path} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
+      message: `Downloaded ${remotePath} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
     };
   },
 };
