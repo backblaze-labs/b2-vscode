@@ -30,7 +30,7 @@ function b2Error(status: number, code: string, message: string, retryAfter?: num
 
 suite("B2 error handling", () => {
   test("defines user messages for common B2 failure modes", () => {
-    const cases: Array<{ error: Error; expected: RegExp }> = [
+    const cases: Array<{ error: unknown; expected: RegExp }> = [
       {
         error: b2Error(401, "bad_auth_token", "bad key"),
         expected: /application key ID or application key/i,
@@ -61,6 +61,10 @@ suite("B2 error handling", () => {
       },
       {
         error: new NetworkError("fetch failed"),
+        expected: /network connection to B2 failed/i,
+      },
+      {
+        error: { code: "ECONNRESET", message: "socket hang up" },
         expected: /network connection to B2 failed/i,
       },
       {

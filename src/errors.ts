@@ -78,6 +78,40 @@ const SAFE_LOCAL_ERROR_CODES = new Set([
   "EROFS",
 ]);
 
+const NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
+
+const B2_ERROR_CODES = new Set([
+  "access_denied",
+  "bad_auth_token",
+  "bad_bucket_id",
+  "bad_json",
+  "bad_request",
+  "cap_exceeded",
+  "conflict",
+  "download_cap_exceeded",
+  "duplicate_bucket_name",
+  "expired_auth_token",
+  "file_not_present",
+  "internal_error",
+  "invalid_bucket_id",
+  "no_such_file",
+  "not_found",
+  "request_timeout",
+  "service_unavailable",
+  "storage_cap_exceeded",
+  "too_many_requests",
+  "transaction_cap_exceeded",
+  "unauthorized",
+]);
+
 /**
  * Error used when a multi-step operation made progress but could not complete.
  */
@@ -145,13 +179,28 @@ function isSafeExtensionMessage(message: string): boolean {
   return SAFE_EXTENSION_MESSAGE_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
+function getRawErrorCode(error: unknown): string | undefined {
+  return stringProperty(asRecord(error), "code");
+}
+
 function isSafeLocalError(error: unknown): boolean {
-  const code = stringProperty(asRecord(error), "code");
+  const code = getRawErrorCode(error);
   return code === undefined ? false : SAFE_LOCAL_ERROR_CODES.has(code);
 }
 
+function isNetworkErrorCode(code: string | undefined): boolean {
+  return code !== undefined && (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"));
+}
+
 function getB2Code(error: unknown): string | undefined {
-  return stringProperty(asRecord(error), "code");
+  const code = getRawErrorCode(error);
+  if (code === undefined) {
+    return undefined;
+  }
+
+  return error instanceof B2Error || getB2Status(error) !== undefined || B2_ERROR_CODES.has(code)
+    ? code
+    : undefined;
 }
 
 function getB2Status(error: unknown): number | undefined {
@@ -250,6 +299,10 @@ function isB2SsrfFailure(error: unknown): boolean {
 }
 
 function isNetworkFailure(error: unknown): boolean {
+  if (isNetworkErrorCode(getRawErrorCode(error))) {
+    return true;
+  }
+
   if (
     error instanceof NetworkError ||
     matchesErrorName(error, "NetworkError") ||

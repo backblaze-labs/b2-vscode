@@ -182,7 +182,25 @@ suite("B2 commands error handling", () => {
       true,
     );
     assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "ERR_INVALID_JSON",
+        message: "truncated JSON response",
+      }),
+      true,
+    );
+    assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(new Error("The operation was aborted")),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({ code: "ECONNRESET", message: "socket hang up" }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "UND_ERR_CONNECT_TIMEOUT",
+        message: "connect timeout",
+      }),
       true,
     );
     assert.strictEqual(
