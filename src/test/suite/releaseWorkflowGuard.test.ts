@@ -434,25 +434,7 @@ suite("Release workflow guard assertions", () => {
     );
   });
 
-  test("requires Marketplace publish before stable GitHub releases", () => {
-    const guard = loadReleaseWorkflowGuard();
-
-    assert.doesNotThrow(() =>
-      guard.assertReleasePublishGate({
-        jobs: {
-          release: {
-            needs: ["publish"],
-            if: [
-              "!contains(github.ref_name, '-') && needs.publish.result == 'success'",
-              "contains(github.ref_name, '-') && needs.publish.result == 'skipped'",
-            ].join(" || "),
-          },
-        },
-      }),
-    );
-  });
-
-  test("allows prerelease GitHub releases when Marketplace publish is skipped", () => {
+  test("enforces stable and prerelease GitHub release publish gates", () => {
     const guard = loadReleaseWorkflowGuard();
 
     assert.doesNotThrow(() =>
