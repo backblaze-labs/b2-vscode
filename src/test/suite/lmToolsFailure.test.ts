@@ -818,7 +818,7 @@ suite("B2 LM tool failure handling", () => {
               { getClient: () => client },
             ),
           (error: unknown) => {
-            assert.match((error as Error).message, /real directory|symlink/i);
+            assert.match((error as Error).message, /must stay within the current workspace/i);
             assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
             return true;
           },
@@ -1183,7 +1183,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "../secret.txt" },
               { getClient: () => client },
             ),
-          /path traversal|relative path inside/i,
+          /must stay within the current workspace/i,
         );
       });
     } finally {
@@ -1210,7 +1210,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: ".git/config" },
               { getClient: () => client },
             ),
-          /control directory/i,
+          /control director(?:y|ies)/i,
         );
       });
     } finally {
@@ -1243,7 +1243,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "backup.txt" },
               { getClient: () => client },
             ),
-          /control directory|symlink|symbolic link|ELOOP/i,
+          /control director(?:y|ies)/i,
         );
       });
     } finally {
@@ -1276,7 +1276,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "link/secret.txt" },
               { getClient: () => client },
             ),
-          /outside the open workspace/i,
+          /must stay within the current workspace/i,
         );
       });
     } finally {

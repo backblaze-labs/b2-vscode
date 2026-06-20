@@ -12,6 +12,7 @@ import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../constants";
 import { B2ToolInputError } from "../errors";
 import {
   ensurePrivateDirectorySync,
+  isAbsolutePortable,
   isPathInside,
   PathContainmentError,
   resolvePathInsideReal,
@@ -36,7 +37,7 @@ export function resolveWorkspaceRelativePath(
 ): string {
   rejectNullByte(relativePath, parameterName);
 
-  if (path.isAbsolute(relativePath)) {
+  if (isAbsolutePortable(relativePath)) {
     throw new B2ToolInputError(`${parameterName} must be workspace-relative.`);
   }
 
@@ -84,6 +85,12 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
 }
 
 function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
+  if (!path.isAbsolute(absolutePath)) {
+    throw new B2ToolInputError(
+      "localPath must stay within the current workspace or extension tools temporary directory.",
+    );
+  }
+
   const allowedRoots = [
     workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
     { root: EXTENSION_TEMP_ROOT, description: "the extension tools temporary directory" },
@@ -130,7 +137,7 @@ export function resolveToolLocalPath(
   rejectNullByte(requestedPath, "localPath");
 
   const workspaceRoot = currentWorkspaceRoot();
-  if (path.isAbsolute(requestedPath)) {
+  if (isAbsolutePortable(requestedPath)) {
     return resolveAbsoluteToolPath(requestedPath, workspaceRoot);
   }
 

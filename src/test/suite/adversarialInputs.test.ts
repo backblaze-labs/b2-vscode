@@ -38,6 +38,7 @@ import {
   ensurePrivateDirectory,
   isPathInside,
   readFileNoFollow,
+  sanitizeLocalPathSegment,
   sweepStaleAtomicTempFiles,
   toWellFormedUnicode,
   writeBufferAtomically,
@@ -482,6 +483,19 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("workspace-relative tool local paths reject Windows absolute paths", () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-ws-"));
+
+    try {
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, String.raw`C:\temp\file.txt`),
+        /localPath must be workspace-relative/,
+      );
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("workspace containment resolves symlinks before allowing local paths", async () => {
     if (process.platform === "win32") {
       return;
@@ -596,6 +610,21 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("tool local path resolution treats Windows absolute paths as absolute", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
+
+    try {
+      await withWorkspaceFolder(workspaceRoot, async () => {
+        assert.throws(
+          () => resolveToolLocalPath(String.raw`C:\temp\file.txt`, "workspace required"),
+          /localPath must stay within the current workspace or extension tools temporary directory/,
+        );
+      });
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("absolute workspace local paths do not initialize the tools temp root", async () => {
     const workspaceRoot = await fs.promises.mkdtemp(
       path.join(os.tmpdir(), "b2-vscode-absolute-workspace-"),
@@ -685,6 +714,92 @@ suite("Adversarial untrusted input fuzzing", () => {
       const fileName = safeDefaultDownloadName(remotePath);
 
       assert.doesNotMatch(fileName, /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i);
+    }
+  });
+
+  test("local filename fitting cannot reintroduce Windows reserved basenames", () => {
+    for (const fileName of [
+      sanitizeLocalPathSegment("CON", {
+        fallback: "download",
+        maxBytes: 180,
+      }),
+      sanitizeLocalPathSegment("", {
+        fallback: "NUL.txt",
+        maxBytes: 180,
+      }),
+      sanitizeLocalPathSegment("", {
+        fallback: "CON",
+        maxBytes: 3,
+      }),
+      sanitizeLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
+        fallback: "download",
+        maxBytes: 24,
+        preserveExtension: true,
+      }),
+    ]) {
+      assert.doesNotMatch(fileName, /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i);
+    }
+
+    assert.ok(
+      Buffer.byteLength(
+        sanitizeLocalPathSegment("", {
+          fallback: "CON",
+          maxBytes: 3,
+        }),
+        "utf8",
+      ) <= 3,
+    );
+    assert.ok(
+      Buffer.byteLength(
+        sanitizeLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
+          fallback: "download",
+          maxBytes: 24,
+          preserveExtension: true,
+        }),
+        "utf8",
+      ) <= 24,
+    );
+  });
+
+  test("download operation uses safe default file names", async () => {
+    const unsafeRemotePaths = [
+      "reports/CON",
+      "data/NUL.txt",
+      "reports/a:b.txt",
+      "folder/file.",
+      `reports/${"x".repeat(300)}.xlsx`,
+    ];
+    const testBucket = {
+      async download() {
+        return { body: streamFromBytes(new Uint8Array([1, 2, 3])) };
+      },
+    } as unknown as Bucket;
+    const client = {
+      async getBucket() {
+        return testBucket;
+      },
+    } as unknown as B2Client;
+
+    for (const remotePath of unsafeRemotePaths) {
+      const workspaceRoot = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "b2-vscode-default-safe-"),
+      );
+      try {
+        const result = await withWorkspaceFolder(workspaceRoot, () =>
+          downloadFileOperation.execute(
+            { bucket: "bucket", path: remotePath },
+            { getClient: () => client },
+          ),
+        );
+
+        assert.strictEqual(path.basename(result.localPath), safeDefaultDownloadName(remotePath));
+        assert.deepStrictEqual(
+          await fs.promises.readFile(result.localPath),
+          Buffer.from([1, 2, 3]),
+        );
+      } finally {
+        await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+      }
     }
   });
 

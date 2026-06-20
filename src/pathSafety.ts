@@ -55,6 +55,10 @@ function codedLocalError(message: string, code: string): NodeJS.ErrnoException {
   return error;
 }
 
+export function isAbsolutePortable(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
 export function contentHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, HASH_LENGTH);
 }
