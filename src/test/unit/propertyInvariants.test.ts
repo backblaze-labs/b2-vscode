@@ -141,6 +141,16 @@ test("unsafe B2 basenames are encoded for default downloads", async () => {
   }
 });
 
+test("long unsafe B2 basenames use bounded encoded segments", async () => {
+  const longUnsafeName = `${"a".repeat(180)}:${"b".repeat(180)}.txt`;
+  const destinationPath = await resolveDownloadSavePath(workspaceRoot, `reports/${longUnsafeName}`);
+  const encodedName = path.basename(destinationPath);
+
+  assert.notEqual(encodedName, longUnsafeName);
+  assert.match(encodedName, /^__b2h_/);
+  assert.ok(encodedName.length <= 120, encodedName);
+});
+
 test("unsafe localPath segments are encoded for downloads", async () => {
   const destinationPath = await resolveDownloadSavePath(workspaceRoot, "safe.txt", "reports/CON");
 

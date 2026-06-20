@@ -7,6 +7,7 @@
  */
 
 import { Buffer } from "buffer";
+import { createHash } from "crypto";
 import { toWellFormedString } from "./strings";
 import {
   assertNoNul,
@@ -17,6 +18,9 @@ import {
 } from "../services/pathSafety";
 
 const ENCODED_SEGMENT_PREFIX = "__b2_";
+const HASHED_ENCODED_SEGMENT_PREFIX = "__b2h_";
+const MAX_ENCODED_SEGMENT_LENGTH = 120;
+const HASHED_SEGMENT_HEX_PREFIX_LENGTH = 32;
 const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F\u007F<>:"|?*\\/]/g;
 const UNSAFE_BIDI_CONTROL_CHARACTERS = /[\u202A-\u202E\u2066-\u2069]/g;
 const UNSAFE_LOCAL_PATH_TRAILING_CHARACTERS = /[. ]+$/;
@@ -24,7 +28,19 @@ const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 const WORKSPACE_CONTROL_DIRECTORY_SEGMENTS = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 function encodeRawLocalPathSegment(segment: string): string {
-  return `${ENCODED_SEGMENT_PREFIX}${segment ? Buffer.from(segment, "utf8").toString("hex") : "empty"}`;
+  if (!segment) {
+    return `${ENCODED_SEGMENT_PREFIX}empty`;
+  }
+
+  const bytes = Buffer.from(segment, "utf8");
+  const hex = bytes.toString("hex");
+  const encoded = `${ENCODED_SEGMENT_PREFIX}${hex}`;
+  if (encoded.length <= MAX_ENCODED_SEGMENT_LENGTH) {
+    return encoded;
+  }
+
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  return `${HASHED_ENCODED_SEGMENT_PREFIX}${hex.slice(0, HASHED_SEGMENT_HEX_PREFIX_LENGTH)}_${digest}`;
 }
 
 export function sanitizeLocalPathSegment(segment: string): string {
@@ -39,7 +55,8 @@ export function sanitizeLocalPathSegment(segment: string): string {
     sanitized !== wellFormedSegment ||
     WINDOWS_RESERVED_NAME.test(sanitized) ||
     WORKSPACE_CONTROL_DIRECTORY_SEGMENTS.has(sanitized.toLowerCase()) ||
-    sanitized.startsWith(ENCODED_SEGMENT_PREFIX)
+    sanitized.startsWith(ENCODED_SEGMENT_PREFIX) ||
+    sanitized.startsWith(HASHED_ENCODED_SEGMENT_PREFIX)
   ) {
     return encodeRawLocalPathSegment(wellFormedSegment);
   }
