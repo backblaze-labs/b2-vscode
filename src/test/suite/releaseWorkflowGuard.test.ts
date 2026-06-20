@@ -10,6 +10,7 @@ import * as path from "path";
 interface ReleaseWorkflowGuard {
   assertMarketplaceSecretStepsUseIsolatedPublisher(workflow: unknown): void;
   assertMarketplaceSecretOnlyInPublish(workflow: unknown): void;
+  assertPublishUsesIsolatedPublisher(workflow: unknown): void;
 }
 
 function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
@@ -17,6 +18,36 @@ function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
 }
 
 suite("Release workflow guard assertions", () => {
+  test("validates an isolated publisher from a synthetic workflow", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    guard.assertPublishUsesIsolatedPublisher({
+      jobs: {
+        publish: {
+          steps: [
+            {
+              name: "Install isolated Marketplace publisher",
+              id: "publisher",
+              env: { VSCE_VERSION: "3.7.1" },
+              run: [
+                'PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"',
+                'npm install --ignore-scripts "@vscode/vsce@$VSCE_VERSION"',
+              ].join("\n"),
+            },
+            {
+              name: "Verify Marketplace publisher token",
+              run: 'env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" verify-pat backblaze',
+            },
+            {
+              name: "Publish to VS Code Marketplace",
+              run: 'env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" publish --skip-duplicate --packagePath extension.vsix',
+            },
+          ],
+        },
+      },
+    });
+  });
+
   test("rejects bracket-syntax marketplace secrets outside publish", () => {
     const guard = loadReleaseWorkflowGuard();
 

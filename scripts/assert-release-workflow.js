@@ -67,10 +67,17 @@ function normalizedCommand(command) {
   return command.replace(/\s+/g, " ").trim();
 }
 
-function stepIndexByName(jobName, stepName) {
-  const index = jobSteps(jobName).findIndex((candidate) => candidate.name === stepName);
+function stepIndexInSteps(steps, jobName, stepName) {
+  const index = steps.findIndex((candidate) => candidate.name === stepName);
   assert(index >= 0, `${jobName} must include step: ${stepName}.`);
   return index;
+}
+
+function stepRunInSteps(steps, jobName, stepName) {
+  const step = steps.find((candidate) => candidate.name === stepName);
+  assert(step, `${jobName} must include step: ${stepName}.`);
+  assert(typeof step.run === "string", `${jobName} step ${stepName} must be a run step.`);
+  return step.run;
 }
 
 function jobNeeds(jobName) {
@@ -133,7 +140,11 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
   const steps = publishJob.steps;
   assert(Array.isArray(steps), "publish must declare steps.");
 
-  const installStepIndex = stepIndexByName("publish", "Install isolated Marketplace publisher");
+  const installStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Install isolated Marketplace publisher",
+  );
   const installStep = steps[installStepIndex];
   assert(
     installStep.id === "publisher",
@@ -155,13 +166,17 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
     "isolated Marketplace publisher install must not run package lifecycle scripts.",
   );
 
-  const verifyPatRun = normalizedCommand(stepRun("publish", "Verify Marketplace publisher token"));
+  const verifyPatRun = normalizedCommand(
+    stepRunInSteps(steps, "publish", "Verify Marketplace publisher token"),
+  );
   assert(
     /\benv\s+-u\s+NODE_OPTIONS\s+-u\s+NODE_PATH\s+"\$VSCE_BIN"\s+verify-pat\b/.test(verifyPatRun),
     "publish job must verify the Marketplace token with the isolated vsce binary.",
   );
 
-  const publishRun = normalizedCommand(stepRun("publish", "Publish to VS Code Marketplace"));
+  const publishRun = normalizedCommand(
+    stepRunInSteps(steps, "publish", "Publish to VS Code Marketplace"),
+  );
   assert(
     /\benv\s+-u\s+NODE_OPTIONS\s+-u\s+NODE_PATH\s+"\$VSCE_BIN"\s+publish\b/.test(publishRun),
     "publish job must publish with the isolated vsce binary.",
@@ -171,8 +186,12 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
     "publish job must tolerate already-published versions.",
   );
 
-  const verifyPatStepIndex = stepIndexByName("publish", "Verify Marketplace publisher token");
-  const publishStepIndex = stepIndexByName("publish", "Publish to VS Code Marketplace");
+  const verifyPatStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Verify Marketplace publisher token",
+  );
+  const publishStepIndex = stepIndexInSteps(steps, "publish", "Publish to VS Code Marketplace");
   assert(
     installStepIndex < verifyPatStepIndex && installStepIndex < publishStepIndex,
     "isolated Marketplace publisher must be installed before VSCE_PAT is exposed.",
@@ -320,6 +339,7 @@ if (require.main === module) {
 module.exports = {
   assertMarketplaceSecretStepsUseIsolatedPublisher,
   assertMarketplaceSecretOnlyInPublish,
+  assertPublishUsesIsolatedPublisher,
   main,
   marketplaceSecretPattern,
 };
