@@ -9,10 +9,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
-import {
-  findWorkspaceControlDirectory,
-  resolveContainedRelativePath,
-} from "../../services/pathSafety";
+import { findWorkspaceControlDirectory } from "../../services/pathSafety";
 import { prepareSafeFileWritePath, resolveDownloadSavePath } from "../../utils/localPaths";
 import {
   sanitizePathError,
@@ -104,18 +101,16 @@ interface WorkspaceDestination {
   readonly workspaceRoot: string;
 }
 
-async function workspacePath(remotePath: string, localPath?: string): Promise<WorkspaceDestination> {
+async function workspacePath(
+  remotePath: string,
+  localPath?: string,
+): Promise<WorkspaceDestination> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error(WORKSPACE_REQUIRED_MESSAGE);
   }
+
   const workspaceRoot = workspaceFolder.uri.fsPath;
-  if (localPath) {
-    assertNoControlDirectoryTarget(
-      workspaceRoot,
-      resolveContainedRelativePath(workspaceRoot, localPath, "localPath"),
-    );
-  }
   const destinationPath = await resolveDownloadSavePath(workspaceRoot, remotePath, localPath);
   const destination = {
     path: destinationPath,

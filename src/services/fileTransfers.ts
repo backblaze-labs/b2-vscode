@@ -675,7 +675,18 @@ async function moveIntoPlaceWithoutOverwrite(
   sourcePath: string,
   destinationPath: string,
 ): Promise<void> {
-  await writeFileNoFollow(destinationPath, fs.createReadStream(sourcePath), { overwrite: false });
+  try {
+    await fs.promises.link(sourcePath, destinationPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+      throw error;
+    }
+
+    await writeFileNoFollow(destinationPath, fs.createReadStream(sourcePath), { overwrite: false });
+    await removeTempFile(sourcePath);
+    return;
+  }
+
   await removeTempFile(sourcePath);
 }
 

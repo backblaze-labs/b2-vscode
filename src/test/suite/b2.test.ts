@@ -706,6 +706,35 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("uses hardlink fast path when overwrite is disabled", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-link-"));
+    const destination = path.join(dir, "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+    const originalLink = fs.promises.link;
+    let linkCalls = 0;
+    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      linkCalls += 1;
+      assert.strictEqual(path.resolve(String(newPath)), path.resolve(destination));
+      await fs.promises.copyFile(existingPath, newPath, fs.constants.COPYFILE_EXCL);
+    };
+
+    try {
+      const size = await downloadStreamToFile(stream, destination, { overwrite: false });
+
+      assert.strictEqual(size, 3);
+      assert.strictEqual(linkCalls, 1);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
+    } finally {
+      fs.promises.link = originalLink;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("removes staged no-overwrite downloads on interruption", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-abort-"));
     const destination = path.join(dir, "file.bin");
@@ -727,6 +756,34 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to no-follow copy when hardlink crosses devices", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-link-exdev-"));
+    const destination = path.join(dir, "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([9, 8, 7]));
+        controller.close();
+      },
+    });
+    const originalLink = fs.promises.link;
+    let linkCalls = 0;
+    fs.promises.link = async (): Promise<void> => {
+      linkCalls += 1;
+      throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+    };
+
+    try {
+      const size = await downloadStreamToFile(stream, destination, { overwrite: false });
+
+      assert.strictEqual(size, 3);
+      assert.strictEqual(linkCalls, 1);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [9, 8, 7]);
+    } finally {
+      fs.promises.link = originalLink;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

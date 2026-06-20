@@ -553,7 +553,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "../outside.txt" },
               { getClient: () => client },
             ),
-          /path traversal|relative path inside/i,
+          /path traversal|relative path inside|traversal segments/i,
         );
       });
       assert.strictEqual(bucketLookupWasCalled, false);
@@ -735,13 +735,20 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
-  test("download tool rejects workspace control directories before writing", async () => {
+  test("download tool sanitizes control-like localPath segments before writing", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-control-"));
     let downloadWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
-        throw new Error("download should not start");
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
       },
     };
     const client = {
@@ -751,26 +758,32 @@ suite("B2 LM tool failure handling", () => {
     } as unknown as B2Client;
 
     try {
+      const resultPaths: string[] = [];
       await withWorkspaceFolder(workspaceDir, async () => {
         for (const localPath of [
           ".git/hooks/pre-commit",
           ".github/workflows/ci-helper.yml",
           ".github./workflows/ci-helper.yml",
         ]) {
-          await assert.rejects(
-            () =>
-              downloadFileOperation.execute(
-                { bucket: "b", path: "payload.txt", localPath },
-                { getClient: () => client },
-              ),
-            /control directory/i,
+          const result = await downloadFileOperation.execute(
+            { bucket: "b", path: "payload.txt", localPath },
+            { getClient: () => client },
           );
+          resultPaths.push(result.localPath);
         }
       });
 
-      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(downloadWasCalled, true);
       assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".git")), false);
       assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".github")), false);
+      assert.strictEqual(resultPaths.length, 3);
+      for (const resultPath of resultPaths) {
+        assert.strictEqual(
+          fs.readFileSync(path.join(workspaceDir, resultPath), "utf8"),
+          "downloaded",
+        );
+      }
+      assert.match(resultPaths[0], /^__b2_[^/\\]+[/\\]hooks[/\\]pre-commit$/);
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
