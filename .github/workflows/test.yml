@@ -72,6 +72,7 @@ jobs:
             const repo = pr.head.repo.name;
             const ref = pr.head.sha;
             const files = [
+              '.github/CODEOWNERS',
               '.github/workflows/build-extension.yml',
               '.github/workflows/code-quality.yml',
               '.github/workflows/docs.yml',

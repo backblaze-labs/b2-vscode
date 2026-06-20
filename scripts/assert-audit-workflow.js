@@ -397,6 +397,7 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
     `${workflowName} PR metadata download must run only for pull_request_target.`,
   );
   for (const requiredFile of [
+    ".github/CODEOWNERS",
     ".github/workflows/build-extension.yml",
     ".github/workflows/code-quality.yml",
     ".github/workflows/docs.yml",
