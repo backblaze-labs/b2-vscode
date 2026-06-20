@@ -109,6 +109,13 @@ function assertNoPullRequestEvent(workflow, workflowName) {
   );
 }
 
+function assertNoPullRequestTargetEvent(workflow, workflowName) {
+  assert(
+    !workflowHasEvent(workflow, "pull_request_target"),
+    `${workflowName} must not use pull_request_target when it executes PR code.`,
+  );
+}
+
 function assertNoPullRequestTargetPaths(workflow) {
   const config = eventConfig(workflow, "pull_request_target");
   assert(config !== undefined, "test workflow must run on pull_request_target.");
@@ -260,6 +267,13 @@ function assertAuditStep(label, step, options = {}) {
       `${label} must pass the protected base branch to the trusted audit gate.`,
     );
   }
+  if (options.trustedPolicy) {
+    assert(
+      command.includes("--trusted-policy") &&
+        command.includes("$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"),
+      `${label} must pass the protected base policy file to the trusted audit gate.`,
+    );
+  }
 }
 
 function assertFixtureStep(label, step, options = {}) {
@@ -287,10 +301,17 @@ function assertInstallStep(label, step, options = {}) {
 }
 
 function assertSignatureStep(label, step, options = {}) {
-  assert(
-    step.if === undefined,
-    `${label} must run unconditionally; break-glass may skip only advisory audits.`,
-  );
+  if (options.skipsPrTarget) {
+    assert(
+      String(step.if ?? "").includes("github.event_name != 'pull_request_target'"),
+      `${label} must be skipped for pull_request_target.`,
+    );
+  } else {
+    assert(
+      step.if === undefined,
+      `${label} must run unconditionally; break-glass may skip only advisory audits.`,
+    );
+  }
   assertIgnoreScriptsEnv(label, step);
   assert(
     hasTokens(normalizedRun(step), [
@@ -307,34 +328,23 @@ function assertSignatureStep(label, step, options = {}) {
   );
 }
 
-function assertCheckoutPair(jobConfig, workflowName) {
-  const sourceIndex = stepIndex(
+function checkoutStepIndex(jobConfig, label, checkoutPath) {
+  return stepIndex(
     jobConfig,
-    `${workflowName} PR source checkout`,
+    label,
     (step) =>
-      String(step.uses ?? "").startsWith("actions/checkout@") && step.with?.path === "source",
+      String(step.uses ?? "").startsWith("actions/checkout@") && step.with?.path === checkoutPath,
   );
-  const trustedIndex = stepIndex(
+}
+
+function assertTrustedCheckout(jobConfig, workflowName) {
+  const trustedIndex = checkoutStepIndex(
     jobConfig,
     `${workflowName} trusted source checkout`,
-    (step) =>
-      String(step.uses ?? "").startsWith("actions/checkout@") &&
-      step.with?.path === "trusted-source",
+    "trusted-source",
   );
-  const sourceStep = stepByIndex(jobConfig, sourceIndex);
   const trustedStep = stepByIndex(jobConfig, trustedIndex);
 
-  assert(
-    String(sourceStep.with?.repository ?? "").includes(
-      "github.event.pull_request.head.repo.full_name",
-    ) && String(sourceStep.with?.repository ?? "").includes("github.repository"),
-    `${workflowName} source checkout must select the PR head repository for PRs.`,
-  );
-  assert(
-    String(sourceStep.with?.ref ?? "").includes("github.event.pull_request.head.sha") &&
-      String(sourceStep.with?.ref ?? "").includes("github.sha"),
-    `${workflowName} source checkout must select the PR head SHA for PRs.`,
-  );
   assert(
     trustedStep.with?.repository === "${{ github.repository }}",
     `${workflowName} trusted checkout must come from the base repository.`,
@@ -345,11 +355,81 @@ function assertCheckoutPair(jobConfig, workflowName) {
     `${workflowName} trusted checkout must select the protected base SHA for PRs.`,
   );
 
-  return { sourceIndex, trustedIndex };
+  return trustedIndex;
+}
+
+function assertPrTargetSourceCheckoutIsSkipped(jobConfig, workflowName) {
+  const sourceIndex = checkoutStepIndex(jobConfig, `${workflowName} source checkout`, "source");
+  const sourceStep = stepByIndex(jobConfig, sourceIndex);
+  assert(
+    String(sourceStep.if ?? "").includes("github.event_name != 'pull_request_target'"),
+    `${workflowName} source checkout must be skipped for pull_request_target.`,
+  );
+  assert(
+    sourceStep.with?.repository === undefined && sourceStep.with?.ref === undefined,
+    `${workflowName} must not checkout the PR head in pull_request_target.`,
+  );
+  return sourceIndex;
+}
+
+function assertUnprivilegedSourceCheckout(jobConfig, workflowName) {
+  const sourceIndex = checkoutStepIndex(jobConfig, `${workflowName} source checkout`, "source");
+  const sourceStep = stepByIndex(jobConfig, sourceIndex);
+  assert(
+    sourceStep.with?.repository === undefined && sourceStep.with?.ref === undefined,
+    `${workflowName} source checkout must use the unprivileged event ref.`,
+  );
+  assert(
+    sourceStep.if === undefined,
+    `${workflowName} source checkout must run for every unprivileged event.`,
+  );
+  return sourceIndex;
+}
+
+function assertPrMetadataDownload(jobConfig, workflowName) {
+  const downloadIndex = stepIndex(jobConfig, `${workflowName} PR metadata download`, (step) =>
+    String(step.uses ?? "").startsWith("actions/github-script@"),
+  );
+  const step = stepByIndex(jobConfig, downloadIndex);
+  const script = String(step.with?.script ?? "");
+  assert(
+    String(step.if ?? "").includes("github.event_name == 'pull_request_target'"),
+    `${workflowName} PR metadata download must run only for pull_request_target.`,
+  );
+  for (const requiredFile of [
+    ".github/workflows/build-extension.yml",
+    ".github/workflows/code-quality.yml",
+    ".github/workflows/docs.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/test.yml",
+    "audit-policy.jsonc",
+    "package.json",
+    "package-lock.json",
+  ]) {
+    assert(
+      script.includes(`'${requiredFile}'`),
+      `${workflowName} PR metadata download must include ${requiredFile}.`,
+    );
+  }
+  return downloadIndex;
+}
+
+function assertSetupNodeDoesNotCache(label, step) {
+  assert(
+    step.with?.cache === undefined && step.with?.["cache-dependency-path"] === undefined,
+    `${label} must not enable dependency caching.`,
+  );
 }
 
 function assertRunsInSource(label, step) {
-  assert(step["working-directory"] === "source", `${label} must run in the PR source checkout.`);
+  assert(step["working-directory"] === "source", `${label} must run in the source directory.`);
+}
+
+function assertRunsInTrustedSource(label, step) {
+  assert(
+    step["working-directory"] === "trusted-source",
+    `${label} must run in the trusted source checkout.`,
+  );
 }
 
 function assertTestWorkflow(testWorkflow) {
@@ -377,8 +457,25 @@ function assertTestWorkflow(testWorkflow) {
   }
 
   const testJob = job(testWorkflow, "test");
-  assertCheckoutPair(testJob, "test workflow");
-  const installIndex = stepIndex(testJob, "test install", (_step, run) => /\bnpm\s+ci\b/.test(run));
+  const sourceCheckoutIndex = assertPrTargetSourceCheckoutIsSkipped(testJob, "test workflow");
+  const trustedCheckoutIndex = assertTrustedCheckout(testJob, "test workflow");
+  const metadataDownloadIndex = assertPrMetadataDownload(testJob, "test workflow");
+  const setupNodeIndex = stepIndex(testJob, "test node setup", (step) =>
+    String(step.uses ?? "").startsWith("actions/setup-node@"),
+  );
+  const trustedInstallIndex = stepIndex(
+    testJob,
+    "test trusted guard install",
+    (step, run) => step["working-directory"] === "trusted-source" && /\bnpm\s+ci\b/.test(run),
+  );
+  const installIndex = stepIndex(
+    testJob,
+    "test source install",
+    (step, run) => step["working-directory"] === "source" && /\bnpm\s+ci\b/.test(run),
+  );
+  const lifecycleIndex = stepIndex(testJob, "ignore-scripts guard", (_step, run) =>
+    run.includes("scripts/assert-ignore-scripts-install.js"),
+  );
   const policyIndex = stepIndex(testJob, "audit policy guard", (_step, run) =>
     run.includes("scripts/assert-audit-policy.js"),
   );
@@ -398,7 +495,22 @@ function assertTestWorkflow(testWorkflow) {
     /\bnpm\s+test\b/.test(run),
   );
 
+  assertSetupNodeDoesNotCache("test node setup", stepByIndex(testJob, setupNodeIndex));
+  assert(sourceCheckoutIndex < setupNodeIndex, "test source checkout must run before setup.");
+  assert(trustedCheckoutIndex < setupNodeIndex, "test trusted checkout must run before setup.");
+  assert(
+    metadataDownloadIndex < installIndex,
+    "test workflow must download PR metadata before installing source dependencies.",
+  );
+  assert(setupNodeIndex < trustedInstallIndex, "test workflow must setup Node before installing.");
+  assert(setupNodeIndex < installIndex, "test workflow must setup Node before source install.");
+  assert(
+    trustedInstallIndex < workflowGuardIndex,
+    "workflow guard imports trusted YAML tooling and must run after trusted dependency install.",
+  );
+  assert(lifecycleIndex < installIndex, "ignore-scripts guard must run before source install.");
   for (const [label, index] of [
+    ["trusted guard install", trustedInstallIndex],
     ["install", installIndex],
     ["audit policy guard", policyIndex],
     ["audit gate fixture", fixtureIndex],
@@ -408,34 +520,59 @@ function assertTestWorkflow(testWorkflow) {
   ]) {
     assert(index < testRunIndex, `${label} must run before VS Code tests.`);
   }
-  assert(installIndex < auditIndex, "test workflow must install before auditing.");
+  assert(
+    installIndex < auditIndex,
+    "test workflow must install source dependencies before auditing.",
+  );
+  assert(policyIndex < auditIndex, "test workflow must validate policy before auditing.");
+  assert(fixtureIndex < auditIndex, "test workflow must run fixture before auditing.");
   assert(auditIndex < signatureIndex, "test workflow must audit before verifying signatures.");
   assert(
     signatureIndex < workflowGuardIndex,
     "workflow guard imports installed YAML tooling and must run after signature verification.",
   );
 
-  assertInstallStep("test install step", stepByIndex(testJob, installIndex), { trusted: true });
-  assertFixtureStep("test audit fixture step", stepByIndex(testJob, fixtureIndex), {
+  assertInstallStep("test trusted guard install step", stepByIndex(testJob, trustedInstallIndex));
+  assertInstallStep("test source install step", stepByIndex(testJob, installIndex), {
     trusted: true,
   });
+  assert(
+    String(stepByIndex(testJob, installIndex).if ?? "").includes(
+      "github.event_name != 'pull_request_target'",
+    ),
+    "test source install step must be skipped for pull_request_target.",
+  );
+  assertFixtureStep("test audit fixture step", stepByIndex(testJob, fixtureIndex));
   assertAuditStep("test audit step", stepByIndex(testJob, auditIndex), {
-    trusted: true,
     trustedBaseRef: true,
+    trustedPolicy: true,
   });
   assertSignatureStep("test signature step", stepByIndex(testJob, signatureIndex), {
     trusted: true,
+    skipsPrTarget: true,
   });
   for (const [label, index] of [
-    ["test install step", installIndex],
+    ["test trusted guard install step", trustedInstallIndex],
+    ["test ignore-scripts guard step", lifecycleIndex],
     ["test audit fixture step", fixtureIndex],
     ["test audit step", auditIndex],
-    ["test signature step", signatureIndex],
     ["test workflow guard step", workflowGuardIndex],
+  ]) {
+    assertRunsInTrustedSource(label, stepByIndex(testJob, index));
+  }
+  for (const [label, index] of [
+    ["test source install step", installIndex],
+    ["test signature step", signatureIndex],
     ["VS Code test step", testRunIndex],
   ]) {
     assertRunsInSource(label, stepByIndex(testJob, index));
   }
+  assert(
+    String(stepByIndex(testJob, testRunIndex).if ?? "").includes(
+      "github.event_name != 'pull_request_target'",
+    ),
+    "VS Code tests must be skipped for pull_request_target.",
+  );
 }
 
 function assertReleaseWorkflow(releaseWorkflow) {
@@ -509,16 +646,17 @@ function assertReleaseWorkflow(releaseWorkflow) {
 }
 
 function assertBuildExtensionWorkflow(buildWorkflow) {
-  assertNoPullRequestEvent(buildWorkflow, "build-extension workflow");
   assert(
-    workflowHasEvent(buildWorkflow, "pull_request_target"),
-    "build-extension workflow must run on pull_request_target.",
+    workflowHasEvent(buildWorkflow, "pull_request"),
+    "build-extension workflow must run PR builds on pull_request.",
   );
+  assert(workflowHasEvent(buildWorkflow, "push"), "build-extension workflow must run on push.");
+  assertNoPullRequestTargetEvent(buildWorkflow, "build-extension workflow");
 
   const buildJob = job(buildWorkflow, "build");
   const testInstallationJob = job(buildWorkflow, "test-installation");
-  assertCheckoutPair(buildJob, "build-extension build job");
-  assertCheckoutPair(testInstallationJob, "build-extension test-installation job");
+  assertUnprivilegedSourceCheckout(buildJob, "build-extension build job");
+  assertUnprivilegedSourceCheckout(testInstallationJob, "build-extension test-installation job");
 
   const installIndex = stepIndex(buildJob, "build-extension install", (_step, run) =>
     /\bnpm\s+ci\b/.test(run),
@@ -538,7 +676,11 @@ function assertBuildExtensionWorkflow(buildWorkflow) {
   const packageIndex = stepIndex(buildJob, "build-extension package", (_step, run) =>
     run.includes("npm run vsix"),
   );
+  const setupNodeIndex = stepIndex(buildJob, "build-extension node setup", (step) =>
+    String(step.uses ?? "").startsWith("actions/setup-node@"),
+  );
 
+  assertSetupNodeDoesNotCache("build-extension node setup", stepByIndex(buildJob, setupNodeIndex));
   assert(installIndex < auditIndex, "build-extension must install before auditing.");
   assert(policyIndex < auditIndex, "build-extension must validate policy before auditing.");
   assert(
@@ -551,16 +693,9 @@ function assertBuildExtensionWorkflow(buildWorkflow) {
   );
   assert(compileIndex < packageIndex, "build-extension must compile before packaging.");
 
-  assertInstallStep("build-extension install step", stepByIndex(buildJob, installIndex), {
-    trusted: true,
-  });
-  assertAuditStep("build-extension audit step", stepByIndex(buildJob, auditIndex), {
-    trusted: true,
-    trustedBaseRef: true,
-  });
-  assertSignatureStep("build-extension signature step", stepByIndex(buildJob, signatureIndex), {
-    trusted: true,
-  });
+  assertInstallStep("build-extension install step", stepByIndex(buildJob, installIndex));
+  assertAuditStep("build-extension audit step", stepByIndex(buildJob, auditIndex));
+  assertSignatureStep("build-extension signature step", stepByIndex(buildJob, signatureIndex));
 
   for (const [label, index] of [
     ["build-extension install step", installIndex],
@@ -578,14 +713,30 @@ function assertBuildExtensionWorkflow(buildWorkflow) {
     "build-extension package smoke install",
     (_step, run) => /\bnpm\s+ci\b/.test(run),
   );
+  const testSetupNodeIndex = stepIndex(
+    testInstallationJob,
+    "build-extension package smoke node setup",
+    (step) => String(step.uses ?? "").startsWith("actions/setup-node@"),
+  );
+  assertSetupNodeDoesNotCache(
+    "build-extension package smoke node setup",
+    stepByIndex(testInstallationJob, testSetupNodeIndex),
+  );
   assertInstallStep(
     "build-extension package smoke install step",
     stepByIndex(testInstallationJob, testInstallIndex),
-    { trusted: true },
   );
   assertRunsInSource(
     "build-extension package smoke install step",
     stepByIndex(testInstallationJob, testInstallIndex),
+  );
+
+  const postPrCommentJob = buildWorkflow.jobs?.["post-pr-comment"];
+  assert(postPrCommentJob, "build-extension workflow must keep the PR comment job.");
+  assert(
+    String(postPrCommentJob.if ?? "").includes("github.event_name == 'pull_request'") &&
+      String(postPrCommentJob.if ?? "").includes("!github.event.pull_request.head.repo.fork"),
+    "build-extension PR comment job must run only on same-repository pull_request events.",
   );
 }
 
@@ -618,17 +769,30 @@ function expectGuardFailure(name, run) {
   throw new Error(`negative workflow case unexpectedly passed: ${name}`);
 }
 
-function runNegativeWorkflowTests(testWorkflow) {
+function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
   const mutablePrWorkflow = clone(testWorkflow);
   const on = workflowOn(mutablePrWorkflow);
   on.pull_request = on.pull_request_target;
   delete on.pull_request_target;
   expectGuardFailure("PR-controlled workflow trigger", () => assertTestWorkflow(mutablePrWorkflow));
 
+  const prTargetCheckoutWorkflow = clone(testWorkflow);
+  const sourceCheckoutStep = job(prTargetCheckoutWorkflow, "test").steps.find(
+    (step) =>
+      String(step.uses ?? "").startsWith("actions/checkout@") && step.with?.path === "source",
+  );
+  delete sourceCheckoutStep.if;
+  sourceCheckoutStep.with.repository = "${{ github.event.pull_request.head.repo.full_name }}";
+  sourceCheckoutStep.with.ref = "${{ github.event.pull_request.head.sha }}";
+  expectGuardFailure("pull_request_target PR checkout", () =>
+    assertTestWorkflow(prTargetCheckoutWorkflow),
+  );
+
   const localAuditScriptWorkflow = clone(testWorkflow);
   const auditStep = job(localAuditScriptWorkflow, "test").steps.find((step) =>
     normalizedRun(step).includes("scripts/run-npm-audit.js"),
   );
+  auditStep["working-directory"] = "source";
   auditStep.run = "bash scripts/retry.sh node scripts/run-npm-audit.js";
   expectGuardFailure("PR-local audit script", () => assertTestWorkflow(localAuditScriptWorkflow));
 
@@ -641,6 +805,14 @@ function runNegativeWorkflowTests(testWorkflow) {
     assertNoEventEnvOverride(envOverrideWorkflow, "test workflow");
     assertTestWorkflow(envOverrideWorkflow);
   });
+
+  const privilegedBuildWorkflow = clone(buildWorkflow);
+  const buildOn = workflowOn(privilegedBuildWorkflow);
+  buildOn.pull_request_target = buildOn.pull_request;
+  delete buildOn.pull_request;
+  expectGuardFailure("privileged build workflow trigger", () =>
+    assertBuildExtensionWorkflow(privilegedBuildWorkflow),
+  );
 }
 
 function runGuardrails() {
@@ -660,7 +832,7 @@ function runGuardrails() {
     ["docs workflow", docsWorkflow],
   ];
 
-  runNegativeWorkflowTests(testWorkflow);
+  runNegativeWorkflowTests(testWorkflow, buildExtensionWorkflow);
   for (const [workflowName, workflow] of workflows) {
     assertNoAuditCi(workflow, workflowName);
     assertNoEventEnvOverride(workflow, workflowName);

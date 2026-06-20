@@ -4,6 +4,7 @@
  * Runs the blocking npm advisory audit with repository-owned exception policy.
  */
 
+const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const {
@@ -30,6 +31,7 @@ function parseArgs(argv) {
     directory: repoRoot,
     policy: path.join(repoRoot, AUDIT_POLICY_FILE),
     trustedBaseRef: undefined,
+    trustedPolicy: undefined,
   };
 
   function readPathArgument(index, flag) {
@@ -54,6 +56,9 @@ function parseArgs(argv) {
         throw new Error(`${arg} requires a branch name value.`);
       }
       args.trustedBaseRef = value;
+      index += 1;
+    } else if (arg === "--trusted-policy") {
+      args.trustedPolicy = readPathArgument(index, arg);
       index += 1;
     } else {
       throw new Error(`unknown argument: ${arg}`);
@@ -128,16 +133,24 @@ function acceptedAdvisoriesMatch(left, right) {
   );
 }
 
-function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedBaseRef) {
-  if (!trustedBaseRef) {
+function readTrustedPolicyFile(policyPath) {
+  return parseStrictJsonPolicy(fs.readFileSync(policyPath, "utf8"), policyPath);
+}
+
+function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedOptions) {
+  const { trustedBaseRef, trustedPolicy } = trustedOptions;
+  if (!trustedBaseRef && !trustedPolicy) {
     return auditPolicy.acceptedAdvisories;
   }
 
-  const basePolicy = readBaseBranchPolicy(repoRoot, trustedBaseRef);
+  const basePolicy = trustedPolicy
+    ? readTrustedPolicyFile(trustedPolicy)
+    : readBaseBranchPolicy(repoRoot, trustedBaseRef);
+  const sourceDescription = trustedBaseRef ?? trustedPolicy;
   if (basePolicy === undefined) {
     if ((auditPolicy.acceptedAdvisories ?? []).length > 0) {
       throw new Error(
-        `PR-local acceptedAdvisories cannot be trusted because ${AUDIT_POLICY_FILE} is absent on ${trustedBaseRef}.`,
+        `PR-local acceptedAdvisories cannot be trusted because ${AUDIT_POLICY_FILE} is absent on ${sourceDescription}.`,
       );
     }
     return [];
@@ -148,7 +161,7 @@ function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedBa
     !acceptedAdvisoriesMatch(auditPolicy, basePolicy)
   ) {
     throw new Error(
-      `PR-local acceptedAdvisories must match the protected ${trustedBaseRef} policy before they can suppress findings.`,
+      `PR-local acceptedAdvisories must match the protected ${sourceDescription} policy before they can suppress findings.`,
     );
   }
   return basePolicy.acceptedAdvisories;
@@ -190,12 +203,10 @@ try {
   }
 
   const findings = collectAuditFindings(report, auditPolicy.auditLevel);
-  const acceptedAdvisories = trustedAcceptedAdvisories(
-    args.directory,
-    auditPolicy,
-    packageJson,
-    args.trustedBaseRef,
-  );
+  const acceptedAdvisories = trustedAcceptedAdvisories(args.directory, auditPolicy, packageJson, {
+    trustedBaseRef: args.trustedBaseRef,
+    trustedPolicy: args.trustedPolicy,
+  });
   const unacceptedFindings = findings.filter(
     (finding) => !isAcceptedFinding(finding, acceptedAdvisories),
   );

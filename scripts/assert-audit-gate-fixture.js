@@ -143,6 +143,7 @@ try {
   assertInvalidCliArgs(["--directory"], "--directory requires a path value.");
   assertInvalidCliArgs(["--policy", "--directory"], "--policy requires a path value.");
   assertInvalidCliArgs(["--trusted-base-ref"], "--trusted-base-ref requires a branch name value.");
+  assertInvalidCliArgs(["--trusted-policy"], "--trusted-policy requires a path value.");
 
   fs.writeFileSync(
     path.join(tempRoot, "package.json"),

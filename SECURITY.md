@@ -9,10 +9,9 @@ workflow runs the same advisory gate before building and packaging the VSIX.
 
 The required test check, release workflow, and pull-request build/documentation
 workflows install dependencies with `npm ci --ignore-scripts`, so package
-lifecycle scripts cannot run before the advisory gate evaluates the lockfile on
-the required test/build paths. Install steps also pin npm to the public registry
-and ignore repo/user/global npm config so a pull request cannot redirect package
-resolution through `.npmrc`.
+lifecycle scripts cannot run during dependency installation. Install steps also
+pin npm to the public registry and ignore repo/user/global npm config so a pull
+request cannot redirect package resolution through `.npmrc`.
 
 The advisory and signature gates pin npm operations to
 `https://registry.npmjs.org/` and ignore user/global npm config so a repository
@@ -29,6 +28,8 @@ Runtime-only audits are useful for triage, but they are not the blocking policy
 for this repository. Available fixes should be applied by upgrading direct
 dependencies, refreshing the lockfile, or replacing vulnerable tooling. CI also
 verifies npm registry signatures and attestations with `npm audit signatures`.
+The privileged pull-request audit gate does not install PR dependencies;
+signature verification runs on release and unprivileged build workflows instead.
 If signature verification fails because a legitimate transitive package is
 unsigned, treat it as a supply-chain exception: open a tracking issue with owner
 and review date, then use the accepted-advisory process only when the release or
@@ -50,12 +51,14 @@ without turning off the audit gate.
 Changes to the policy file, dependency manifests, `.npmrc`, audit helpers, and
 audit workflows are listed in `.github/CODEOWNERS`; branch protection must
 require CODEOWNER review so a PR cannot introduce a vulnerable dependency and
-approve its own accepted-advisory entry. On pull requests, the required test and
-build workflows run from `pull_request_target`, execute audit scripts checked out
-from the protected base branch, and point them at the PR lockfile. The audit gate
-uses the accepted-advisory list from the protected base branch, so a PR-local
-exception does not silence a newly introduced finding until that exception has
-landed through the protected policy path.
+approve its own accepted-advisory entry. On pull requests, the required test
+check runs from `pull_request_target`, checks out audit scripts from the
+protected base branch, downloads only the PR metadata needed for the dependency
+gate, and points the trusted scripts at the PR lockfile. The PR build workflow
+that compiles and packages PR code runs under unprivileged `pull_request`
+instead. The audit gate uses the accepted-advisory list from the protected base
+branch, so a PR-local exception does not silence a newly introduced finding until
+that exception has landed through the protected policy path.
 
 For emergency or unrelated changes blocked by a new moderate-or-higher advisory
 without an available fix:
