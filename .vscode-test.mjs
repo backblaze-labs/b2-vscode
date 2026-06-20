@@ -51,7 +51,11 @@ mkdirSync(testUserDataDir, { recursive: true });
 mkdirSync(testExtensionsDir, { recursive: true });
 
 function cleanupTestRunRoot() {
-  rmSync(testRunRoot, { recursive: true, force: true });
+  try {
+    rmSync(testRunRoot, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup; locked files must not block process shutdown.
+  }
 }
 
 process.once("exit", cleanupTestRunRoot);
