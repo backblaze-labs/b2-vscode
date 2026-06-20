@@ -40,7 +40,11 @@
   already be public.
 - Automatic global cleanup of stale unfinished multipart uploads has been
   removed because B2 file info is caller-controlled; failed uploads now only
-  cancel unfinished uploads that match the active upload session.
+  cancel unfinished uploads that match the active upload session. Operators
+  should configure a B2 lifecycle rule to cancel unfinished multipart uploads so
+  crash or power-loss orphans cannot accumulate storage cost.
+- Workspace downloads and open-file cache downloads now enforce a 1 GiB default
+  size cap, abort oversized streams, and remove partial local files.
 
 ## [0.0.1] — 2026-03-25
 

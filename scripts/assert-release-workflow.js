@@ -12,11 +12,25 @@ const yaml = require("js-yaml");
 
 const repoRoot = path.join(__dirname, "..");
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
+const publisherPackagePath = path.join(
+  repoRoot,
+  ".github",
+  "marketplace-publisher",
+  "package.json",
+);
+const publisherLockPath = path.join(
+  repoRoot,
+  ".github",
+  "marketplace-publisher",
+  "package-lock.json",
+);
 const workflowText = fs.readFileSync(workflowPath, "utf8");
 const workflow = yaml.load(workflowText);
 const jobs = workflow.jobs ?? {};
 const marketplaceSecretPattern =
   /(?:secrets\s*(?:\.\s*VSCE_KEY|\[\s*["']VSCE_KEY["']\s*\])|\bVSCE_(?:KEY|PAT)\b)/;
+const marketplacePublisherPackage = JSON.parse(fs.readFileSync(publisherPackagePath, "utf8"));
+const marketplacePublisherLock = JSON.parse(fs.readFileSync(publisherLockPath, "utf8"));
 
 function assert(condition, message) {
   if (!condition) {
@@ -156,14 +170,27 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
     "isolated Marketplace publisher must be installed outside the repository.",
   );
   assert(
-    installStep.env?.VSCE_VERSION === "3.7.1" &&
-      /\bnpm\s+install\b/.test(installRun) &&
-      installRun.includes("@vscode/vsce@$VSCE_VERSION"),
-    "isolated Marketplace publisher must install a pinned @vscode/vsce version.",
+    installRun.includes(".github/marketplace-publisher/package-lock.json") &&
+      /\bnpm\s+ci\b/.test(installRun) &&
+      !/\bnpm\s+install\b/.test(installRun),
+    "isolated Marketplace publisher must install from the committed lockfile with npm ci.",
   );
   assert(
     installRun.includes("--ignore-scripts"),
     "isolated Marketplace publisher install must not run package lifecycle scripts.",
+  );
+  assert(
+    !installRun.includes("@vscode/vsce@"),
+    "isolated Marketplace publisher must not resolve @vscode/vsce dynamically in the workflow.",
+  );
+
+  const installDependenciesRun = normalizedCommand(
+    stepRunInSteps(steps, "publish", "Install dependencies"),
+  );
+  assert(
+    /\bnpm\s+ci\b/.test(installDependenciesRun) &&
+      installDependenciesRun.includes("--ignore-scripts"),
+    "publish job repo dependencies must be installed without lifecycle scripts.",
   );
 
   const verifyPatRun = normalizedCommand(
@@ -195,6 +222,25 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
   assert(
     installStepIndex < verifyPatStepIndex && installStepIndex < publishStepIndex,
     "isolated Marketplace publisher must be installed before VSCE_PAT is exposed.",
+  );
+}
+
+function assertMarketplacePublisherLockfile() {
+  assert(
+    marketplacePublisherPackage.dependencies?.["@vscode/vsce"] === "3.7.1",
+    "Marketplace publisher package must pin @vscode/vsce exactly.",
+  );
+  const rootPackage = marketplacePublisherLock.packages?.[""];
+  const vscePackage = marketplacePublisherLock.packages?.["node_modules/@vscode/vsce"];
+  assert(
+    rootPackage?.dependencies?.["@vscode/vsce"] === "3.7.1",
+    "Marketplace publisher lockfile root must pin @vscode/vsce exactly.",
+  );
+  assert(
+    vscePackage?.version === "3.7.1" &&
+      typeof vscePackage.integrity === "string" &&
+      vscePackage.integrity.startsWith("sha512-"),
+    "Marketplace publisher lockfile must include @vscode/vsce 3.7.1 integrity.",
   );
 }
 
@@ -317,6 +363,7 @@ function main() {
   }
 
   assertMarketplaceSecretOnlyInPublish();
+  assertMarketplacePublisherLockfile();
   assertPublishIsReleaseOnly();
   assertMarketplaceSecretStepsUseIsolatedPublisher();
   assertReleaseSourceGate();
@@ -339,6 +386,7 @@ if (require.main === module) {
 module.exports = {
   assertMarketplaceSecretStepsUseIsolatedPublisher,
   assertMarketplaceSecretOnlyInPublish,
+  assertMarketplacePublisherLockfile,
   assertPublishUsesIsolatedPublisher,
   main,
   marketplaceSecretPattern,

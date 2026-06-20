@@ -28,11 +28,16 @@ suite("Release workflow guard assertions", () => {
             {
               name: "Install isolated Marketplace publisher",
               id: "publisher",
-              env: { VSCE_VERSION: "3.7.1" },
               run: [
                 'PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"',
-                'npm install --ignore-scripts "@vscode/vsce@$VSCE_VERSION"',
+                'cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"',
+                'cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"',
+                "npm ci --ignore-scripts --no-audit --no-fund --omit=dev",
               ].join("\n"),
+            },
+            {
+              name: "Install dependencies",
+              run: "npm ci --ignore-scripts",
             },
             {
               name: "Verify Marketplace publisher token",

@@ -75,6 +75,10 @@ Several tools change state or expose data: `uploadFile` and `downloadFile` write
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 
+Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
+
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed uploads. A VS Code crash, power loss, or network failure during cleanup can still leave unfinished large files in B2, so bucket operators should configure a B2 lifecycle rule to automatically cancel unfinished multipart uploads before they accumulate storage cost.
+
 ## Development
 
 ```bash

@@ -358,21 +358,20 @@ jobs:
 
       - name: Install isolated Marketplace publisher
         id: publisher
-        env:
-          VSCE_VERSION: 3.7.1
         run: |
           PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"
           rm -rf "$PUBLISHER_DIR"
           mkdir -p "$PUBLISHER_DIR"
+          cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"
+          cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"
           cd "$PUBLISHER_DIR"
-          npm init -y >/dev/null
-          npm install --ignore-scripts --no-audit --no-fund --omit=dev "@vscode/vsce@$VSCE_VERSION"
+          npm ci --ignore-scripts --no-audit --no-fund --omit=dev
           VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"
           test -x "$VSCE_BIN"
           echo "bin=$VSCE_BIN" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

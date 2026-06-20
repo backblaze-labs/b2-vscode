@@ -88,30 +88,6 @@ const NETWORK_ERROR_CODES = new Set([
   "ETIMEDOUT",
 ]);
 
-const B2_ERROR_CODES = new Set([
-  "access_denied",
-  "bad_auth_token",
-  "bad_bucket_id",
-  "bad_json",
-  "bad_request",
-  "cap_exceeded",
-  "conflict",
-  "download_cap_exceeded",
-  "duplicate_bucket_name",
-  "expired_auth_token",
-  "file_not_present",
-  "internal_error",
-  "invalid_bucket_id",
-  "no_such_file",
-  "not_found",
-  "request_timeout",
-  "service_unavailable",
-  "storage_cap_exceeded",
-  "too_many_requests",
-  "transaction_cap_exceeded",
-  "unauthorized",
-]);
-
 /**
  * Error used when a multi-step operation made progress but could not complete.
  */
@@ -198,9 +174,10 @@ function getB2Code(error: unknown): string | undefined {
     return undefined;
   }
 
-  return error instanceof B2Error || getB2Status(error) !== undefined || B2_ERROR_CODES.has(code)
-    ? code
-    : undefined;
+  // Treat B2 codes as authoritative only when they are attached to an SDK
+  // B2Error or a response status. Bare no-status `code` values can be produced
+  // by local dependencies and remain ambiguous for post-request public mutations.
+  return error instanceof B2Error || getB2Status(error) !== undefined ? code : undefined;
 }
 
 function getB2Status(error: unknown): number | undefined {
@@ -327,6 +304,8 @@ function isNetworkFailure(error: unknown): boolean {
 
 function isMalformedResponse(error: unknown): boolean {
   if (getB2Status(error) !== undefined || getB2Code(error) !== undefined) {
+    // B2's `bad_json` code is a definitive classified B2 response, so public
+    // mutation ambiguity keeps it out of this transport/malformed-response path.
     return false;
   }
 
@@ -357,6 +336,10 @@ function isTransientServiceFailure(error: unknown): boolean {
     code === "service_unavailable" ||
     code === "internal_error"
   );
+}
+
+export function isBucketRevisionConflict(error: unknown): boolean {
+  return getB2Status(error) === 409 || getB2Code(error) === "conflict";
 }
 
 /** Error used when the client cannot confirm a mutation's final state in time. */

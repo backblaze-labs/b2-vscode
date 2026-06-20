@@ -9,7 +9,12 @@ import * as fs from "fs";
 import * as path from "path";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
-import { uploadFileFromDisk } from "../../services/fileTransfers";
+import {
+  assertUploadSourcePathUnchanged,
+  openUploadSourceFile,
+  uploadFileFromDisk,
+  type UploadSourceFile,
+} from "../../services/fileTransfers";
 import {
   findWorkspaceControlDirectory,
   isPathInsideOrEqual,
@@ -40,29 +45,45 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
   }
 }
 
-async function workspaceFilePath(relativePath: string): Promise<string> {
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function closeUploadSource(source: UploadSourceFile): Promise<void> {
+  await source.handle.close().catch(() => undefined);
+}
+
+async function workspaceUploadSource(relativePath: string): Promise<UploadSourceFile> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error("No workspace folder open. The uploadFile tool only reads workspace files.");
   }
 
-  const lexicalPath = resolveContainedRelativePath(
-    workspaceFolder.uri.fsPath,
-    relativePath,
-    "localPath",
-  );
-  assertNoControlDirectoryRead(workspaceFolder.uri.fsPath, lexicalPath);
-  const [workspaceRealPath, localRealPath] = await Promise.all([
-    fs.promises.realpath(workspaceFolder.uri.fsPath),
-    fs.promises.realpath(lexicalPath),
-  ]);
+  const workspaceRoot = workspaceFolder.uri.fsPath;
+  const lexicalPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
+  assertNoControlDirectoryRead(workspaceRoot, lexicalPath);
+  const source = await openUploadSourceFile(lexicalPath);
 
-  if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
-    throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+  try {
+    const [workspaceRealPath, localRealPath] = await Promise.all([
+      fs.promises.realpath(workspaceRoot),
+      fs.promises.realpath(lexicalPath),
+    ]);
+    const localRealStats = await fs.promises.stat(localRealPath);
+
+    if (!sameFileIdentity(source.stats, localRealStats)) {
+      throw new Error(`localPath changed while opening upload source: ${relativePath}`);
+    }
+    if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
+      throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+    }
+
+    assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
+    return source;
+  } catch (error) {
+    await closeUploadSource(source);
+    throw error;
   }
-
-  assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
-  return localRealPath;
 }
 
 export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileResult> = {
@@ -76,39 +97,43 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const localPath = await workspaceFilePath(params.localPath);
+    const source = await workspaceUploadSource(params.localPath);
+    let sourceConsumed = false;
 
-    await fs.promises.access(localPath, fs.constants.R_OK);
-    const stats = await fs.promises.stat(localPath);
-    if (!stats.isFile()) {
-      throw new Error(`Local path is not a file: ${localPath}`);
+    try {
+      const bucket = await client.getBucket(params.bucket);
+      if (!bucket) {
+        throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
+      }
+
+      // Resolve remote path
+      const remotePath = params.remotePath ?? path.basename(source.path);
+      await assertUploadSourcePathUnchanged(source);
+
+      const result = await withCancellableTransferProgress(
+        {
+          title: `Uploading ${path.basename(source.path)} to b2://${params.bucket}/${remotePath}...`,
+          token,
+        },
+        ({ progress, signal }) => {
+          sourceConsumed = true;
+          return uploadFileFromDisk(bucket, source, remotePath, {
+            signal,
+            onProgress: createTransferProgressReporter(progress, source.stats.size),
+          });
+        },
+      );
+
+      return {
+        fileId: result.fileId,
+        fileName: result.fileName,
+        size: result.contentLength,
+        message: `Uploaded ${source.path} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
+      };
+    } finally {
+      if (!sourceConsumed) {
+        await closeUploadSource(source);
+      }
     }
-
-    const bucket = await client.getBucket(params.bucket);
-    if (!bucket) {
-      throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
-    }
-
-    // Resolve remote path
-    const remotePath = params.remotePath ?? path.basename(localPath);
-
-    const result = await withCancellableTransferProgress(
-      {
-        title: `Uploading ${path.basename(localPath)} to b2://${params.bucket}/${remotePath}...`,
-        token,
-      },
-      ({ progress, signal }) =>
-        uploadFileFromDisk(bucket, localPath, remotePath, {
-          signal,
-          onProgress: createTransferProgressReporter(progress, stats.size),
-        }),
-    );
-
-    return {
-      fileId: result.fileId,
-      fileName: result.fileName,
-      size: result.contentLength,
-      message: `Uploaded ${localPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
-    };
   },
 };

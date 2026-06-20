@@ -30,6 +30,7 @@ import {
   B2MutationTimeoutError,
   B2PartialFailureError,
   formatB2UserMessage,
+  isBucketRevisionConflict,
   isPostRequestB2MutationStateAmbiguous,
 } from "../errors";
 import { log, logError } from "../logger";
@@ -63,7 +64,7 @@ export interface BucketVisibilityItem {
   readonly bucketType: BucketType;
   readonly bucket: {
     readonly info: {
-      readonly revision: number;
+      readonly revision?: number;
     };
     update(options: BucketUpdateOptions): BucketUpdateResult;
   };
@@ -76,12 +77,6 @@ export function buildCommandErrorMessage(prefix: string, error: unknown): string
 function showCommandError(prefix: string, error: unknown): void {
   logError(prefix, error);
   vscode.window.showErrorMessage(buildCommandErrorMessage(prefix, error));
-}
-
-function isBucketRevisionConflict(error: unknown): boolean {
-  const record =
-    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
-  return record.status === 409 || record.code === "conflict";
 }
 
 async function confirmPublicBucketVisibility(
@@ -360,6 +355,14 @@ export async function changeBucketVisibilityCommand(
   const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
   const newLabel = bucketTypeLabel(newType);
   const currentLabel = bucketTypeLabel(currentType);
+  const revision = item.bucket.info.revision;
+  if (typeof revision !== "number") {
+    treeProvider.refresh();
+    vscode.window.showErrorMessage(
+      "B2: Bucket metadata is missing a revision. Refresh the bucket tree and retry.",
+    );
+    return;
+  }
 
   const confirm = await vscode.window.showQuickPick(
     [
@@ -396,8 +399,7 @@ export async function changeBucketVisibilityCommand(
         cancellable: false,
       },
       () => {
-        const update = () =>
-          item.bucket.update({ bucketType: newType, ifRevisionIs: item.bucket.info.revision });
+        const update = () => item.bucket.update({ bucketType: newType, ifRevisionIs: revision });
         return newType === "allPublic"
           ? withPublicBucketMutationTimeout(
               `Changing B2 bucket "${item.bucketName}" to public`,

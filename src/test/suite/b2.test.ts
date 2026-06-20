@@ -33,6 +33,7 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
+  DownloadSizeLimitError,
   downloadStreamToFile,
   STREAMING_UPLOAD_PART_SIZE,
   TransferStallTimeoutError,
@@ -455,6 +456,91 @@ suite("B2 transfer helpers", () => {
       assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("removes partial downloads when the byte limit is exceeded", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-limit-"));
+    const destination = path.join(dir, "limited.bin");
+    const tempDir = path.join(dir, "tmp");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.alloc(4, 1));
+        controller.enqueue(Buffer.alloc(4, 2));
+        controller.enqueue(Buffer.alloc(1, 3));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            maxBytes: 8,
+            temporaryDirectory: tempDir,
+          }),
+        DownloadSizeLimitError,
+      );
+
+      assert.strictEqual(fs.existsSync(destination), false);
+      assert.deepStrictEqual(
+        fs.existsSync(tempDir)
+          ? fs.readdirSync(tempDir).filter((name) => name.startsWith("b2-transfer-"))
+          : [],
+        [],
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not write outside when destination parent is swapped after reservation", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-bind-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-bind-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!swapped) {
+          swapped = true;
+          fs.renameSync(downloadDir, movedDownloadDir);
+          fs.symlinkSync(
+            outsideDir,
+            downloadDir,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+          controller.enqueue(Buffer.from("do not escape"));
+        }
+        controller.close();
+      },
+    });
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /changed during transfer|real directory|symlink/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
     }
   });
 
@@ -906,6 +992,33 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("times out stalled empty-file uploads", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-empty-upload-stall-"));
+    const localPath = path.join(dir, "empty.bin");
+    fs.writeFileSync(localPath, "");
+    let uploadSignal: AbortSignal | undefined;
+
+    const bucket = {
+      upload(options) {
+        uploadSignal = options.signal;
+        return new Promise<FileVersion>(() => undefined);
+      },
+      file() {
+        assert.fail("Expected empty files to avoid the streaming write path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(bucket, localPath, "remote/empty.bin", { stallTimeoutMs: 20 }),
+        TransferStallTimeoutError,
+      );
+      assert.strictEqual(uploadSignal?.aborted, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("cleans up unfinished multipart uploads after a part failure", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-multipart-fail-"));
     const localPath = path.join(dir, "large.bin");
@@ -944,6 +1057,65 @@ suite("B2 transfer helpers", () => {
         namePrefix: "remote/large.bin",
       });
       assert.deepStrictEqual(unfinished.files, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds stalled unfinished-upload cancellation during cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cancel-timeout-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let uploadSessionId = "";
+    let cancelCalls = 0;
+
+    const bucket = {
+      async listUnfinishedLargeFiles() {
+        return {
+          files: [
+            {
+              fileId: largeFileId("stalled-cancel"),
+              fileName: "remote/file.bin",
+              fileInfo: { "b2-vscode-upload-session-id": uploadSessionId },
+            },
+          ],
+          nextFileId: null,
+        };
+      },
+      cancelLargeFile() {
+        cancelCalls += 1;
+        return new Promise(() => undefined);
+      },
+      file() {
+        return {
+          createWriteStream(options) {
+            uploadSessionId = options?.fileInfo?.["b2-vscode-upload-session-id"] ?? "";
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("simulated upload failure");
+                },
+              }),
+              done: Promise.reject(new Error("simulated upload failure")),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(
+        () =>
+          uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
+            unfinishedCleanupTimeoutMs: 20,
+          }),
+        /simulated upload failure/i,
+      );
+
+      assert.strictEqual(cancelCalls, 1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1022,6 +1194,30 @@ suite("B2 transfer helpers", () => {
     } finally {
       manager.dispose();
       fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
+    }
+  });
+
+  test("removes partial temp-cache downloads when the byte limit is exceeded", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-limit-"));
+    const manager = new TempFileManager(path.join(dir, "cache"));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("abcd"));
+        controller.enqueue(Buffer.from("efgh"));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => manager.saveStream("bucket", "oversized.bin", stream, { maxBytes: 4 }),
+        DownloadSizeLimitError,
+      );
+      assert.strictEqual(manager.getCachedPath("bucket", "oversized.bin"), undefined);
+      assert.strictEqual(fs.existsSync(path.join(dir, "cache", "bucket", "oversized.bin")), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

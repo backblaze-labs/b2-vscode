@@ -208,7 +208,7 @@ suite("B2 commands error handling", () => {
         code: "bad_request",
         message: "bucket name contains aborted",
       }),
-      false,
+      true,
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous(
@@ -236,7 +236,18 @@ suite("B2 commands error handling", () => {
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous({ code: "access_denied", message: "denied" }),
-      false,
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({
+        code: "duplicate_bucket_name",
+        message: "duplicate",
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPostRequestB2MutationStateAmbiguous({ code: "conflict", message: "revision mismatch" }),
+      true,
     );
     assert.strictEqual(
       isPostRequestB2MutationStateAmbiguous({ name: "B2SsrfError", message: "blocked" }),
@@ -544,6 +555,30 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /Could not confirm public bucket creation/);
   });
 
+  test("refreshes and warns for no-status B2-looking public create failures", async () => {
+    for (const code of ["access_denied", "duplicate_bucket_name", "conflict"]) {
+      const { client, calls } = makeCreateBucketClient(async () => {
+        throw Object.assign(new Error(`${code} without status`), { code });
+      });
+      const commandServices = makeCommandServices(client);
+
+      const ui = await withWindowUiStubs(
+        {
+          inputValues: ["public-bucket", "public-bucket"],
+          quickPickLabels: [PUBLIC_VISIBILITY_LABEL],
+          warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
+        },
+        () => createBucketCommand(commandServices.services),
+      );
+
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(commandServices.refreshCount(), 1);
+      assert.strictEqual(ui.warnings.length, 2);
+      assert.match(ui.warnings[1]?.message ?? "", /may have been created as public/);
+      assert.match(ui.errors[0] ?? "", /Could not confirm public bucket creation/);
+    }
+  });
+
   test("refreshes and warns when public bucket creation fails ambiguously without keywords", async () => {
     const { client, calls } = makeCreateBucketClient(async () => {
       throw new Error("The operation was aborted");
@@ -684,6 +719,30 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /Network connection to B2 failed/);
   });
 
+  test("refreshes and warns for no-status B2-looking public visibility failures", async () => {
+    for (const code of ["access_denied", "duplicate_bucket_name", "conflict"]) {
+      const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
+        throw Object.assign(new Error(`${code} without status`), { code });
+      });
+      const commandServices = makeCommandServices({});
+
+      const ui = await withWindowUiStubs(
+        {
+          inputValues: ["photos-public"],
+          quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
+          warningValues: [CONFIRM_PUBLIC_BUCKET_LABEL, undefined],
+        },
+        () => changeBucketVisibilityCommand(commandServices.services, item),
+      );
+
+      assert.strictEqual(updates.length, 1);
+      assert.strictEqual(commandServices.refreshCount(), 1);
+      assert.strictEqual(ui.warnings.length, 2);
+      assert.match(ui.warnings[1]?.message ?? "", /may already be public/);
+      assert.match(ui.errors[0] ?? "", /Could not confirm public bucket visibility change/);
+    }
+  });
+
   test("uses bucket revision as an optimistic lock and refreshes on conflict", async () => {
     const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate", async () => {
       throw classifyError({ status: 409, code: "conflict", message: "revision mismatch" });
@@ -703,6 +762,30 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
+  });
+
+  test("does not update bucket visibility without a revision", async () => {
+    const { item, updates } = makeBucketTreeItem("photos-public", "allPrivate");
+    const commandServices = makeCommandServices({});
+    const itemWithoutRevision: BucketVisibilityItem = {
+      ...item,
+      bucket: {
+        ...item.bucket,
+        info: {},
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        quickPickLabels: [CONFIRM_PUBLIC_VISIBILITY_LABEL],
+      },
+      () => changeBucketVisibilityCommand(commandServices.services, itemWithoutRevision),
+    );
+
+    assert.deepStrictEqual(updates, []);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.quickPicks.length, 0);
+    assert.match(ui.errors[0] ?? "", /missing a revision/i);
   });
 
   test("refreshes and warns when public visibility update times out", async () => {

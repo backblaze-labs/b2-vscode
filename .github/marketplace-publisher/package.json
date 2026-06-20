@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Locked dependency tree for the release workflow Marketplace publisher.",
+  "dependencies": {
+    "@vscode/vsce": "3.7.1"
+  }
+}

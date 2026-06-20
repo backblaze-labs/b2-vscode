@@ -669,7 +669,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "backup.txt" },
               { getClient: () => client },
             ),
-          /control directory/i,
+          /control directory|symlink|symbolic link|ELOOP/i,
         );
       });
     } finally {
@@ -705,6 +705,58 @@ suite("B2 LM tool failure handling", () => {
           /outside the open workspace/i,
         );
       });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool rejects source swaps after validation before reading", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-swap-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-swap-outside-"));
+    const localPath = path.join(workspaceDir, "payload.txt");
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.writeFileSync(localPath, "safe");
+    fs.writeFileSync(outsideFile, "secret");
+    const symlinkSupported = createFileSymlink(outsideFile, probeLink);
+    let uploadStarted = false;
+    const bucket = {
+      file() {
+        uploadStarted = true;
+        throw new Error("upload should not start");
+      },
+      async upload() {
+        uploadStarted = true;
+        throw new Error("upload should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        fs.rmSync(localPath, { force: true });
+        fs.symlinkSync(outsideFile, localPath, "file");
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { force: true });
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: "payload.txt" },
+              { getClient: () => client },
+            ),
+          /changed before upload/i,
+        );
+      });
+
+      assert.strictEqual(uploadStarted, false);
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });

@@ -8,7 +8,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Readable } from "stream";
+import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 import {
   BufferSource,
@@ -25,6 +25,7 @@ import {
 } from "./pathSafety";
 
 export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 
 const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
@@ -37,6 +38,7 @@ const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 3;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
+const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
 
 const lastCleanupByDirectory = new Map<string, number>();
 
@@ -44,6 +46,13 @@ export class TransferStallTimeoutError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "TransferStallTimeoutError";
+  }
+}
+
+export class DownloadSizeLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DownloadSizeLimitError";
   }
 }
 
@@ -56,6 +65,7 @@ export interface DownloadStreamToFileOptions extends TransferTimeoutOptions {
   readonly temporaryDirectory?: string;
   readonly overwrite?: boolean;
   readonly allowedRootDirectory?: string;
+  readonly maxBytes?: number;
 }
 
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
@@ -93,6 +103,12 @@ export interface UploadBucketHandle {
     nextFileId: LargeFileId | null;
   }>;
   cancelLargeFile?(fileId: LargeFileId): Promise<unknown>;
+}
+
+export interface UploadSourceFile {
+  readonly path: string;
+  readonly handle: fs.promises.FileHandle;
+  readonly stats: fs.Stats;
 }
 
 interface ActivityAbortSignal {
@@ -168,6 +184,32 @@ function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): 
   }
 
   throw error;
+}
+
+function normalizedMaxBytes(maxBytes: number | undefined): number {
+  const normalized = maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    throw new Error("Download maximum byte count must be a non-negative finite number.");
+  }
+  return normalized;
+}
+
+function createDownloadSizeLimitTransform(maxBytes: number, destinationPath: string): Transform {
+  let bytes = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytes += chunk.byteLength;
+      if (bytes > maxBytes) {
+        callback(
+          new DownloadSizeLimitError(
+            `Download to ${destinationPath} exceeded the ${maxBytes} byte limit.`,
+          ),
+        );
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
 }
 
 function abortPromise(signal: AbortSignal): Promise<never> {
@@ -398,6 +440,90 @@ async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+interface ReservedDestinationFile {
+  readonly path: string;
+  readonly directory: string;
+  readonly parentStats: fs.Stats;
+  readonly handle: fs.promises.FileHandle;
+  closed: boolean;
+}
+
+async function reserveDestinationFile(
+  destinationPath: string,
+  destinationDirectory: string,
+): Promise<ReservedDestinationFile> {
+  const parentStats = await fs.promises.lstat(destinationDirectory);
+  const handle = await fs.promises.open(
+    destinationPath,
+    fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW_OPEN_FLAG,
+    0o600,
+  );
+
+  return {
+    path: destinationPath,
+    directory: destinationDirectory,
+    parentStats,
+    handle,
+    closed: false,
+  };
+}
+
+async function assertReservedParentUnchanged(reserved: ReservedDestinationFile): Promise<void> {
+  const currentStats = await fs.promises.lstat(reserved.directory);
+  if (!sameFileIdentity(reserved.parentStats, currentStats)) {
+    throw new Error(
+      `Download destination directory changed during transfer: ${reserved.directory}`,
+    );
+  }
+}
+
+async function closeReservedDestination(reserved: ReservedDestinationFile): Promise<void> {
+  if (reserved.closed) {
+    return;
+  }
+  reserved.closed = true;
+  await reserved.handle.close();
+}
+
+async function removeReservedDestinationIfStillSafe(
+  reserved: ReservedDestinationFile,
+): Promise<void> {
+  try {
+    await assertReservedParentUnchanged(reserved);
+  } catch (error) {
+    logError(`Skipped cleanup for swapped download destination: ${reserved.path}`, error);
+    return;
+  }
+
+  await removeTempFile(reserved.path);
+}
+
+async function cleanupReservedDestination(reserved: ReservedDestinationFile): Promise<void> {
+  await closeReservedDestination(reserved).catch((error) => {
+    logError(`Could not close reserved download destination: ${reserved.path}`, error);
+  });
+  await removeReservedDestinationIfStillSafe(reserved);
+}
+
+async function writeTempFileToReservedDestination(
+  sourcePath: string,
+  reserved: ReservedDestinationFile,
+): Promise<void> {
+  await assertReservedParentUnchanged(reserved);
+  await reserved.handle.truncate(0);
+  await pipeline(
+    fs.createReadStream(sourcePath),
+    reserved.handle.createWriteStream({ autoClose: false, start: 0 }),
+  );
+  await assertReservedParentUnchanged(reserved);
+  await closeReservedDestination(reserved);
+  await removeTempFile(sourcePath);
+}
+
 async function replaceExistingDestination(
   sourcePath: string,
   destinationPath: string,
@@ -544,8 +670,10 @@ export async function downloadStreamToFile(
   );
   const temporaryDirectory = transferTempDirectory(options.temporaryDirectory);
   let temporaryPath = "";
+  let reservedDestination: ReservedDestinationFile | undefined;
 
   try {
+    const maxBytes = normalizedMaxBytes(options.maxBytes);
     await ensurePrivateDirectory(temporaryDirectory);
     await cleanupTransferTempFilesForDownload(temporaryDirectory);
 
@@ -554,15 +682,31 @@ export async function downloadStreamToFile(
       options.allowedRootDirectory,
     );
     await cleanupDestinationTempFilesForDownload(destinationDirectory);
+    if (options.overwrite === false) {
+      reservedDestination = await reserveDestinationFile(destinationPath, destinationDirectory);
+    }
 
     temporaryPath = transferTempPath(temporaryDirectory);
     const readable = Readable.fromWeb(stream as unknown as Parameters<typeof Readable.fromWeb>[0]);
     readable.on("data", activity.markActivity);
-    await pipeline(readable, fs.createWriteStream(temporaryPath, { flags: "wx" }), {
-      signal: activity.signal,
-    });
+    await pipeline(
+      readable,
+      createDownloadSizeLimitTransform(maxBytes, destinationPath),
+      fs.createWriteStream(temporaryPath, { flags: "wx" }),
+      {
+        signal: activity.signal,
+      },
+    );
 
     const stats = await fs.promises.stat(temporaryPath);
+    if (reservedDestination) {
+      await writeTempFileToReservedDestination(temporaryPath, reservedDestination);
+      temporaryPath = "";
+      return stats.size;
+    }
+
+    // Deliberately re-validate the parent directory after streaming so a
+    // directory swap during the download is caught before path-based placement.
     await ensureDownloadDestinationDirectory(destinationPath, options.allowedRootDirectory);
     await moveIntoPlace(
       temporaryPath,
@@ -572,6 +716,9 @@ export async function downloadStreamToFile(
     temporaryPath = "";
     return stats.size;
   } catch (error) {
+    if (reservedDestination) {
+      await cleanupReservedDestination(reservedDestination);
+    }
     if (temporaryPath) {
       await removeTempFile(temporaryPath);
     }
@@ -589,6 +736,45 @@ function withActivityProgress(
     markActivity();
     listener?.(event);
   };
+}
+
+export async function openUploadSourceFile(localPath: string): Promise<UploadSourceFile> {
+  const handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error(`Local path is not a file: ${localPath}`);
+    }
+
+    const pathStats = await fs.promises.stat(localPath);
+    if (!sameFileIdentity(stats, pathStats)) {
+      throw new Error(`Local path changed while opening upload source: ${localPath}`);
+    }
+
+    return { path: localPath, handle, stats };
+  } catch (error) {
+    await handle.close().catch((closeError) => {
+      logError(`Could not close upload source after validation failure: ${localPath}`, closeError);
+    });
+    throw error;
+  }
+}
+
+export async function assertUploadSourcePathUnchanged(source: UploadSourceFile): Promise<void> {
+  const pathStats = await fs.promises.stat(source.path);
+  if (!sameFileIdentity(source.stats, pathStats)) {
+    throw new Error(`Local path changed before upload: ${source.path}`);
+  }
+}
+
+async function closeUploadSource(source: UploadSourceFile): Promise<void> {
+  await source.handle.close().catch((error) => {
+    logError(`Could not close upload source: ${source.path}`, error);
+  });
+}
+
+function isUploadSourceFile(value: string | UploadSourceFile): value is UploadSourceFile {
+  return typeof value !== "string";
 }
 
 async function withTimeout<T>(
@@ -655,7 +841,13 @@ async function cleanupOwnedUnfinishedUpload(
         file.fileName === remotePath &&
         file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
       ) {
-        await bucket.cancelLargeFile(file.fileId);
+        await withTimeout(
+          bucket.cancelLargeFile(file.fileId),
+          timeoutMs,
+          "Owned unfinished upload cancel",
+        ).catch((error) => {
+          logError(`Could not cancel unfinished upload ${file.fileId}`, error);
+        });
       }
     }
 
@@ -665,52 +857,66 @@ async function cleanupOwnedUnfinishedUpload(
 
 export async function uploadFileFromDisk(
   bucket: UploadBucketHandle,
-  localPath: string,
+  localPathOrSource: string | UploadSourceFile,
   remotePath: string,
   options: UploadFileFromDiskOptions = {},
 ): Promise<FileVersion> {
-  const stats = await fs.promises.stat(localPath);
-
-  if (stats.size === 0) {
-    return bucket.upload({
-      fileName: remotePath,
-      source: new BufferSource(new Uint8Array(0)),
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
-    });
-  }
+  const source = isUploadSourceFile(localPathOrSource)
+    ? localPathOrSource
+    : await openUploadSourceFile(localPathOrSource);
+  const localPath = source.path;
+  const stats = source.stats;
 
   const activity = createActivityAbortSignal(
     options.signal,
     options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
     `Upload of ${localPath}`,
   );
-  const uploadSessionId = crypto.randomUUID();
-  const { writable, done } = bucket.file(remotePath).createWriteStream({
-    partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
-    fileInfo: {
-      [UPLOAD_SESSION_ID_INFO_KEY]: uploadSessionId,
-    },
-    signal: activity.signal,
-    onProgress: withActivityProgress(options.onProgress, activity.markActivity),
-  });
-  void done.catch(() => undefined);
+  let uploadSessionId: string | undefined;
 
   try {
-    const readableStream = fs.createReadStream(localPath);
+    if (stats.size === 0) {
+      return await Promise.race([
+        bucket.upload({
+          fileName: remotePath,
+          source: new BufferSource(new Uint8Array(0)),
+          signal: activity.signal,
+          ...(options.onProgress !== undefined
+            ? { onProgress: withActivityProgress(options.onProgress, activity.markActivity) }
+            : {}),
+        }),
+        abortPromise(activity.signal),
+      ]);
+    }
+
+    uploadSessionId = crypto.randomUUID();
+    const { writable, done } = bucket.file(remotePath).createWriteStream({
+      partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
+      fileInfo: {
+        [UPLOAD_SESSION_ID_INFO_KEY]: uploadSessionId,
+      },
+      signal: activity.signal,
+      onProgress: withActivityProgress(options.onProgress, activity.markActivity),
+    });
+    void done.catch(() => undefined);
+
+    const readableStream = source.handle.createReadStream({ autoClose: false, start: 0 });
     readableStream.on("data", activity.markActivity);
     const readable = Readable.toWeb(readableStream) as ReadableStream<Uint8Array>;
 
     await readable.pipeTo(writable, { signal: activity.signal });
     return await done;
   } catch (error) {
-    await cleanupOwnedUnfinishedUpload(bucket, remotePath, uploadSessionId, options).catch(
-      (cleanupError) => {
-        logError(`Could not clean up unfinished upload for ${remotePath}`, cleanupError);
-      },
-    );
+    if (uploadSessionId !== undefined) {
+      await cleanupOwnedUnfinishedUpload(bucket, remotePath, uploadSessionId, options).catch(
+        (cleanupError) => {
+          logError(`Could not clean up unfinished upload for ${remotePath}`, cleanupError);
+        },
+      );
+    }
     normalizeTransferError(error, activity);
   } finally {
     activity.dispose();
+    await closeUploadSource(source);
   }
 }
