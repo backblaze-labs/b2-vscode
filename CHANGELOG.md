@@ -54,16 +54,14 @@
   size cap, abort oversized streams, and remove partial local files.
 - Interactive open-file downloads now stream with the same 5-minute stall
   timeout as other local transfer paths.
-- LM `downloadFile` writes only to workspace-relative paths and refuses to
-  overwrite existing workspace files. LM `uploadFile` reads only
-  workspace-relative files.
-- `downloadFile` now confines `localPath` destinations to the open workspace,
-  including absolute paths, traversal attempts, and symlink escapes, before
-  writing downloaded object data. Downloads are streamed through a temporary
-  file with a 512 MiB limit before atomic rename into place.
-- `uploadFile` now confines `localPath` sources to an open workspace folder,
-  including absolute paths, traversal attempts, and symlink escapes, before
-  reading and uploading local file content.
+- `downloadFile` now confines workspace-relative `localPath` destinations to the
+  first open workspace folder, rejecting absolute paths, traversal attempts, and
+  symlink escapes before writing downloaded object data. Downloads enforce a
+  512 MiB limit, write new files directly without overwrite, and use a temporary
+  file plus move only for overwrite-capable transfer paths.
+- `uploadFile` now confines workspace-relative `localPath` sources to the first
+  open workspace folder, rejecting absolute paths, traversal attempts, and
+  symlink escapes before reading and uploading local file content.
 - Temporary download caching now rejects bucket or file names that normalize
   outside the cache root or traverse through symlinked cache parents.
 

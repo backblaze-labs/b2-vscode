@@ -210,9 +210,9 @@ export class TempFileManager implements vscode.Disposable {
     await prepareSafeFileWritePath(this.tempRoot, localPath);
 
     await downloadStreamToFile(stream, localPath, {
-      overwrite: false,
       ...options,
-      destinationRoot: this.tempRoot,
+      overwrite: false,
+      allowedRootDirectory: this.tempRoot,
     });
 
     const key = `${bucketName}/${fileName}`;

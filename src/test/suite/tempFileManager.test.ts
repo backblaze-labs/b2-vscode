@@ -7,7 +7,10 @@
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
-import { DownloadSizeLimitError, MAX_DOWNLOAD_BYTES } from "../../services/fileTransfers";
+import {
+  DEFAULT_DOWNLOAD_MAX_BYTES,
+  DownloadSizeLimitError,
+} from "../../services/fileTransfers";
 import { TempFileManager } from "../../services/tempFileManager";
 import { createDirectorySymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
@@ -58,6 +61,29 @@ suite("TempFileManager", () => {
     }
   });
 
+  test("does not let saveStream options overwrite existing cache files", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      const localPath = await manager.saveStream("bucket", "cached.txt", streamFromText("old"));
+
+      await assert.rejects(
+        () =>
+          manager.saveStream("bucket", "cached.txt", streamFromText("new"), {
+            overwrite: true,
+          }),
+        /EEXIST|file already exists/i,
+      );
+
+      assert.strictEqual(fs.readFileSync(localPath, "utf8"), "old");
+      assert.strictEqual(manager.getCachedPath("bucket", "cached.txt"), localPath);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects oversized cached downloads without caching partial files", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
@@ -85,7 +111,7 @@ suite("TempFileManager", () => {
 
     try {
       const localPath = await manager.saveStream("bucket", "large.txt", streamFromText("cached"), {
-        knownBytes: MAX_DOWNLOAD_BYTES + 1,
+        knownBytes: DEFAULT_DOWNLOAD_MAX_BYTES + 1,
       });
 
       assert.strictEqual(fs.readFileSync(localPath, "utf8"), "cached");

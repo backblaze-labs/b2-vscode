@@ -30,10 +30,10 @@ import {
   isPublicBucketNameConfirmationAccepted,
 } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "../../errors";
-import { streamToBuffer } from "../../services/b2";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
 import { createSimulatorBucket } from "../../testSupport/b2Simulator";
+import { streamToBuffer } from "../../testSupport/streams";
 import { withWindowUiStubs } from "./windowStubs";
 
 type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
