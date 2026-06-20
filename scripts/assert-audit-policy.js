@@ -153,6 +153,8 @@ function assertCodeOwnerProtection() {
     "/audit-policy.jsonc",
     "/package.json",
     "/package-lock.json",
+    "/tools/marketplace-publish/package.json",
+    "/tools/marketplace-publish/package-lock.json",
     "/npm-shrinkwrap.json",
     "/.npmrc",
     "/scripts/audit-policy.js",
