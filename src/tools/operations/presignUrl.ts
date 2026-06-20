@@ -7,6 +7,7 @@
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import { buildB2DownloadUrl } from "../../utils/urlEncoding";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../presignUrlLimits";
 
 interface PresignUrlParams {
   bucket: string;
@@ -20,20 +21,33 @@ interface PresignUrlResult {
   message: string;
 }
 
-const MAX_PRESIGN_URL_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
+export function normalizePresignUrlExpiration(expiresIn: number | undefined): number {
+  if (expiresIn === undefined) {
+    return 3600;
+  }
 
-function normalizedExpiresIn(expiresIn: number | undefined): number {
-  const normalized = expiresIn ?? 3600;
   if (
-    !Number.isFinite(normalized) ||
-    normalized <= 0 ||
-    normalized > MAX_PRESIGN_URL_EXPIRES_IN_SECONDS
+    !Number.isInteger(expiresIn) ||
+    expiresIn < 1 ||
+    expiresIn > MAX_PRESIGN_URL_EXPIRES_IN_SECONDS
   ) {
     throw new Error(
-      `expiresIn must be between 1 and ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds.`,
+      `expiresIn must be an integer between 1 and ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds.`,
     );
   }
-  return normalized;
+  return expiresIn;
+}
+
+export function normalizePresignUrlPath(filePath: string): string {
+  if (!filePath || filePath.includes("\0")) {
+    throw new Error("path must name a single file and must not be empty.");
+  }
+
+  if (filePath.endsWith("/")) {
+    throw new Error("path must name a single file, not a folder prefix.");
+  }
+
+  return filePath;
 }
 
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {
@@ -43,20 +57,21 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const expiresIn = normalizedExpiresIn(params.expiresIn);
+    const filePath = normalizePresignUrlPath(params.path);
+    const expiresIn = normalizePresignUrlExpiration(params.expiresIn);
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
-    const { authorizationToken } = await bucket.getDownloadAuthorization(params.path, expiresIn);
+    const { authorizationToken } = await bucket.getDownloadAuthorization(filePath, expiresIn);
     const downloadUrl = client.accountInfo.getDownloadUrl();
-    const url = buildB2DownloadUrl(downloadUrl, params.bucket, params.path, authorizationToken);
+    const url = buildB2DownloadUrl(downloadUrl, params.bucket, filePath, authorizationToken);
 
     return {
       url,
       expiresIn,
-      message: `Pre-signed URL for ${params.path} (valid for ${expiresIn}s): ${url}`,
+      message: `Pre-signed URL for ${filePath} (valid for ${expiresIn}s): ${url}`,
     };
   },
 };

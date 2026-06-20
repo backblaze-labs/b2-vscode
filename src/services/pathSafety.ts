@@ -4,8 +4,9 @@
  * @module services/pathSafety
  */
 
-import * as path from "path";
 import * as fs from "fs";
+import * as path from "path";
+import { Buffer } from "buffer";
 
 export class UnsafePathError extends Error {
   constructor(message: string) {
@@ -14,11 +15,11 @@ export class UnsafePathError extends Error {
   }
 }
 
-function isAbsolutePortable(value: string): boolean {
+export function isAbsolutePortable(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
-function assertNoNul(value: string, label: string): void {
+export function assertNoNul(value: string, label: string): void {
   if (value.includes("\0")) {
     throw new UnsafePathError(`${label} must not contain NUL bytes.`);
   }
@@ -127,6 +128,63 @@ export async function ensureRealDirectory(
   assertRealDirectory(await fs.promises.lstat(directory), directory, label);
 }
 
+function assertPrivateDirectoryStats(stats: fs.Stats, directory: string, label: string): void {
+  assertRealDirectory(stats, directory, label);
+
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const getuid = process.getuid;
+  if (typeof getuid === "function" && stats.uid !== getuid()) {
+    throw new UnsafePathError(`${label} must be owned by the current user: ${directory}`);
+  }
+
+  if ((stats.mode & 0o077) !== 0) {
+    throw new UnsafePathError(
+      `${label} must not be readable or writable by other users: ${directory}`,
+    );
+  }
+}
+
+export async function ensurePrivateDirectory(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): Promise<void> {
+  await ensureRealDirectory(directory, label, {
+    recursive: options.recursive ?? true,
+    mode: options.mode ?? 0o700,
+  });
+
+  try {
+    await fs.promises.chmod(directory, options.mode ?? 0o700);
+  } catch (error) {
+    throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+  }
+
+  assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+}
+
+export function ensurePrivateDirectorySync(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): void {
+  ensureRealDirectorySync(directory, label, {
+    recursive: options.recursive ?? true,
+    mode: options.mode ?? 0o700,
+  });
+
+  try {
+    fs.chmodSync(directory, options.mode ?? 0o700);
+  } catch {
+    throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+  }
+
+  assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
+}
+
 export async function ensureContainedDirectoryPath(
   rootPath: string,
   targetDirectory: string,
@@ -157,6 +215,141 @@ export function isPathInsideOrEqual(parentPath: string, childPath: string): bool
   const child = path.resolve(childPath);
   const parentPrefix = parent.endsWith(path.sep) ? parent : parent + path.sep;
   return child === parent || child.startsWith(parentPrefix);
+}
+
+async function pathExists(candidatePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(candidatePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefined> {
+  try {
+    return await fs.promises.lstat(candidatePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function nearestExistingPath(candidatePath: string): Promise<string> {
+  let currentPath = candidatePath;
+  for (;;) {
+    if (await pathExists(currentPath)) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return currentPath;
+    }
+    currentPath = parentPath;
+  }
+}
+
+export function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+
+  if (!isPathInsideOrEqual(root, resolved)) {
+    throw new UnsafePathError(`Path resolves outside the allowed root: ${resolved}`);
+  }
+
+  return resolved;
+}
+
+export async function assertSafeWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  assertNoNul(rootPath, "Root path");
+  assertNoNul(candidatePath, label);
+
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  if (!isPathInsideOrEqual(root, candidate)) {
+    throw new UnsafePathError(`${label} resolves outside the allowed root.`);
+  }
+
+  const realRoot = await fs.promises.realpath(root);
+  const existingPath = await nearestExistingPath(candidate);
+  const realExistingPath = await fs.promises.realpath(existingPath);
+  if (!isPathInsideOrEqual(realRoot, realExistingPath)) {
+    throw new UnsafePathError(`${label} resolves outside the allowed root through a symlink.`);
+  }
+
+  const candidateStats = await lstatIfExists(candidate);
+  if (candidateStats?.isSymbolicLink()) {
+    throw new UnsafePathError(`${label} must not be a symlink.`);
+  }
+}
+
+export async function assertSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  const candidate = path.resolve(candidatePath);
+  await assertSafeWritePath(rootPath, candidate, label);
+
+  const candidateStats = await lstatIfExists(candidate);
+  if (candidateStats?.isDirectory()) {
+    throw new UnsafePathError(`${label} must be a file path, not a directory.`);
+  }
+}
+
+export async function prepareSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  const candidate = path.resolve(candidatePath);
+  const parentPath = path.dirname(candidate);
+
+  await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
+  await fs.promises.mkdir(parentPath, { recursive: true });
+  await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
+  await assertSafeFileWritePath(rootPath, candidate, label);
+}
+
+export async function writeFileNoFollow(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+  options: { overwrite?: boolean } = {},
+): Promise<void> {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const overwriteFlag = options.overwrite === false ? fs.constants.O_EXCL : fs.constants.O_TRUNC;
+  const fileHandle = await fs.promises.open(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
+    0o600,
+  );
+  let completed = false;
+
+  try {
+    if (typeof data === "string" || data instanceof Uint8Array) {
+      await fileHandle.writeFile(typeof data === "string" ? data : Buffer.from(data));
+    } else {
+      for await (const chunk of data) {
+        await fileHandle.write(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+      }
+    }
+    completed = true;
+  } finally {
+    try {
+      await fileHandle.close();
+    } finally {
+      if (!completed && options.overwrite === false) {
+        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
 }
 
 export function findWorkspaceControlDirectory(

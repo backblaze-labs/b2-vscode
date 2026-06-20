@@ -19,17 +19,21 @@ import {
 } from "@backblaze-labs/b2-sdk";
 import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
+import { createPrivateTempRoot } from "../utils/privateTempRoot";
 import {
   ensureContainedDirectoryPath,
+  ensurePrivateDirectory,
   ensureRealDirectory,
   pathExistsAsRealDirectory,
+  prepareSafeFileWritePath,
+  writeFileNoFollow,
 } from "./pathSafety";
 
 export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
 export const DEFAULT_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 
-const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
+export const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
@@ -281,7 +285,7 @@ export async function withTransferStallTimeout<T>(
       abortPromise(activity.signal),
     ]);
   } catch (error) {
-    normalizeTransferError(error, activity);
+    return normalizeTransferError(error, activity);
   } finally {
     activity.dispose();
   }
@@ -291,19 +295,20 @@ function transferTempDirectory(directory?: string): string {
   return directory ?? path.join(os.tmpdir(), TRANSFER_TEMP_DIR_NAME);
 }
 
-async function setPrivateDirectoryPermissions(directory: string): Promise<void> {
-  await fs.promises.chmod(directory, 0o700).catch((error) => {
-    logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
-  });
-}
-
-async function ensurePrivateDirectory(directory: string): Promise<void> {
-  await ensureRealDirectory(directory, "Transfer temp directory", {
-    recursive: true,
-    mode: 0o700,
-  });
-
-  await setPrivateDirectoryPermissions(directory);
+function transferTempRootForDownload(
+  destinationPath: string,
+  options: DownloadStreamToFileOptions,
+): { readonly directory: string; readonly owned: boolean } {
+  if (options.temporaryDirectory !== undefined) {
+    return { directory: options.temporaryDirectory, owned: false };
+  }
+  if (options.allowedRootDirectory !== undefined) {
+    return {
+      directory: path.join(path.dirname(destinationPath), ".b2-vscode-transfers"),
+      owned: false,
+    };
+  }
+  return { directory: createPrivateTempRoot(TRANSFER_TEMP_DIR_NAME), owned: true };
 }
 
 async function ensureTransferTempDirectory(
@@ -317,11 +322,17 @@ async function ensureTransferTempDirectory(
       "Workspace transfer temp directory",
       { recursive: true, mode: 0o700 },
     );
-    await setPrivateDirectoryPermissions(directory);
+    await ensurePrivateDirectory(directory, "Workspace transfer temp directory", {
+      recursive: true,
+      mode: 0o700,
+    });
     return;
   }
 
-  await ensurePrivateDirectory(directory);
+  await ensurePrivateDirectory(directory, "Transfer temp directory", {
+    recursive: true,
+    mode: 0o700,
+  });
 }
 
 function transferTempPath(directory: string): string {
@@ -664,25 +675,8 @@ async function moveIntoPlaceWithoutOverwrite(
   sourcePath: string,
   destinationPath: string,
 ): Promise<void> {
-  try {
-    await fs.promises.link(sourcePath, destinationPath);
-    await removeTempFile(sourcePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
-      throw error;
-    }
-
-    const destinationTempPath = destinationMoveTempPath(destinationPath);
-    try {
-      await fs.promises.copyFile(sourcePath, destinationTempPath, fs.constants.COPYFILE_EXCL);
-      await fs.promises.link(destinationTempPath, destinationPath);
-      await removeTempFile(sourcePath);
-      await removeTempFile(destinationTempPath);
-    } catch (copyError) {
-      await removeTempFile(destinationTempPath);
-      throw copyError;
-    }
-  }
+  await writeFileNoFollow(destinationPath, fs.createReadStream(sourcePath), { overwrite: false });
+  await removeTempFile(sourcePath);
 }
 
 async function moveIntoPlace(
@@ -720,11 +714,7 @@ async function ensureDownloadDestinationDirectory(
 ): Promise<string> {
   const destinationDirectory = path.dirname(destinationPath);
   if (allowedRootDirectory !== undefined) {
-    await ensureContainedDirectoryPath(
-      allowedRootDirectory,
-      destinationDirectory,
-      "Workspace download directory",
-    );
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
   } else {
     await ensureRealDirectory(destinationDirectory, "Download destination directory", {
       recursive: true,
@@ -743,7 +733,8 @@ export async function downloadStreamToFile(
     options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
     `Download to ${destinationPath}`,
   );
-  const temporaryDirectory = transferTempDirectory(options.temporaryDirectory);
+  const temporaryRoot = transferTempRootForDownload(destinationPath, options);
+  const temporaryDirectory = temporaryRoot.directory;
   let temporaryPath = "";
 
   try {
@@ -763,7 +754,7 @@ export async function downloadStreamToFile(
     await pipeline(
       readable,
       createDownloadSizeLimitTransform(maxBytes, destinationPath),
-      fs.createWriteStream(temporaryPath, { flags: "wx" }),
+      fs.createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }),
       {
         signal: activity.signal,
       },
@@ -784,8 +775,13 @@ export async function downloadStreamToFile(
     if (temporaryPath) {
       await removeTempFile(temporaryPath);
     }
-    normalizeTransferError(error, activity);
+    return normalizeTransferError(error, activity);
   } finally {
+    if (temporaryRoot.owned) {
+      await fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch((error) => {
+        logError(`Could not remove private transfer temp directory: ${temporaryDirectory}`, error);
+      });
+    }
     activity.dispose();
   }
 }

@@ -71,7 +71,7 @@ When GitHub Copilot is available, the extension registers language model tools:
 
 ### Tool safety
 
-Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable download link. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
+Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable single-file download link with an expiration from 1 to 604800 seconds. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 

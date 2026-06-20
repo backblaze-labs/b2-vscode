@@ -557,6 +557,39 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool rejects trailing localPath separators before downloading", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-directory-path-"));
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "downloads/" },
+              { getClient: () => client },
+            ),
+          /file path, not a directory path/i,
+        );
+      });
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(dir, "downloads")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("download tool requires an open workspace for local writes", async () => {
     let downloadWasCalled = false;
     const bucket = {
@@ -804,6 +837,50 @@ suite("B2 LM tool failure handling", () => {
 
       assert.strictEqual(downloadWasCalled, true);
       assert.strictEqual(fs.readFileSync(destinationPath, "utf8"), "keep me");
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool sanitizes unsafe default basenames before writing", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-name-"));
+    const unsafeNames = ["reports/invoice\u202Egnp.exe", "reports/aux"];
+    const downloadedPaths: string[] = [];
+    const bucket = {
+      async download() {
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        for (const remotePath of unsafeNames) {
+          const result = await downloadFileOperation.execute(
+            { bucket: "b", path: remotePath },
+            { getClient: () => client },
+          );
+          downloadedPaths.push(result.localPath);
+          assert.match(path.basename(result.localPath), /^__b2_/);
+          assert.notStrictEqual(path.basename(result.localPath), path.basename(remotePath));
+          assert.strictEqual(fs.readFileSync(result.localPath, "utf8"), "downloaded");
+        }
+      });
+
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, "invoice\u202Egnp.exe")), false);
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, "aux")), false);
+      assert.strictEqual(new Set(downloadedPaths).size, unsafeNames.length);
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }

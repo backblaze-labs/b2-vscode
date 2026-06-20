@@ -15,14 +15,11 @@ import { TEMP_DIR_NAME } from "../constants";
 import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
 import { log } from "../logger";
 import {
-  ensureRealDirectorySync,
+  ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
 } from "./pathSafety";
-import {
-  buildTempFilePath,
-  prepareSafeFileWritePath,
-} from "../utils/localPaths";
+import { buildTempFilePath, prepareSafeFileWritePath } from "../utils/localPaths";
 import { createPrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -173,16 +170,10 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
-    ensureRealDirectorySync(this.tempRoot, "Temp file cache root", {
+    ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
       recursive: true,
       mode: 0o700,
     });
-
-    try {
-      fs.chmodSync(this.tempRoot, 0o700);
-    } catch {
-      // Best effort: existing directories may not allow chmod on every platform.
-    }
   }
 
   dispose(): void {

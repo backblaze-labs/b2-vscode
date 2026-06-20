@@ -59,7 +59,7 @@ const manifestContract = {
     "b2_deleteFile",
     "b2_presignUrl",
   ],
-  contributesSha256: "0dc8b303b5903e22741ea44996ef8c84bd3c5497f7afd618455e7ccf2ef0e53c",
+  contributesSha256: "e436b4db542e6d4f8ec7d73ab9fd17e4e6ad47b0f227f61a4ae7a4807777a969",
 };
 
 function stableStringify(value) {

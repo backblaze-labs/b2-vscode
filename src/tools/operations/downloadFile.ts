@@ -10,11 +10,10 @@ import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
 import {
-  b2KeyBasename,
-  ensureContainedDirectoryPath,
   findWorkspaceControlDirectory,
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
+import { prepareSafeFileWritePath, resolveDownloadSavePath } from "../../utils/localPaths";
 import {
   sanitizePathError,
   type PathMessageReplacement,
@@ -99,30 +98,25 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
   throw new Error(`downloadFile refuses to overwrite existing workspace file: ${destinationPath}`);
 }
 
-async function ensureWorkspaceDestinationDirectory(
-  workspaceRoot: string,
-  destinationPath: string,
-): Promise<void> {
-  await ensureContainedDirectoryPath(
-    workspaceRoot,
-    path.dirname(path.resolve(destinationPath)),
-    "Workspace download directory",
-  );
-}
-
 interface WorkspaceDestination {
   readonly path: string;
   readonly relativePath: string;
   readonly workspaceRoot: string;
 }
 
-async function workspacePath(relativePath: string): Promise<WorkspaceDestination> {
+async function workspacePath(remotePath: string, localPath?: string): Promise<WorkspaceDestination> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error(WORKSPACE_REQUIRED_MESSAGE);
   }
   const workspaceRoot = workspaceFolder.uri.fsPath;
-  const destinationPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
+  if (localPath) {
+    assertNoControlDirectoryTarget(
+      workspaceRoot,
+      resolveContainedRelativePath(workspaceRoot, localPath, "localPath"),
+    );
+  }
+  const destinationPath = await resolveDownloadSavePath(workspaceRoot, remotePath, localPath);
   const destination = {
     path: destinationPath,
     relativePath: path.relative(workspaceRoot, destinationPath),
@@ -131,7 +125,7 @@ async function workspacePath(relativePath: string): Promise<WorkspaceDestination
   try {
     assertNoControlDirectoryTarget(workspaceRoot, destinationPath);
     await assertDestinationDoesNotExist(destinationPath);
-    await ensureWorkspaceDestinationDirectory(workspaceRoot, destinationPath);
+    await prepareSafeFileWritePath(workspaceRoot, destinationPath, "downloadFile target");
     // Re-check after creating parent directories to avoid overwriting a target
     // that appeared while validation was in progress.
     await assertDestinationDoesNotExist(destinationPath);
@@ -158,13 +152,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     }
 
     // Determine local save path
-    let destination: WorkspaceDestination;
-    if (params.localPath) {
-      destination = await workspacePath(params.localPath);
-    } else {
-      const fileName = b2KeyBasename(params.path);
-      destination = await workspacePath(fileName);
-    }
+    const destination = await workspacePath(params.path, params.localPath);
     const savePath = destination.path;
     const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
 

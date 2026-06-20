@@ -10,14 +10,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { after } from "node:test";
 import * as fc from "fast-check";
+import { buildTempFilePath, resolveDownloadSavePath } from "../../utils/localPaths";
 import {
   assertSafeFileWritePath,
   assertSafeWritePath,
-  buildTempFilePath,
   prepareSafeFileWritePath,
-  resolveDownloadSavePath,
   writeFileNoFollow,
-} from "../../utils/localPaths";
+} from "../../services/pathSafety";
 import { createPrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
@@ -123,6 +122,26 @@ test("natural B2 basenames are preserved for default download and temp paths", a
   assert.notEqual(bucketPathSegments[0], "bucket/with\\slash");
   assert.notEqual(bucketPathSegments[0], "");
   assert.equal(bucketPathSegments[1], "safe.txt");
+});
+
+test("unsafe B2 basenames are encoded for default downloads", async () => {
+  const bidiName = "invoice\u202Egnp.exe";
+  const reservedName = "aux";
+  const hiddenName = ".npmrc";
+
+  for (const unsafeName of [bidiName, reservedName, hiddenName]) {
+    const destinationPath = await resolveDownloadSavePath(workspaceRoot, `reports/${unsafeName}`);
+    assert.notEqual(path.basename(destinationPath), unsafeName);
+    assert.match(path.basename(destinationPath), /^__b2_/);
+  }
+});
+
+test("unsafe localPath segments are encoded for downloads", async () => {
+  const destinationPath = await resolveDownloadSavePath(workspaceRoot, "safe.txt", "reports/CON");
+
+  assert.equal(path.basename(path.dirname(destinationPath)), "reports");
+  assert.notEqual(path.basename(destinationPath), "CON");
+  assert.match(path.basename(destinationPath), /^__b2_/);
 });
 
 test("empty B2 path segments are preserved in temp cache paths", () => {
@@ -341,6 +360,46 @@ test("presign operation supports object names with empty path segments", async (
   assert.deepEqual(authorizationRequests, [["a//b.txt", 60]]);
   assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
   assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
+});
+
+test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {
+  for (const filePath of ["", "reports/"]) {
+    let bucketLookupWasCalled = false;
+    const extras = {
+      getClient: () => ({
+        async getBucket() {
+          bucketLookupWasCalled = true;
+          throw new Error("bucket lookup should not run");
+        },
+      }),
+    } as unknown as ToolExtras;
+
+    await assert.rejects(
+      () => presignUrlOperation.execute({ bucket: "bucket", path: filePath }, extras),
+      /single file|folder prefix|empty/i,
+    );
+    assert.equal(bucketLookupWasCalled, false);
+  }
+});
+
+test("presign operation rejects invalid expiresIn before B2 calls", async () => {
+  for (const expiresIn of [-1, 0, 1.5, 604801, Number.NaN]) {
+    let bucketLookupWasCalled = false;
+    const extras = {
+      getClient: () => ({
+        async getBucket() {
+          bucketLookupWasCalled = true;
+          throw new Error("bucket lookup should not run");
+        },
+      }),
+    } as unknown as ToolExtras;
+
+    await assert.rejects(
+      () => presignUrlOperation.execute({ bucket: "bucket", path: "file.txt", expiresIn }, extras),
+      /expiresIn must be an integer/,
+    );
+    assert.equal(bucketLookupWasCalled, false);
+  }
 });
 
 test("presigned URL file-name encoding is per-segment reversible", () => {

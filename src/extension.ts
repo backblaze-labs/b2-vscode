@@ -13,6 +13,7 @@ import { createConfiguredB2Client } from "./services/b2";
 import {
   cleanupStaleTransferTempFiles,
   cleanupWorkspaceTransferTempFiles,
+  TRANSFER_TEMP_DIR_NAME,
 } from "./services/fileTransfers";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
@@ -20,14 +21,21 @@ import { B2TreeProvider } from "./providers/b2TreeProvider";
 import { B2StatusBar } from "./ui/statusBar";
 import { registerCommands } from "./commands";
 import { registerB2Tools } from "./tools/registration";
-import { VIEW_BUCKETS } from "./constants";
+import { TEMP_DIR_NAME, VIEW_BUCKETS } from "./constants";
 import { initLogger, log, logError } from "./logger";
 import { formatB2UserMessage } from "./errors";
+import { cleanupStalePrivateTempRoots } from "./utils/privateTempRoot";
 
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
 
 function scheduleTempCleanups(context: vscode.ExtensionContext): void {
+  void cleanupStalePrivateTempRoots(TEMP_DIR_NAME).catch((error) => {
+    logError("Could not clean stale temp cache roots during activation", error);
+  });
+  void cleanupStalePrivateTempRoots(TRANSFER_TEMP_DIR_NAME).catch((error) => {
+    logError("Could not clean stale transfer temp roots during activation", error);
+  });
   void cleanupStaleTransferTempFiles().catch((error) => {
     logError("Could not clean stale transfer temp files during activation", error);
   });

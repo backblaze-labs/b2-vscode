@@ -6,12 +6,13 @@
 
 import type { B2ToolDefinition } from "../types";
 import { inputText } from "./inputText";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../presignUrlLimits";
 
 export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
   displayName: "B2: Pre-sign URL",
   description:
-    "Generates a pre-signed download URL for a file in a B2 bucket. The URL is valid for the specified duration (default: 1 hour).",
+    "Generates a pre-signed download URL for one file in a B2 bucket. Folder-prefix and bucket-wide authorization tokens are rejected. The URL is valid for the specified duration (default: 1 hour).",
   parameters: {
     type: "object",
     properties: {
@@ -21,10 +22,13 @@ export const presignUrlTool: B2ToolDefinition = {
       },
       path: {
         type: "string",
-        description: 'Full file path within the bucket. Example: "reports/q4.pdf"',
+        description:
+          'Full single-file path within the bucket. Must not be empty or end with "/". Example: "reports/q4.pdf"',
       },
       expiresIn: {
-        type: "number",
+        type: "integer",
+        minimum: 1,
+        maximum: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
         description:
           "URL validity duration in seconds. Default: 3600 (1 hour). Maximum: 604800 (7 days).",
       },
