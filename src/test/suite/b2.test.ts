@@ -524,6 +524,40 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("creates transfer temp files without group or other access", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-mode-"));
+    const temporaryDirectory = path.join(dir, "temp");
+    const destination = path.join(dir, "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    let tempMode: number | undefined;
+    fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      if (path.resolve(String(newPath)) === path.resolve(destination)) {
+        tempMode = fs.statSync(oldPath).mode & 0o777;
+      }
+      await originalRename(oldPath, newPath);
+    };
+
+    try {
+      await downloadStreamToFile(stream, destination, { temporaryDirectory });
+
+      assert.strictEqual(tempMode, 0o600);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("refuses existing destinations when overwrite is disabled", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-no-overwrite-"));
     const destination = path.join(dir, "file.bin");
@@ -1515,6 +1549,36 @@ suite("B2 transfer helpers", () => {
       assert.deepStrictEqual(fs.readdirSync(temporaryDirectory), []);
     } finally {
       fs.promises.chmod = originalChmod;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects public transfer temp directories", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-public-"));
+    const temporaryDirectory = path.join(dir, "temp");
+    const destination = path.join(dir, "download.bin");
+    fs.mkdirSync(temporaryDirectory, { mode: 0o777 });
+    fs.chmodSync(temporaryDirectory, 0o777);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { temporaryDirectory }),
+        /group or other users|current user/i,
+      );
+
+      assert.deepStrictEqual(fs.readdirSync(temporaryDirectory), []);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -2916,10 +2980,19 @@ suite("B2 transfer helpers", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-finalize-stall-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let listCalls = 0;
+    let cancelCalls = 0;
 
     const bucket = {
       async upload() {
         assert.fail("Expected non-empty files to use the streaming upload path");
+      },
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        return { files: [], nextFileId: null };
+      },
+      async cancelLargeFile() {
+        cancelCalls += 1;
       },
       file() {
         return {
@@ -2941,6 +3014,9 @@ suite("B2 transfer helpers", () => {
           }),
         UploadIndeterminateError,
       );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.strictEqual(listCalls, 0);
+      assert.strictEqual(cancelCalls, 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -3393,6 +3469,24 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects public temp cache roots", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-public-"));
+    const tempRoot = path.join(dir, "cache");
+    fs.mkdirSync(tempRoot, { mode: 0o777 });
+    fs.chmodSync(tempRoot, 0o777);
+
+    try {
+      assert.throws(() => new TempFileManager(tempRoot), /group or other users|current user/i);
+      assert.deepStrictEqual(fs.readdirSync(tempRoot), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects temp cache roots outside system temp", () => {
     const unsafeRoot = path.parse(os.tmpdir()).root;
 
@@ -3525,6 +3619,7 @@ suite("B2 transfer helpers", () => {
     const target = path.join(dir, "target");
     const bucketLink = path.join(tempRoot, "bucket");
     fs.mkdirSync(tempRoot);
+    fs.chmodSync(tempRoot, 0o700);
     fs.mkdirSync(target);
     const symlinkCreated = createDirectorySymlink(target, bucketLink);
     const manager = new TempFileManager(tempRoot);

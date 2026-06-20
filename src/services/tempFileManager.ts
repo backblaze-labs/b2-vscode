@@ -19,6 +19,7 @@ import {
 } from "./fileTransfers";
 import { log, logError } from "../logger";
 import {
+  ensureContainedDirectoryPath,
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
@@ -217,6 +218,13 @@ export class TempFileManager implements vscode.Disposable {
     });
   }
 
+  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
+    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
+      recursive: true,
+      mode: 0o700,
+    });
+  }
+
   dispose(): void {
     this.cleanup();
   }
@@ -288,8 +296,11 @@ export class TempFileManager implements vscode.Disposable {
     assertNoPathTraversalSegments(bucketName, "B2 bucket name");
     assertNoPathTraversalSegments(fileName, "B2 file name");
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    const cacheDirectory = path.dirname(localPath);
+    await this.ensureCacheDirectoryPath(cacheDirectory);
     await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
     await removeExistingCachePath(localPath);
+    await this.ensureCacheDirectoryPath(cacheDirectory);
     await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
 
     await downloadStreamToFile(stream, localPath, {

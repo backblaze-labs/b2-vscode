@@ -9,7 +9,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { logError } from "../logger";
-import { ensureRealDirectory, pathExistsAsRealDirectory } from "./pathSafety";
+import {
+  ensurePrivateDirectory as ensurePrivateDirectoryPath,
+  pathExistsAsRealDirectory,
+} from "./pathSafety";
 
 const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
@@ -18,6 +21,7 @@ const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const MAX_CLEANUP_THROTTLE_ENTRIES = 256;
 
 const lastCleanupByDirectory = new Map<string, number>();
 
@@ -26,13 +30,9 @@ export function transferTempDirectory(directory?: string): string {
 }
 
 export async function ensurePrivateDirectory(directory: string): Promise<void> {
-  await ensureRealDirectory(directory, "Transfer temp directory", {
+  await ensurePrivateDirectoryPath(directory, "Transfer temp directory", {
     recursive: true,
     mode: 0o700,
-  });
-
-  await fs.promises.chmod(directory, 0o700).catch((error) => {
-    logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
   });
 }
 
@@ -66,16 +66,38 @@ function isTransferTempFile(name: string): boolean {
   return name.startsWith(TRANSFER_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
 }
 
+function isCrossDeviceMoveTempFile(name: string): boolean {
+  return name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
+}
+
+function isReplaceBackupTempFile(name: string): boolean {
+  return name.startsWith(REPLACE_BACKUP_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
+}
+
 function isDestinationTempFile(name: string): boolean {
-  return (
-    (name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX) ||
-      name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) &&
-    name.endsWith(TRANSFER_TEMP_SUFFIX)
-  );
+  return isCrossDeviceMoveTempFile(name) || isReplaceBackupTempFile(name);
+}
+
+function pruneCleanupThrottle(now: number): void {
+  for (const [key, previous] of lastCleanupByDirectory) {
+    if (now - previous >= STALE_CLEANUP_INTERVAL_MS) {
+      lastCleanupByDirectory.delete(key);
+    }
+  }
+
+  while (lastCleanupByDirectory.size >= MAX_CLEANUP_THROTTLE_ENTRIES) {
+    const oldestKey = lastCleanupByDirectory.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      return;
+    }
+    lastCleanupByDirectory.delete(oldestKey);
+  }
 }
 
 function shouldRunThrottledCleanup(key: string): boolean {
   const now = Date.now();
+  pruneCleanupThrottle(now);
+
   const previous = lastCleanupByDirectory.get(key);
   if (previous !== undefined && now - previous < STALE_CLEANUP_INTERVAL_MS) {
     return false;
@@ -158,7 +180,7 @@ export async function cleanupStaleDestinationTempFiles(options: {
 
   const cutoff = Date.now() - maxAgeMs;
   for (const entry of entries) {
-    if (!isDestinationTempFile(entry)) {
+    if (!isCrossDeviceMoveTempFile(entry)) {
       continue;
     }
 

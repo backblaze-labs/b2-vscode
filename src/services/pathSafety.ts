@@ -163,7 +163,7 @@ function assertPrivateDirectoryStats(stats: fs.Stats, directory: string, label: 
 
   if ((stats.mode & 0o077) !== 0) {
     throw new UnsafePathError(
-      `${label} must not be readable or writable by other users: ${directory}`,
+      `${label} must not be accessible by group or other users: ${directory}`,
     );
   }
 }
@@ -603,6 +603,88 @@ export function findWorkspaceSecretPath(
     }
   }
   return undefined;
+}
+
+export async function assertSafeFileReadPath(
+  workspaceRoot: string,
+  targetPath: string,
+): Promise<void> {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(targetPath);
+
+  if (!isPathInsideOrEqual(resolvedRoot, resolvedTarget)) {
+    throw new UnsafePathError("localPath resolves outside the workspace.");
+  }
+
+  const lexicalControlDirectory = findWorkspaceControlDirectory(resolvedRoot, resolvedTarget);
+  if (lexicalControlDirectory) {
+    throw new UnsafePathError(
+      `localPath must not target workspace control directory ${lexicalControlDirectory}.`,
+    );
+  }
+
+  const [rootRealPath, targetRealPath] = await Promise.all([
+    fs.promises.realpath(resolvedRoot),
+    fs.promises.realpath(resolvedTarget),
+  ]);
+  if (!isPathInsideOrEqual(rootRealPath, targetRealPath)) {
+    throw new UnsafePathError("localPath resolves outside the open workspace.");
+  }
+
+  const realControlDirectory = findWorkspaceControlDirectory(rootRealPath, targetRealPath);
+  if (realControlDirectory) {
+    throw new UnsafePathError(
+      `localPath must not target workspace control directory ${realControlDirectory}.`,
+    );
+  }
+
+  const stats = await fs.promises.stat(resolvedTarget);
+  if (!stats.isFile()) {
+    throw new UnsafePathError(`localPath must target a regular file: ${resolvedTarget}`);
+  }
+}
+
+export interface ResolveWorkspaceFilePathOptions {
+  readonly access: "read" | "write-new";
+  readonly label?: string;
+}
+
+async function assertFileDoesNotExist(filePath: string): Promise<void> {
+  try {
+    await fs.promises.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  throw new UnsafePathError(`localPath refuses to overwrite existing workspace file: ${filePath}`);
+}
+
+export async function resolveWorkspaceFilePath(
+  workspaceRoot: string,
+  relativePath: string,
+  options: ResolveWorkspaceFilePathOptions,
+): Promise<string> {
+  const label = options.label ?? "localPath";
+  const resolvedPath = resolveContainedRelativePath(workspaceRoot, relativePath, label);
+
+  if (options.access === "read") {
+    await assertSafeFileReadPath(workspaceRoot, resolvedPath);
+    return resolvedPath;
+  }
+
+  await assertSafeFileWritePath(workspaceRoot, resolvedPath);
+  await assertFileDoesNotExist(resolvedPath);
+  await ensureContainedDirectoryPath(
+    workspaceRoot,
+    path.dirname(resolvedPath),
+    "Workspace localPath directory",
+  );
+  await assertSafeFileWritePath(workspaceRoot, resolvedPath);
+  await assertFileDoesNotExist(resolvedPath);
+  return resolvedPath;
 }
 
 export function resolveContainedRelativePath(

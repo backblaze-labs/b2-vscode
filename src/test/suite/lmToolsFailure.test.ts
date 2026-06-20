@@ -494,11 +494,26 @@ suite("B2 LM tool failure handling", () => {
   });
 
   test("all tool operations report missing authentication", async () => {
-    for (const entry of operations) {
-      await assert.rejects(
-        () => entry.operation.execute(entry.input, noClientExtras),
-        /Not authenticated/i,
-      );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-order-"));
+    fs.writeFileSync(path.join(dir, "a.txt"), "hello");
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        for (const entry of operations) {
+          const input =
+            entry.name === "uploadFile"
+              ? { bucket: "b", localPath: "a.txt" }
+              : entry.name === "downloadFile"
+                ? { bucket: "b", path: "a.txt", localPath: "download.txt" }
+                : entry.input;
+          await assert.rejects(
+            () => entry.operation.execute(input, noClientExtras),
+            /Not authenticated/i,
+          );
+        }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -951,6 +966,7 @@ suite("B2 LM tool failure handling", () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-existing-"));
     const existingPath = path.join(workspaceDir, "payload.txt");
     fs.writeFileSync(existingPath, "keep me");
+    let getBucketWasCalled = false;
     let downloadWasCalled = false;
     const bucket = {
       async download() {
@@ -960,6 +976,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        getBucketWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -976,6 +993,7 @@ suite("B2 LM tool failure handling", () => {
         );
       });
 
+      assert.strictEqual(getBucketWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.readFileSync(existingPath, "utf8"), "keep me");
     } finally {
