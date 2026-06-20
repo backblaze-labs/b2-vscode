@@ -67,7 +67,12 @@ async function ensureWorkspaceDestinationDirectory(
   );
 }
 
-async function workspacePath(relativePath: string): Promise<string> {
+interface WorkspaceDestination {
+  readonly path: string;
+  readonly workspaceRoot: string;
+}
+
+async function workspacePath(relativePath: string): Promise<WorkspaceDestination> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error(WORKSPACE_REQUIRED_MESSAGE);
@@ -83,7 +88,7 @@ async function workspacePath(relativePath: string): Promise<string> {
   // Re-check after creating parent directories to avoid overwriting a target
   // that appeared while validation was in progress.
   await assertDestinationDoesNotExist(destinationPath);
-  return destinationPath;
+  return { path: destinationPath, workspaceRoot: workspaceFolder.uri.fsPath };
 }
 
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
@@ -103,13 +108,14 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     }
 
     // Determine local save path
-    let savePath: string;
+    let destination: WorkspaceDestination;
     if (params.localPath) {
-      savePath = await workspacePath(params.localPath);
+      destination = await workspacePath(params.localPath);
     } else {
       const fileName = b2KeyBasename(params.path);
-      savePath = await workspacePath(fileName);
+      destination = await workspacePath(fileName);
     }
+    const savePath = destination.path;
 
     const size = await withCancellableTransferProgress(
       { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
@@ -131,6 +137,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
         return downloadStreamToFile(body, savePath, {
           signal,
           overwrite: false,
+          allowedRootDirectory: destination.workspaceRoot,
         });
       },
     );

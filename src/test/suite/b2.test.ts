@@ -682,8 +682,8 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("bounds unfinished upload cleanup before streaming", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-cleanup-bound-"));
+  test("does not pre-clean unfinished uploads before streaming", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-no-pre-clean-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     const uploaded: number[] = [];
@@ -739,7 +739,7 @@ suite("B2 transfer helpers", () => {
       });
 
       assert.strictEqual(result.fileId, "uploaded-id");
-      assert.strictEqual(listCalls, 2);
+      assert.strictEqual(listCalls, 0);
       assert.strictEqual(cancelCalls, 0);
       assert.deepStrictEqual(uploaded, [1, 2, 3]);
     } finally {
@@ -747,7 +747,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("does not cancel fresh unfinished uploads for the same remote key", async () => {
+  test("does not cancel remote unfinished uploads before streaming", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-concurrent-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
@@ -810,15 +810,17 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("cancels stale extension-owned unfinished uploads", async () => {
+  test("does not trust spoofable remote unfinished upload metadata", async () => {
     const staleId = largeFileId("stale-upload");
     const freshId = largeFileId("fresh-upload");
     const unmarkedId = largeFileId("unmarked-upload");
     const canceled: unknown[] = [];
     const now = Date.now();
+    let listCalls = 0;
 
     const bucket = {
       async listUnfinishedLargeFiles() {
+        listCalls += 1;
         return {
           files: [
             {
@@ -852,7 +854,8 @@ suite("B2 transfer helpers", () => {
 
     await cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupMaxAgeMs: 1_000 });
 
-    assert.deepStrictEqual(canceled, [staleId]);
+    assert.strictEqual(listCalls, 0);
+    assert.deepStrictEqual(canceled, []);
   });
 
   test("uses single-upload path for empty files", async () => {

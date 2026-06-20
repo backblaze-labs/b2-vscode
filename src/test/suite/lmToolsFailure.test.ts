@@ -425,6 +425,61 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool rejects parent directory symlink swaps during transfer", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-swap-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-swap-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const outsideTarget = path.join(outsideDir, "payload.txt");
+    const probeLink = path.join(workspaceDir, "probe");
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    let downloadWasCalled = false;
+
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        fs.rmSync(downloadDir, { recursive: true, force: true });
+        fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("do not write outside"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
+              { getClient: () => client },
+            ),
+          /real directory|symlink|outside the allowed root/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("download tool rejects workspace control directories before writing", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-control-"));
     let downloadWasCalled = false;
