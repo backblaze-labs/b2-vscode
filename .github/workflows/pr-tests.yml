@@ -15,6 +15,7 @@ jobs:
   vscode-tests:
     name: VS Code Extension Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout source
@@ -34,10 +35,12 @@ jobs:
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Compile extension
+        timeout-minutes: 10
         working-directory: source
         run: npm run compile
 
       - name: Lint extension
+        timeout-minutes: 10
         working-directory: source
         run: npm run lint
 

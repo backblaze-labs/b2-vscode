@@ -212,13 +212,7 @@ function assertNoPlainNpmCi(workflow, workflowName) {
 
 function assertAllNpmCiPinned(workflow, workflowName) {
   const offenders = allRunSteps(workflow).filter(
-    ({ run }) =>
-      /\bnpm\s+ci\b/.test(run) &&
-      !hasTokens(run, [
-        "--registry=https://registry.npmjs.org/",
-        "--userconfig=/dev/null",
-        "--globalconfig=/tmp/b2-vscode-empty-npm-globalconfig",
-      ]),
+    ({ run }) => /\bnpm\s+ci\b/.test(run) && !hasTrustedNpmInstallConfig(run),
   );
 
   assert(
@@ -237,13 +231,17 @@ function assertNoMutableAuditScript(workflow) {
   assert(offenders.length === 0, "CI must not call the PR-mutable audit script.");
 }
 
+function hasTrustedNpmInstallConfig(command) {
+  return (
+    hasTokens(command, ["--registry=https://registry.npmjs.org/", "--userconfig=/dev/null"]) &&
+    (command.includes("--globalconfig=/tmp/b2-vscode-empty-npm-globalconfig") ||
+      command.includes('--globalconfig="$EMPTY_NPM_GLOBALCONFIG"'))
+  );
+}
+
 function assertTrustedNpmInstallConfig(label, command) {
   assert(
-    hasTokens(command, [
-      "--registry=https://registry.npmjs.org/",
-      "--userconfig=/dev/null",
-      "--globalconfig=/tmp/b2-vscode-empty-npm-globalconfig",
-    ]),
+    hasTrustedNpmInstallConfig(command),
     `${label} must pin npm registry, userconfig, and globalconfig.`,
   );
 }
@@ -460,6 +458,13 @@ function assertRunsInTrustedSource(label, step) {
   );
 }
 
+function assertHasTimeout(label, config) {
+  assert(
+    Number.isInteger(config?.["timeout-minutes"]) && config["timeout-minutes"] > 0,
+    `${label} must declare timeout-minutes.`,
+  );
+}
+
 function assertTestWorkflow(testWorkflow) {
   assert(
     workflowHasEvent(testWorkflow, "schedule"),
@@ -625,6 +630,7 @@ function assertPrTestsWorkflow(prTestsWorkflow) {
     testJob.if === undefined,
     "VS Code Extension Tests job must run for every pull_request event.",
   );
+  assertHasTimeout("VS Code Extension Tests job", testJob);
   const testSourceCheckoutIndex = assertUnprivilegedSourceCheckout(testJob, "VS Code test job");
   const testSetupNodeIndex = stepIndex(testJob, "VS Code test node setup", (step) =>
     String(step.uses ?? "").startsWith("actions/setup-node@"),
@@ -658,7 +664,9 @@ function assertPrTestsWorkflow(prTestsWorkflow) {
     ["VS Code test lint step", lintIndex],
     ["VS Code test step", testRunIndex],
   ]) {
-    assertRunsInSource(label, stepByIndex(testJob, index));
+    const step = stepByIndex(testJob, index);
+    assertRunsInSource(label, step);
+    assertHasTimeout(label, step);
   }
   assert(
     !testJob.steps.some((step) => normalizedRun(step).includes("scripts/run-npm-audit.js")),
