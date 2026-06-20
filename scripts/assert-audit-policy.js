@@ -8,6 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawnSync } = require("child_process");
 const {
+  AUDIT_POLICY_STRICT_JSON_NOTICE,
   collectAuditFindings,
   dateOnlyDaysFromNow,
   isAcceptedFinding,
@@ -15,7 +16,29 @@ const {
   validateAuditPolicy,
 } = require("./audit-policy");
 
-const repoRoot = path.join(__dirname, "..");
+function parseArgs(argv) {
+  const args = {
+    repoRoot: path.join(__dirname, ".."),
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg !== "--repo-root") {
+      throw new Error(`unknown argument: ${arg}`);
+    }
+
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error("--repo-root requires a path value.");
+    }
+    args.repoRoot = path.resolve(value);
+    index += 1;
+  }
+
+  return args;
+}
+
+const { repoRoot } = parseArgs(process.argv.slice(2));
 
 function fail(message) {
   console.error(`Audit policy guardrail failed: ${message}`);
@@ -47,7 +70,7 @@ function acceptedAdvisory(overrides = {}) {
     package: "example-package",
     owner: "security-team",
     reason: "No patched version is available yet.",
-    reviewBy: dateOnlyDaysFromNow(7),
+    reviewBy: dateOnlyDaysFromNow(14),
     paths: ["node_modules/example-package"],
     ...overrides,
   };
@@ -127,6 +150,9 @@ function assertCodeOwnerProtection() {
 
   for (const requiredPath of [
     "/audit-policy.jsonc",
+    "/package.json",
+    "/package-lock.json",
+    "/.npmrc",
     "/scripts/audit-policy.js",
     "/scripts/run-npm-audit.js",
     "/scripts/retry.sh",
@@ -141,11 +167,15 @@ function assertCodeOwnerProtection() {
 }
 
 function assertRetryPropagatesFailure() {
-  const result = spawnSync("bash", ["scripts/retry.sh", "node", "-e", "process.exit(7)"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: { ...process.env, RETRY_ATTEMPTS: "1" },
-  });
+  const result = spawnSync(
+    "bash",
+    [path.join(__dirname, "retry.sh"), "node", "-e", "process.exit(7)"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, RETRY_ATTEMPTS: "1" },
+    },
+  );
 
   if (result.status !== 7) {
     throw new Error(
@@ -167,6 +197,7 @@ try {
   // Validator self-checks: these do not inspect repository state, they prove
   // the guard rejects known policy bypasses before CI trusts it.
   expectValid("time-boxed accepted advisory", (auditPolicy) => {
+    auditPolicy._comment = AUDIT_POLICY_STRICT_JSON_NOTICE;
     auditPolicy.acceptedAdvisories = [acceptedAdvisory()];
   });
   expectInvalid("lowered audit threshold", (auditPolicy) => {
@@ -183,6 +214,12 @@ try {
   });
   expectInvalid("unexpected policy key", (auditPolicy) => {
     auditPolicy.allowlist = ["GHSA-1234-5678-9abc"];
+  });
+  expectInvalid("removed strict JSON notice", (auditPolicy) => {
+    auditPolicy._comment = undefined;
+  });
+  expectInvalid("weakened strict JSON notice", (auditPolicy) => {
+    auditPolicy._comment = "comments are fine";
   });
   expectInvalid("expired accepted advisory", (auditPolicy) => {
     auditPolicy.acceptedAdvisories = [acceptedAdvisory({ reviewBy: dateOnlyDaysFromNow(-1) })];

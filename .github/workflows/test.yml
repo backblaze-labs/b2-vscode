@@ -12,6 +12,7 @@ on:
       - "audit-policy.jsonc"
       - "package.json"
       - "package-lock.json"
+      - ".npmrc"
       - "README.md"
       - "SECURITY.md"
       - "tsconfig*.json"
@@ -22,7 +23,7 @@ on:
       - ".github/dependabot.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/test.yml"
-  pull_request:
+  pull_request_target:
     branches: [main]
 
 concurrency:
@@ -39,9 +40,20 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Checkout trusted gate source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -49,44 +61,59 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: source/package-lock.json
 
       - name: Assert lifecycle scripts stay disabled
-        run: node scripts/assert-ignore-scripts-install.js
+        working-directory: source
+        run: node ../trusted-source/scripts/assert-ignore-scripts-install.js
 
       - name: Install dependencies without lifecycle scripts
         timeout-minutes: 10
         # Keep this lifecycle-disabled. If a future dependency needs a build
         # step, add a targeted npm rebuild after the audit and document why.
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit policy guardrails
-        run: node scripts/assert-audit-policy.js
+        working-directory: source
+        run: node ../trusted-source/scripts/assert-audit-policy.js --repo-root "$PWD"
 
       - name: Assert audit gate fails closed
         timeout-minutes: 10
         env:
           RETRY_EXIT_CODES: "2"
           npm_config_ignore_scripts: "true"
-        run: bash scripts/retry.sh node scripts/assert-audit-gate-fixture.js
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh node ../trusted-source/scripts/assert-audit-gate-fixture.js
 
       - name: Audit dependency advisories
         timeout-minutes: 10
         env:
           RETRY_EXIT_CODES: "2"
           npm_config_ignore_scripts: "true"
+        working-directory: source
         # Inline this instead of the package script because package.json is
-        # PR-mutable; assert-audit-policy.js keeps the local script in sync.
-        run: bash scripts/retry.sh node scripts/run-npm-audit.js
+        # PR-mutable; trusted-source stays pinned to the protected base branch
+        # for pull_request_target runs.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            bash ../trusted-source/scripts/retry.sh node ../trusted-source/scripts/run-npm-audit.js --directory "$PWD" --policy "$PWD/audit-policy.jsonc" --trusted-base-ref "${{ github.event.pull_request.base.ref }}"
+          else
+            bash ../trusted-source/scripts/retry.sh node ../trusted-source/scripts/run-npm-audit.js --directory "$PWD" --policy "$PWD/audit-policy.jsonc"
+          fi
 
       - name: Verify dependency signatures
         timeout-minutes: 10
         env:
           npm_config_ignore_scripts: "true"
-        run: bash scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit workflow guardrails
-        run: node scripts/assert-audit-workflow.js
+        working-directory: source
+        run: NODE_PATH="$PWD/node_modules" node ../trusted-source/scripts/assert-audit-workflow.js --repo-root "$PWD"
 
       - name: Run VS Code tests with discovery guard
         timeout-minutes: 20
+        working-directory: source
         run: xvfb-run -a npm test

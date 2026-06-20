@@ -83,7 +83,14 @@ jobs:
           DEPENDENCY_GATE_BREAK_GLASS: ${{ inputs.dependency_gate_break_glass }}
           GITHUB_ACTOR: ${{ github.actor }}
         run: |
-          echo "::warning title=Dependency gate break-glass::${GITHUB_ACTOR}: ${DEPENDENCY_GATE_BREAK_GLASS}"
+          {
+            echo "### Dependency gate break-glass"
+            echo ""
+            echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Reason:"
+            echo ""
+            printf '%s\n' "${DEPENDENCY_GATE_BREAK_GLASS}" | sed 's/^/  /'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   quality:
     name: Format, Lint & Type Check
@@ -108,7 +115,7 @@ jobs:
         timeout-minutes: 10
         # Keep this lifecycle-disabled. If a future dependency needs a build
         # step, add a targeted npm rebuild after the audit and document why.
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit policy guardrails
         run: node scripts/assert-audit-policy.js
@@ -150,7 +157,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies without lifecycle scripts
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Run VS Code tests
         run: xvfb-run -a npm test
@@ -174,8 +181,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit policy guardrails
         run: node scripts/assert-audit-policy.js
@@ -214,8 +221,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+      - name: Install dependencies without lifecycle scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Build extension for analysis
         run: npm run compile
@@ -256,7 +263,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies without lifecycle scripts
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Package VSIX
         run: npm run vsix
@@ -300,7 +307,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies without lifecycle scripts
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -336,7 +343,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -434,7 +441,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: bash scripts/retry.sh npm ci --ignore-scripts
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -483,7 +490,7 @@ jobs:
           cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"
           cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"
           cd "$PUBLISHER_DIR"
-          npm ci --ignore-scripts --no-audit --no-fund --omit=dev
+          npm ci --ignore-scripts --no-audit --no-fund --omit=dev --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
           VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"
           test -x "$VSCE_BIN"
           echo "bin=$VSCE_BIN" >> "$GITHUB_OUTPUT"

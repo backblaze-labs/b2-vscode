@@ -29,6 +29,7 @@ function parseArgs(argv) {
   const args = {
     directory: repoRoot,
     policy: path.join(repoRoot, AUDIT_POLICY_FILE),
+    trustedBaseRef: undefined,
   };
 
   function readPathArgument(index, flag) {
@@ -47,6 +48,13 @@ function parseArgs(argv) {
     } else if (arg === "--policy") {
       args.policy = readPathArgument(index, arg);
       index += 1;
+    } else if (arg === "--trusted-base-ref") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error(`${arg} requires a branch name value.`);
+      }
+      args.trustedBaseRef = value;
+      index += 1;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -57,13 +65,13 @@ function parseArgs(argv) {
 
 function parseAuditReport(stdout, stderr, status) {
   if (!stdout.trim()) {
-    failInfrastructure(`npm audit returned no JSON output. Exit ${status}.\n${stderr}`);
+    return failInfrastructure(`npm audit returned no JSON output. Exit ${status}.\n${stderr}`);
   }
 
   try {
     return JSON.parse(stdout);
   } catch (error) {
-    failInfrastructure(
+    return failInfrastructure(
       `npm audit returned invalid JSON. Exit ${status}. ${error.message}\n${stdout}\n${stderr}`,
     );
   }
@@ -77,55 +85,34 @@ function spawnFailureDetails(result) {
   return [result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n");
 }
 
+function runGitOrFail(args, repoRoot, failureMessage) {
+  const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    return failInfrastructure(`${failureMessage}\n${spawnFailureDetails(result)}`);
+  }
+  return result;
+}
+
+function runGitAllowFailure(args, repoRoot, failureMessage) {
+  const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  if (result.error) {
+    return failInfrastructure(`${failureMessage}\n${spawnFailureDetails(result)}`);
+  }
+  return result;
+}
+
 function readBaseBranchPolicy(repoRoot, baseRef) {
   const basePolicySpec = `refs/remotes/origin/${baseRef}:${AUDIT_POLICY_FILE}`;
-  let result = spawnSync("git", ["show", basePolicySpec], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (result.error) {
-    failInfrastructure(
-      `could not read ${AUDIT_POLICY_FILE} from base branch ${baseRef}.\n${spawnFailureDetails(
-        result,
-      )}`,
-    );
-  }
+  const readFailureMessage = `could not read ${AUDIT_POLICY_FILE} from base branch ${baseRef}.`;
+  let result = runGitAllowFailure(["show", basePolicySpec], repoRoot, readFailureMessage);
 
   if (result.status !== 0) {
-    const fetchResult = spawnSync(
-      "git",
+    runGitOrFail(
       ["fetch", "--no-tags", "origin", `${baseRef}:refs/remotes/origin/${baseRef}`],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-      },
+      repoRoot,
+      `could not fetch base branch ${baseRef} for trusted accepted advisories.`,
     );
-    if (fetchResult.error) {
-      failInfrastructure(
-        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${spawnFailureDetails(
-          fetchResult,
-        )}`,
-      );
-    }
-    if (fetchResult.status !== 0) {
-      failInfrastructure(
-        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${spawnFailureDetails(
-          fetchResult,
-        )}`,
-      );
-    }
-
-    result = spawnSync("git", ["show", basePolicySpec], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (result.error) {
-      failInfrastructure(
-        `could not read ${AUDIT_POLICY_FILE} from base branch ${baseRef}.\n${spawnFailureDetails(
-          result,
-        )}`,
-      );
-    }
+    result = runGitAllowFailure(["show", basePolicySpec], repoRoot, readFailureMessage);
   }
 
   if (result.status !== 0 || !result.stdout) {
@@ -135,23 +122,42 @@ function readBaseBranchPolicy(repoRoot, baseRef) {
   return parseStrictJsonPolicy(result.stdout, basePolicySpec);
 }
 
-function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson) {
-  if (process.env.GITHUB_EVENT_NAME !== "pull_request" || !process.env.GITHUB_BASE_REF) {
+function acceptedAdvisoriesMatch(left, right) {
+  return (
+    JSON.stringify(left.acceptedAdvisories ?? []) === JSON.stringify(right.acceptedAdvisories ?? [])
+  );
+}
+
+function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedBaseRef) {
+  if (!trustedBaseRef) {
     return auditPolicy.acceptedAdvisories;
   }
 
-  const basePolicy = readBaseBranchPolicy(repoRoot, process.env.GITHUB_BASE_REF);
+  const basePolicy = readBaseBranchPolicy(repoRoot, trustedBaseRef);
   if (basePolicy === undefined) {
+    if ((auditPolicy.acceptedAdvisories ?? []).length > 0) {
+      throw new Error(
+        `PR-local acceptedAdvisories cannot be trusted because ${AUDIT_POLICY_FILE} is absent on ${trustedBaseRef}.`,
+      );
+    }
     return [];
   }
-  validateAuditPolicy(basePolicy, packageJson);
+  validateAuditPolicy(basePolicy, packageJson, { checkPackageScripts: false });
+  if (
+    (auditPolicy.acceptedAdvisories ?? []).length > 0 &&
+    !acceptedAdvisoriesMatch(auditPolicy, basePolicy)
+  ) {
+    throw new Error(
+      `PR-local acceptedAdvisories must match the protected ${trustedBaseRef} policy before they can suppress findings.`,
+    );
+  }
   return basePolicy.acceptedAdvisories;
 }
 
 try {
   const args = parseArgs(process.argv.slice(2));
-  const { auditPolicy, packageJson } = loadCurrentPolicy(repoRoot, args.policy);
-  validateAuditPolicy(auditPolicy, packageJson);
+  const { auditPolicy, packageJson } = loadCurrentPolicy(args.directory, args.policy);
+  validateAuditPolicy(auditPolicy, packageJson, { checkPackageScripts: false });
 
   const result = spawnSync(
     npmCommand,
@@ -184,7 +190,12 @@ try {
   }
 
   const findings = collectAuditFindings(report, auditPolicy.auditLevel);
-  const acceptedAdvisories = trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson);
+  const acceptedAdvisories = trustedAcceptedAdvisories(
+    args.directory,
+    auditPolicy,
+    packageJson,
+    args.trustedBaseRef,
+  );
   const unacceptedFindings = findings.filter(
     (finding) => !isAcceptedFinding(finding, acceptedAdvisories),
   );

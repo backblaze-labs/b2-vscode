@@ -1,9 +1,13 @@
 /audit-policy.jsonc @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/package.json @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/package-lock.json @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/.npmrc @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/audit-policy.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/run-npm-audit.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/retry.sh @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/npm-command.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-policy.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-workflow.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/.github/workflows/build-extension.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/test.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/release.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav

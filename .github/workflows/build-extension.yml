@@ -15,9 +15,10 @@ on:
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
+      - ".npmrc"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
-  pull_request:
+  pull_request_target:
     branches: [main]
     paths:
       - "src/**"
@@ -31,6 +32,7 @@ on:
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
+      - ".npmrc"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
 
@@ -48,9 +50,20 @@ jobs:
       contents: read # needed to check out and build the extension
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Checkout trusted gate source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -59,15 +72,43 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Assert audit policy guardrails
+        working-directory: source
+        run: node ../trusted-source/scripts/assert-audit-policy.js --repo-root "$PWD"
+
+      - name: Audit dependency advisories
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: source
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            bash ../trusted-source/scripts/retry.sh node ../trusted-source/scripts/run-npm-audit.js --directory "$PWD" --policy "$PWD/audit-policy.jsonc" --trusted-base-ref "${{ github.event.pull_request.base.ref }}"
+          else
+            bash ../trusted-source/scripts/retry.sh node ../trusted-source/scripts/run-npm-audit.js --directory "$PWD" --policy "$PWD/audit-policy.jsonc"
+          fi
+
+      - name: Verify dependency signatures
+        timeout-minutes: 10
+        env:
+          npm_config_ignore_scripts: "true"
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Build extension
+        working-directory: source
         run: npm run compile
 
       - name: Package VSIX
+        working-directory: source
         run: npm run vsix
 
       - name: Record VSIX checksum
+        working-directory: source
         run: |
           VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
           CHECKSUM=$(sha256sum "$VSIX_FILE" | cut -d ' ' -f1)
@@ -78,8 +119,8 @@ jobs:
         with:
           name: vsix
           path: |
-            *.vsix
-            VSIX_SHA256SUMS.txt
+            source/*.vsix
+            source/VSIX_SHA256SUMS.txt
           retention-days: 30
 
   test-installation:
@@ -91,9 +132,20 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Checkout trusted gate source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -101,9 +153,11 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: source/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -112,8 +166,9 @@ jobs:
           path: ./artifacts
 
       - name: Verify extension package
+        working-directory: source
         run: |
-          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./artifacts --verify-checksum)
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ../artifacts --verify-checksum)
           echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
           npm run assert:vsix-assets -- "$VSIX_FILE"
           timeout 10m xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
@@ -121,7 +176,7 @@ jobs:
   post-pr-comment:
     name: PR Comment
     needs: build
-    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+    if: github.event_name == 'pull_request_target' && !github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write # posts the VSIX artifact link on same-repo PRs

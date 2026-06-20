@@ -38,10 +38,10 @@ That path runs quality, behavioral test, dependency audit, CodeQL SAST, strict
 VSIX validation, and installed-VSIX smoke without reading `VSCE_KEY`. Provenance
 attestation and Marketplace publishing only run for `v*.*.*` tag refs.
 
-The dependency audit gate is scoped to runtime dependencies with
-`npm audit --omit=dev --audit-level=moderate`, so a release is not blocked by a
-new advisory in build-only tooling. Dev dependency advisories should still be
-reviewed before release when they affect workflow code execution or packaging.
+The dependency audit gate runs through `scripts/run-npm-audit.js` with
+`audit-policy.jsonc`, currently `auditLevel=moderate` and `includeDev=true`.
+Release builds are blocked by moderate-or-higher advisories anywhere in the full
+npm dependency tree, including build-only tooling.
 
 When changing Marketplace contributions in `package.json`, review the new
 commands, views, menus, language model tools, and activation surface, then run

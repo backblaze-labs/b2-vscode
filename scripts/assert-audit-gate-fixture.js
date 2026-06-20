@@ -8,7 +8,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { collectAuditFindings, dateOnlyDaysFromNow } = require("./audit-policy");
+const {
+  AUDIT_POLICY_STRICT_JSON_NOTICE,
+  collectAuditFindings,
+  dateOnlyDaysFromNow,
+} = require("./audit-policy");
 const { npmCommand, trustedNpmConfigArgs, trustedNpmEnv } = require("./npm-command");
 
 const repoRoot = path.join(__dirname, "..");
@@ -138,6 +142,7 @@ function loadFixtureFindings() {
 try {
   assertInvalidCliArgs(["--directory"], "--directory requires a path value.");
   assertInvalidCliArgs(["--policy", "--directory"], "--policy requires a path value.");
+  assertInvalidCliArgs(["--trusted-base-ref"], "--trusted-base-ref requires a branch name value.");
 
   fs.writeFileSync(
     path.join(tempRoot, "package.json"),
@@ -207,13 +212,14 @@ try {
     package: finding.package,
     owner: "security-team",
     reason: "Fixture proves accepted advisories unblock audited releases.",
-    reviewBy: dateOnlyDaysFromNow(7),
+    reviewBy: dateOnlyDaysFromNow(14),
     paths: finding.paths,
   }));
   fs.writeFileSync(
     acceptedPolicyPath,
     `${JSON.stringify(
       {
+        _comment: AUDIT_POLICY_STRICT_JSON_NOTICE,
         auditLevel: "moderate",
         includeDev: true,
         acceptedAdvisories,

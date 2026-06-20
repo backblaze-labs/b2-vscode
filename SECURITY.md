@@ -7,13 +7,12 @@ The required `VS Code Extension Tests` check runs `npm audit` through
 npm dependency tree, including development and release tooling. The release
 workflow runs the same advisory gate before building and packaging the VSIX.
 
-The required test check and the release workflow install dependencies with
-`npm ci --ignore-scripts`, so package lifecycle scripts cannot run before the
-advisory gate evaluates the lockfile on those paths. Every release workflow
-install uses the same lifecycle-disabled retry helper before build, smoke,
-preflight, publish, or release steps. Other repository workflows may still use
-plain `npm ci`; the ignore-scripts guarantee is scoped to the required
-audit/test path and release workflow.
+The required test check, release workflow, and pull-request build/documentation
+workflows install dependencies with `npm ci --ignore-scripts`, so package
+lifecycle scripts cannot run before the advisory gate evaluates the lockfile on
+the required test/build paths. Install steps also pin npm to the public registry
+and ignore repo/user/global npm config so a pull request cannot redirect package
+resolution through `.npmrc`.
 
 The advisory and signature gates pin npm operations to
 `https://registry.npmjs.org/` and ignore user/global npm config so a repository
@@ -38,9 +37,8 @@ merge cannot wait.
 ## Accepted Advisories And Break-Glass
 
 `audit-policy.jsonc` contains the machine-readable `acceptedAdvisories` list.
-The file intentionally uses strict JSON syntax despite the `.jsonc` extension so
-the security gate can parse it with built-in `JSON.parse` before dependency
-signature verification.
+The file includes an inline strict-JSON notice because comments and trailing
+commas are not accepted despite the `.jsonc` extension.
 Each entry must include a GHSA advisory id, package name, owner, reason, and
 `reviewBy` date, plus the reviewed package paths where the advisory is accepted.
 The policy guard rejects malformed entries, expired entries, entries more than
@@ -49,13 +47,15 @@ and unknown policy keys. Both the required test check and the release workflow
 honor this list, so a tracked no-fix advisory can unblock merges and releases
 without turning off the audit gate.
 
-Changes to the policy file, audit helpers, and audit workflows are listed in
-`.github/CODEOWNERS`; branch protection must require CODEOWNER review so a PR
-cannot introduce a vulnerable dependency and approve its own accepted-advisory
-entry. On pull requests, `run-npm-audit.js` uses the accepted-advisory list from
-the protected base branch, so a PR-local exception does not silence a newly
-introduced finding until that exception has landed through the protected policy
-path.
+Changes to the policy file, dependency manifests, `.npmrc`, audit helpers, and
+audit workflows are listed in `.github/CODEOWNERS`; branch protection must
+require CODEOWNER review so a PR cannot introduce a vulnerable dependency and
+approve its own accepted-advisory entry. On pull requests, the required test and
+build workflows run from `pull_request_target`, execute audit scripts checked out
+from the protected base branch, and point them at the PR lockfile. The audit gate
+uses the accepted-advisory list from the protected base branch, so a PR-local
+exception does not silence a newly introduced finding until that exception has
+landed through the protected policy path.
 
 For emergency or unrelated changes blocked by a new moderate-or-higher advisory
 without an available fix:
@@ -72,7 +72,7 @@ For an emergency release blocked by a new advisory, expired acceptance, or npm
 registry/advisory outage, maintainers can run the release workflow manually with
 `dependency_gate_break_glass` set to a non-empty reason. The release build waits
 for the protected `dependency-gate-break-glass` GitHub Environment before
-packaging, records the actor and reason as an Actions warning, and skips only the
+packaging, records the actor and reason in the step summary, and skips only the
 dependency advisory gates for that `workflow_dispatch` run. Signature
 verification still runs because it detects package integrity problems, not
 accepted advisory risk. Normal tag and dry-run releases keep the advisory gate
@@ -83,13 +83,25 @@ helper retries transient failures, and infrastructure failures are reported as
 `npm audit infrastructure error` so they are distinguishable from dependency
 advisories. The required PR check intentionally fails closed when npm advisory
 or signature services are unavailable or when an accepted advisory expires, so
-the repository can experience a merge freeze. On-call maintainers unblock normal
-merges by removing/upgrading the affected dependency, refreshing the accepted
-advisory through the protected policy process, waiting for npm service recovery,
-or using administrator branch-protection break-glass only when the operational
-emergency is documented. The scheduled weekly audit is an early signal only;
-maintainers must still monitor failed scheduled runs in GitHub Actions and renew
-or remove accepted advisories before their `reviewBy` date.
+the repository can experience a merge freeze at the UTC date boundary. The gate
+warns during the final seven days before `reviewBy`; maintainers should use that
+warning to renew or remove the entry before unrelated PRs and releases are
+blocked. On-call maintainers unblock normal merges by removing/upgrading the
+affected dependency, refreshing the accepted advisory through the protected
+policy process, waiting for npm service recovery, or using administrator
+branch-protection break-glass only when the operational emergency is documented.
+The scheduled weekly audit is an early signal only; maintainers must still
+monitor failed scheduled runs in GitHub Actions and renew or remove accepted
+advisories before their `reviewBy` date.
+
+## Unfinished Large File Cleanup
+
+The extension cancels unfinished B2 large files only for upload sessions that
+fail while the extension host is still running. If VS Code exits, crashes, the
+extension host is killed, or the machine loses power during a multipart upload,
+that in-process cleanup does not run. Operators should configure a B2 bucket
+lifecycle rule that cancels abandoned unfinished large files so uploaded parts
+do not remain billable indefinitely.
 
 The guard scripts and CODEOWNERS rules protect against accidental or
 trusted-contributor drift in the policy and workflows. They are not a substitute

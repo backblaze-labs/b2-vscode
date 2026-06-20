@@ -7,8 +7,11 @@ const path = require("path");
 
 const AUDIT_POLICY_FILE = "audit-policy.jsonc";
 const AUDIT_COMMAND = "node scripts/run-npm-audit.js";
+const AUDIT_POLICY_STRICT_JSON_NOTICE =
+  "Strict JSON only: comments and trailing commas are not allowed despite the .jsonc extension.";
 const REQUIRED_AUDIT_LEVEL = "moderate";
 const MAX_ACCEPTANCE_DAYS = 30;
+const ACCEPTANCE_EXPIRY_WARNING_DAYS = 7;
 const SEVERITY_RANK = {
   low: 0,
   moderate: 1,
@@ -103,6 +106,13 @@ function validateAcceptedAdvisory(entry, index, today = new Date()) {
     reviewBy <= latestReviewBy,
     `acceptedAdvisories[${index}].reviewBy must be within ${MAX_ACCEPTANCE_DAYS} days.`,
   );
+  if (reviewBy <= addUtcDays(todayUtc, ACCEPTANCE_EXPIRY_WARNING_DAYS)) {
+    console.warn(
+      `acceptedAdvisories[${index}] expires on ${formatDateOnly(
+        reviewBy,
+      )}; renew or remove it before the required check starts failing.`,
+    );
+  }
 
   assert(
     Array.isArray(entry.paths) && entry.paths.length > 0,
@@ -120,11 +130,15 @@ function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
     `${AUDIT_POLICY_FILE} must contain an object.`,
   );
 
-  const allowedKeys = new Set(["$schema", "auditLevel", "includeDev", "acceptedAdvisories"]);
+  const allowedKeys = new Set(["_comment", "auditLevel", "includeDev", "acceptedAdvisories"]);
   for (const key of Object.keys(auditPolicy)) {
     assert(allowedKeys.has(key), `${AUDIT_POLICY_FILE} has unexpected key: ${key}.`);
   }
 
+  assert(
+    auditPolicy._comment === AUDIT_POLICY_STRICT_JSON_NOTICE,
+    `${AUDIT_POLICY_FILE} must keep the strict JSON notice.`,
+  );
   assert(
     auditPolicy.auditLevel === REQUIRED_AUDIT_LEVEL,
     `${AUDIT_POLICY_FILE} must keep auditLevel: "${REQUIRED_AUDIT_LEVEL}".`,
@@ -139,12 +153,17 @@ function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
     validateAcceptedAdvisory(entry, index, options.today),
   );
 
-  assert(packageJson.scripts?.["audit:ci"] === AUDIT_COMMAND, "audit:ci script drifted.");
-  assert(packageJson.scripts?.["audit:release"] === AUDIT_COMMAND, "audit:release script drifted.");
-  assert(
-    packageJson.devDependencies?.["audit-ci"] === undefined,
-    "audit-ci must not be reintroduced as a devDependency.",
-  );
+  if (options.checkPackageScripts !== false) {
+    assert(packageJson.scripts?.["audit:ci"] === AUDIT_COMMAND, "audit:ci script drifted.");
+    assert(
+      packageJson.scripts?.["audit:release"] === AUDIT_COMMAND,
+      "audit:release script drifted.",
+    );
+    assert(
+      packageJson.devDependencies?.["audit-ci"] === undefined,
+      "audit-ci must not be reintroduced as a devDependency.",
+    );
+  }
 }
 
 function loadAuditPolicy(repoRoot, policyPath = path.join(repoRoot, AUDIT_POLICY_FILE)) {
@@ -231,6 +250,7 @@ function formatFinding(finding) {
 module.exports = {
   AUDIT_COMMAND,
   AUDIT_POLICY_FILE,
+  AUDIT_POLICY_STRICT_JSON_NOTICE,
   collectAuditFindings,
   dateOnlyDaysFromNow,
   formatFinding,
