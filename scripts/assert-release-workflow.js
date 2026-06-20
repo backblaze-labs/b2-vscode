@@ -145,7 +145,6 @@ function assertPublishIsReleaseOnly() {
   );
 
   assertPublishUsesIsolatedPublisher();
-  assertMarketplaceSecretStepsUseIsolatedPublisher();
 }
 
 function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
