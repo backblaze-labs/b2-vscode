@@ -259,6 +259,7 @@ async function writeFileNoFollowInternal(
   options: {
     readonly overwrite: boolean;
     readonly beforeWrite?: () => Promise<void>;
+    readonly cleanupOnFailure?: (openedStats: fs.Stats) => Promise<void>;
   },
 ): Promise<void> {
   const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
@@ -268,6 +269,7 @@ async function writeFileNoFollowInternal(
     fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
     0o600,
   );
+  const openedStats = await fileHandle.stat();
   let completed = false;
 
   try {
@@ -285,10 +287,36 @@ async function writeFileNoFollowInternal(
       await fileHandle.close();
     } finally {
       if (!completed && !options.overwrite) {
-        await fs.promises.rm(filePath, { force: true }).catch(() => undefined);
+        await (
+          options.cleanupOnFailure?.(openedStats) ?? fs.promises.rm(filePath, { force: true })
+        ).catch(() => undefined);
       }
     }
   }
+}
+
+async function removeRootBoundCreatedFileIfSafe(
+  rootPath: string,
+  filePath: string,
+  openedStats: fs.Stats,
+): Promise<void> {
+  const candidate = path.resolve(filePath);
+  const currentStats = await lstatIfExists(candidate);
+  if (
+    currentStats === undefined ||
+    currentStats.isSymbolicLink() ||
+    !isSameFilesystemEntry(currentStats, openedStats)
+  ) {
+    return;
+  }
+
+  const realRoot = await fs.promises.realpath(path.resolve(rootPath));
+  const realCandidate = await fs.promises.realpath(candidate);
+  if (!isPathInsideOrEqual(realRoot, realCandidate)) {
+    return;
+  }
+
+  await fs.promises.rm(candidate, { force: true });
 }
 
 export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
@@ -434,6 +462,8 @@ export async function writeFileNoFollowWithinRoot(
   await writeFileNoFollowInternal(filePath, data, {
     overwrite: false,
     beforeWrite: () => assertSafeFileWritePath(rootPath, filePath, label),
+    cleanupOnFailure: (openedStats) =>
+      removeRootBoundCreatedFileIfSafe(rootPath, filePath, openedStats),
   });
 }
 

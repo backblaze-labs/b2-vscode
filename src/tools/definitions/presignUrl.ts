@@ -9,7 +9,12 @@ import { inputText } from "./inputText";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+  MIN_PRESIGN_URL_PREFIX_LENGTH,
 } from "../presignUrlLimits";
+
+function describeExpiresIn(value: unknown): number {
+  return Number.isInteger(value) ? Number(value) : DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS;
+}
 
 export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
@@ -25,14 +30,14 @@ export const presignUrlTool: B2ToolDefinition = {
       },
       path: {
         type: "string",
-        description:
-          'B2 object name prefix to authorize. Supplying a full file name still grants prefix scope, so "reports/q4.pdf" also authorizes names such as "reports/q4.pdf.bak". Must not be empty or end with "/".',
+        minLength: MIN_PRESIGN_URL_PREFIX_LENGTH,
+        description: `B2 object name prefix to authorize. Supplying a full file name still grants prefix scope, so "reports/q4.pdf" also authorizes names such as "reports/q4.pdf.bak". Must be at least ${MIN_PRESIGN_URL_PREFIX_LENGTH} characters and must not end with "/".`,
       },
       expiresIn: {
         type: "integer",
         minimum: 1,
         maximum: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-        description: `URL validity duration in seconds. Default: ${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} (5 minutes). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (7 days).`,
+        description: `URL validity duration in seconds. Default: ${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} (5 minutes). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (1 hour).`,
       },
     },
     required: ["bucket", "path"],
@@ -40,5 +45,5 @@ export const presignUrlTool: B2ToolDefinition = {
   tags: ["b2", "file", "presign", "url"],
   risk: "exfiltration",
   describeEffect: (input) =>
-    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
+    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)} that is valid for ${describeExpiresIn(input.expiresIn)} seconds and authorizes every object name starting with that path`,
 };

@@ -10,6 +10,7 @@ import { buildB2DownloadUrl } from "../../utils/urlEncoding";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+  MIN_PRESIGN_URL_PREFIX_LENGTH,
 } from "../presignUrlLimits";
 
 interface PresignUrlParams {
@@ -53,6 +54,12 @@ export function normalizePresignUrlPath(filePath: string): string {
 
   if (filePath.endsWith("/")) {
     throw new Error("path must not end with a slash because folder prefixes are rejected.");
+  }
+
+  if (filePath.length < MIN_PRESIGN_URL_PREFIX_LENGTH) {
+    throw new Error(
+      `path must be at least ${MIN_PRESIGN_URL_PREFIX_LENGTH} characters to avoid broad prefix authorization.`,
+    );
   }
 
   return filePath;

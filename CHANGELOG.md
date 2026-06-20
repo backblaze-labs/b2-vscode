@@ -66,10 +66,10 @@
 - LM `downloadFile` writes only to workspace-relative paths and refuses to
   overwrite existing workspace files. LM `uploadFile` reads only
   workspace-relative files.
-- `presignUrl` now rejects empty or slash-terminated paths, validates
-  `expiresIn` between 1 and 604800 seconds, and explicitly reports that B2
-  download authorization tokens are name-prefix scoped. Presigned URLs default
-  to 300 seconds; longer-lived links require an explicit `expiresIn`.
+- `presignUrl` now rejects empty, slash-terminated, or too-short paths,
+  validates `expiresIn` between 1 and 3600 seconds, and explicitly reports that
+  B2 download authorization tokens are name-prefix scoped. Presigned URLs
+  default to 300 seconds; longer-lived links require an explicit `expiresIn`.
 - Temp-open downloads now use a private per-process cache directory with
   owner-only file permissions. Stale temp-root cleanup preserves active roots
   with live owner markers or recently updated child files.

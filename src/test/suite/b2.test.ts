@@ -739,10 +739,10 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
-      assert.deepStrictEqual(
-        fs.readdirSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
-        [],
-        "root-bound downloads should stage in the workspace transfer directory",
+      assert.strictEqual(
+        fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
+        false,
+        "root-bound downloads should remove the workspace transfer directory when it is empty",
       );
       assert.deepStrictEqual(
         fs.readdirSync(path.dirname(destination)).filter((name) => name.startsWith("b2-transfer-")),
@@ -1221,8 +1221,8 @@ suite("B2 transfer helpers", () => {
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     const uploaded: number[] = [];
-    let listCalls = 0;
     let cancelCalls = 0;
+    let listCalls = 0;
 
     const bucket = {
       async listUnfinishedLargeFiles(options) {
@@ -1282,74 +1282,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("cancels stale extension-owned same-key uploads before streaming", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-pre-clean-"));
-    const localPath = path.join(dir, "file.bin");
-    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
-    const canceled: unknown[] = [];
-    const uploaded: number[] = [];
-    let streamCreated = false;
-
-    const bucket = {
-      async listUnfinishedLargeFiles() {
-        return {
-          files: [
-            {
-              fileId: largeFileId("stale-owned"),
-              fileName: "remote/file.bin",
-              fileInfo: {
-                "b2-vscode-upload-owner": "b2-vscode",
-                "b2-vscode-upload-started-ms": "1",
-              },
-            },
-          ],
-          nextFileId: null,
-        };
-      },
-      async cancelLargeFile(fileId) {
-        assert.strictEqual(streamCreated, false);
-        canceled.push(fileId);
-      },
-      file(fileName: string) {
-        let resolveDone: (value: FileVersion) => void = () => undefined;
-        const done = new Promise<FileVersion>((resolve) => {
-          resolveDone = resolve;
-        });
-
-        return {
-          createWriteStream() {
-            streamCreated = true;
-            return {
-              writable: new WritableStream<Uint8Array>({
-                write(chunk) {
-                  uploaded.push(...chunk);
-                },
-                close() {
-                  resolveDone(fakeFileVersion(fileName, uploaded.length, "uploaded-id"));
-                },
-              }),
-              done,
-            };
-          },
-        };
-      },
-      async upload() {
-        assert.fail("Expected non-empty local files to use the streaming upload path");
-      },
-    } satisfies UploadBucketHandle;
-
-    try {
-      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
-
-      assert.strictEqual(result.fileId, "uploaded-id");
-      assert.deepStrictEqual(canceled, [largeFileId("stale-owned")]);
-      assert.deepStrictEqual(uploaded, [1, 2, 3]);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("does not cancel remote unfinished uploads before streaming", async () => {
+  test("does not cancel unmarked remote unfinished uploads before streaming", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-concurrent-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
@@ -1412,7 +1345,6 @@ suite("B2 transfer helpers", () => {
 
     try {
       const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
-
       assert.strictEqual(result.fileId, "uploaded-id");
       assert.strictEqual(cancelCalls, 0);
       assert.deepStrictEqual(uploaded, [1, 2, 3]);
@@ -1826,24 +1758,94 @@ suite("B2 transfer helpers", () => {
     assert.strictEqual(listSignal?.aborted, true);
   });
 
-  test("owned unfinished upload cleanup scans beyond the audit page cap", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-owned-upload-pages-"));
+  test("aborts timed-out unfinished upload cancel operations", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cancel-abort-"));
     const localPath = path.join(dir, "file.bin");
     const remotePath = "remote/file.bin";
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     let streamCreated = false;
-    let listCallsAfterStream = 0;
-    const canceled: unknown[] = [];
     let capturedSessionId = "";
-
+    let cancelSignal: AbortSignal | undefined;
+    let resolveAborted: (value: boolean) => void = () => undefined;
+    const aborted = new Promise<boolean>((resolve) => {
+      resolveAborted = resolve;
+    });
     const bucket = {
       async listUnfinishedLargeFiles() {
         if (!streamCreated) {
           return { files: [], nextFileId: null };
         }
 
-        listCallsAfterStream += 1;
-        const isTargetPage = listCallsAfterStream === 4;
+        return {
+          files: [
+            {
+              fileId: largeFileId("owned-cancel-timeout"),
+              fileName: remotePath,
+              fileInfo: { "b2-vscode-upload-session-id": capturedSessionId },
+            },
+          ],
+          nextFileId: null,
+        };
+      },
+      cancelLargeFile(_fileId, options) {
+        cancelSignal = options?.signal;
+        cancelSignal?.addEventListener("abort", () => resolveAborted(true), { once: true });
+        return new Promise<never>(() => undefined);
+      },
+      file() {
+        return {
+          createWriteStream(options) {
+            streamCreated = true;
+            capturedSessionId = options?.fileInfo?.["b2-vscode-upload-session-id"] ?? "";
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("pipe failed");
+                },
+              }),
+              done: new Promise<FileVersion>(() => undefined),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await Promise.all([
+        assert.rejects(
+          () =>
+            uploadFileFromDisk(bucket, localPath, remotePath, { unfinishedCleanupTimeoutMs: 20 }),
+          /pipe failed/i,
+        ),
+        aborted,
+      ]);
+      assert.strictEqual(cancelSignal?.aborted, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("owned unfinished upload cleanup scans beyond the audit page cap", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-owned-upload-pages-"));
+    const localPath = path.join(dir, "file.bin");
+    const remotePath = "remote/file.bin";
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let streamCreated = false;
+    let ownedCleanupListCalls = 0;
+    const canceled: unknown[] = [];
+    let capturedSessionId = "";
+
+    const bucket = {
+      async listUnfinishedLargeFiles(options) {
+        if (!streamCreated || options?.namePrefix !== remotePath) {
+          return { files: [], nextFileId: null };
+        }
+
+        ownedCleanupListCalls += 1;
+        const isTargetPage = ownedCleanupListCalls === 4;
         return {
           files: isTargetPage
             ? [
@@ -1854,7 +1856,7 @@ suite("B2 transfer helpers", () => {
                 },
               ]
             : [],
-          nextFileId: isTargetPage ? null : largeFileId(`next-${listCallsAfterStream}`),
+          nextFileId: isTargetPage ? null : largeFileId(`next-${ownedCleanupListCalls}`),
         };
       },
       async cancelLargeFile(fileId) {
@@ -1884,7 +1886,7 @@ suite("B2 transfer helpers", () => {
     try {
       await assert.rejects(() => uploadFileFromDisk(bucket, localPath, remotePath), /pipe failed/i);
 
-      assert.strictEqual(listCallsAfterStream, 4);
+      assert.ok(ownedCleanupListCalls >= 4);
       assert.deepStrictEqual(canceled, [largeFileId("owned-target")]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -2541,11 +2543,16 @@ suite("B2 transfer helpers", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
     const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
     const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const freshOrphanedBackup = path.join(
+      dir,
+      ".b2-replace-backup-fresh-missing.bin-1-abcdefabcdef.tmp",
+    );
     const completedDestination = path.join(dir, "complete.bin");
     const completedBackup = path.join(dir, ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp");
     const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdef.tmp");
     fs.writeFileSync(crossDevice, "partial");
     fs.writeFileSync(orphanedBackup, "original");
+    fs.writeFileSync(freshOrphanedBackup, "fresh original");
     fs.writeFileSync(completedDestination, "new");
     fs.writeFileSync(completedBackup, "old");
     fs.writeFileSync(freshTemp, "active");
@@ -2560,6 +2567,10 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(crossDevice), false);
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
       assert.strictEqual(fs.readFileSync(path.join(dir, "file.bin"), "utf8"), "original");
+      assert.strictEqual(
+        fs.readFileSync(path.join(dir, "fresh-missing.bin"), "utf8"),
+        "fresh original",
+      );
       assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
       assert.strictEqual(fs.existsSync(completedBackup), false);
       assert.strictEqual(fs.readFileSync(freshTemp, "utf8"), "active");

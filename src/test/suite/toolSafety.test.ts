@@ -131,9 +131,15 @@ suite("LM Tool Safety", () => {
   });
 
   test("presignUrl warns about a shareable link and names the target", async () => {
-    const text = await confirmText(presignUrlTool, { bucket: "my-bucket", path: "r/q4.pdf" });
+    const text = await confirmText(presignUrlTool, {
+      bucket: "my-bucket",
+      path: "r/q4.pdf",
+      expiresIn: 900,
+    });
     assert.match(text, /shareable|link|download url/i);
     assert.match(text, /my-bucket\/r\/q4\.pdf/);
+    assert.match(text, /prefix-scoped|starting with/i);
+    assert.match(text, /900 seconds/i);
   });
 
   test("uploadFile warns that local file contents leave the workspace", async () => {

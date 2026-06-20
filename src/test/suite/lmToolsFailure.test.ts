@@ -73,7 +73,7 @@ const operations: Array<{
   {
     name: "presignUrl",
     operation: presignUrlOperation as B2ToolOperation<unknown, unknown>,
-    input: { bucket: "b", path: "a.txt" },
+    input: { bucket: "b", path: "file.txt" },
   },
 ];
 

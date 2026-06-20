@@ -2,9 +2,9 @@
  * Filesystem-backed B2 transfer helpers.
  *
  * This module intentionally keeps transfer timeout, local staging, placement,
- * and multipart cleanup orchestration together because their ordering is part
- * of the transfer contract. Keep the exported surface narrow if these helpers
- * are split into focused modules later.
+ * upload-session markers, and multipart cleanup orchestration together because
+ * their ordering is part of the transfer contract. Keep the exported surface
+ * narrow if these helpers are split into focused modules later.
  *
  * @module services/fileTransfers
  */

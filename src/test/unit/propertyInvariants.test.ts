@@ -270,6 +270,60 @@ test("root-bound no-follow writes require overwrite refusal", async () => {
   assert.equal(fs.readFileSync(filePath, "utf8"), "content");
 });
 
+test(
+  "root-bound failed-write cleanup does not follow raced parent symlinks",
+  { skip: process.platform === "win32" ? "directory symlink support varies on Windows" : false },
+  async () => {
+    const root = fs.mkdtempSync(path.join(propertyRoot, "root-bound-race-"));
+    const stageRoot = fs.mkdtempSync(path.join(propertyRoot, "root-bound-stage-"));
+    const victimRoot = fs.mkdtempSync(path.join(propertyRoot, "root-bound-victim-"));
+    const parentPath = path.join(root, "downloads");
+    const destinationPath = path.join(parentPath, "authorized_keys");
+    const victimPath = path.join(victimRoot, "authorized_keys");
+    fs.mkdirSync(parentPath);
+    fs.writeFileSync(victimPath, "keep");
+
+    const originalOpen = fs.promises.open;
+    const originalRm = fs.promises.rm;
+    let attemptedUnsafeCleanup = false;
+    fs.promises.open = (async (
+      filePath: fs.PathLike,
+      flags: fs.OpenMode,
+      mode?: fs.Mode,
+    ): Promise<fs.promises.FileHandle> => {
+      if (path.resolve(String(filePath)) === path.resolve(destinationPath)) {
+        fs.rmSync(parentPath, { recursive: true, force: true });
+        fs.symlinkSync(stageRoot, parentPath, "dir");
+      }
+      return originalOpen(filePath, flags, mode);
+    }) as typeof fs.promises.open;
+    fs.promises.rm = (async (filePath: fs.PathLike, options?: fs.RmOptions): Promise<void> => {
+      if (path.resolve(String(filePath)) === path.resolve(destinationPath)) {
+        attemptedUnsafeCleanup = true;
+        fs.rmSync(parentPath, { recursive: true, force: true });
+        fs.symlinkSync(victimRoot, parentPath, "dir");
+      }
+      await originalRm(filePath, options);
+    }) as typeof fs.promises.rm;
+
+    try {
+      await assert.rejects(
+        () =>
+          writeFileNoFollowWithinRoot(root, destinationPath, Buffer.from("new"), {
+            overwrite: false,
+          }),
+        /outside|symlink/i,
+      );
+
+      assert.equal(attemptedUnsafeCleanup, false);
+      assert.equal(fs.readFileSync(victimPath, "utf8"), "keep");
+    } finally {
+      fs.promises.open = originalOpen;
+      fs.promises.rm = originalRm;
+    }
+  },
+);
+
 test("download default paths stay inside the workspace for arbitrary B2 names", async () => {
   await fc.assert(
     fc.asyncProperty(b2Name, async (fileName) => {
@@ -482,9 +536,10 @@ test("presign operation defaults to short-lived prefix authorization", async () 
   assert.equal(result.expiresIn, 300);
 });
 
-test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {
+test("presign operation rejects broad, empty, and folder-prefix paths before B2 calls", async () => {
   for (const [filePath, expectedError] of [
     ["", /empty/i],
+    ["a", /at least 8 characters/i],
     ["reports/", /folder prefix/i],
     ["bad\0path", /NUL/i],
   ] as const) {
@@ -507,7 +562,7 @@ test("presign operation rejects empty and folder-prefix paths before B2 calls", 
 });
 
 test("presign operation rejects invalid expiresIn before B2 calls", async () => {
-  for (const expiresIn of [-1, 0, 1.5, 604801, Number.NaN]) {
+  for (const expiresIn of [-1, 0, 1.5, 3601, Number.NaN]) {
     let bucketLookupWasCalled = false;
     const extras = {
       getClient: () => ({
