@@ -544,6 +544,39 @@ suite("B2 LM tool operations with simulator", () => {
     );
   });
 
+  test("presignUrl rejects hidden file markers", async () => {
+    let authorizationRequested = false;
+    const bucket = {
+      async listFileNames(options: { prefix: string; pageSize: number }) {
+        assert.deepStrictEqual(options, { prefix: REMOTE_PATH, pageSize: 2 });
+        return {
+          files: [{ fileName: REMOTE_PATH, action: "hide" }],
+          nextFileName: null,
+        };
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "hidden-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+          { getClient: () => client as never },
+        ),
+      /uniquely identify one existing B2 object/i,
+    );
+    assert.strictEqual(authorizationRequested, false);
+  });
+
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {
     const { extras } = await createUploadedToolFixture();
 

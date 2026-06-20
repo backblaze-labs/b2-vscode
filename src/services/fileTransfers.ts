@@ -632,15 +632,10 @@ export async function cleanupStaleDestinationTempFiles(options: {
     try {
       const stats = await fs.promises.lstat(filePath);
       const restorePath = backupDestinationPath(directory, entry);
-      if (restorePath && !fs.existsSync(restorePath)) {
-        if (!stats.isFile()) {
-          if (stats.mtimeMs <= cutoff) {
-            await fs.promises.rm(filePath, { force: true });
-          }
-          continue;
-        }
-        await fs.promises.rename(filePath, restorePath);
-      } else if (stats.mtimeMs <= cutoff) {
+      if (restorePath && (await restoreDestinationBackup(filePath, restorePath))) {
+        continue;
+      }
+      if (stats.mtimeMs <= cutoff) {
         await fs.promises.rm(filePath, { force: true });
       } else {
         continue;
@@ -649,6 +644,48 @@ export async function cleanupStaleDestinationTempFiles(options: {
       logError(`Could not clean stale destination temp file: ${filePath}`, error);
     }
   }
+}
+
+export async function cleanupWorkspaceDestinationTempFiles(options: {
+  workspaceRoot: string;
+  maxAgeMs?: number;
+}): Promise<void> {
+  async function visit(directory: string): Promise<void> {
+    await cleanupStaleDestinationTempFiles({
+      directory,
+      ...(options.maxAgeMs !== undefined ? { maxAgeMs: options.maxAgeMs } : {}),
+    });
+
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        logError(`Could not scan workspace destination temp files: ${directory}`, error);
+      }
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const child = path.join(directory, entry.name);
+      try {
+        const stats = await fs.promises.lstat(child);
+        if (!stats.isDirectory() || stats.isSymbolicLink()) {
+          continue;
+        }
+        await visit(child);
+      } catch (error) {
+        logError(`Could not inspect workspace destination temp directory: ${child}`, error);
+      }
+    }
+  }
+
+  await visit(path.resolve(options.workspaceRoot));
 }
 
 async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {
@@ -668,6 +705,26 @@ async function removeTempFile(filePath: string): Promise<void> {
     await fs.promises.rm(filePath, { force: true });
   } catch (error) {
     logError(`Could not remove transfer temp file: ${filePath}`, error);
+  }
+}
+
+async function restoreDestinationBackup(backupPath: string, restorePath: string): Promise<boolean> {
+  const stats = await fs.promises.lstat(backupPath);
+  if (!stats.isFile()) {
+    return false;
+  }
+
+  try {
+    await fs.promises.copyFile(backupPath, restorePath, fs.constants.COPYFILE_EXCL);
+    await fs.promises.rm(backupPath, { force: true });
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      return false;
+    }
+
+    throw error;
   }
 }
 

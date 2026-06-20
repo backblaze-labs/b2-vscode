@@ -35,6 +35,7 @@ import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
   cleanupStaleUnfinishedUploads,
+  cleanupWorkspaceDestinationTempFiles,
   cleanupWorkspaceTransferTempFiles,
   DEFAULT_DOWNLOAD_MAX_BYTES,
   downloadStreamToNewFileWithinRoot,
@@ -2917,6 +2918,61 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(backup), false);
       assert.strictEqual(fs.readFileSync(restored, "utf8"), "original");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not overwrite destinations created during backup recovery", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-race-"));
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const destination = path.join(dir, "file.bin");
+    fs.writeFileSync(backup, "original");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(backup, oldTime, oldTime);
+
+    const originalCopyFile = fs.promises.copyFile;
+    let copyAttempted = false;
+    fs.promises.copyFile = async (
+      source: fs.PathLike,
+      destinationCopy: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      if (
+        path.resolve(String(source)) === path.resolve(backup) &&
+        path.resolve(String(destinationCopy)) === path.resolve(destination)
+      ) {
+        copyAttempted = true;
+        fs.writeFileSync(destination, "concurrent");
+      }
+
+      await originalCopyFile(source, destinationCopy, mode);
+    };
+
+    try {
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
+
+      assert.strictEqual(copyAttempted, true);
+      assert.strictEqual(fs.readFileSync(destination, "utf8"), "concurrent");
+      assert.strictEqual(fs.existsSync(backup), false);
+    } finally {
+      fs.promises.copyFile = originalCopyFile;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recovers orphaned destination backups across a workspace tree", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
+    const nested = path.join(dir, "nested", "downloads");
+    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(backup, "report");
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir });
+
+      assert.strictEqual(fs.existsSync(backup), false);
+      assert.strictEqual(fs.readFileSync(path.join(nested, "report.txt"), "utf8"), "report");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
