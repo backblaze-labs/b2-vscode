@@ -345,6 +345,10 @@ function isDestinationTempFile(name: string): boolean {
   return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
 }
 
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.promises.lstat(filePath);
@@ -425,7 +429,9 @@ async function cleanupStaleTransferTempFile(filePath: string, cutoff: number): P
       return true;
     }
   } catch (error) {
-    logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    if (!isEnoent(error)) {
+      logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    }
   }
 
   return false;
@@ -553,7 +559,9 @@ async function cleanupDestinationTempEntry(
     await fs.promises.rm(filePath, { force: true });
     return true;
   } catch (error) {
-    logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    if (!isEnoent(error)) {
+      logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    }
   }
 
   return false;

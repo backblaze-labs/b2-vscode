@@ -134,6 +134,21 @@ function createFileSymlink(target: string, linkPath: string): boolean {
   }
 }
 
+async function captureConsoleErrors(run: () => Promise<void>): Promise<unknown[][]> {
+  const originalError = console.error;
+  const calls: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    calls.push(args);
+  };
+
+  try {
+    await run();
+    return calls;
+  } finally {
+    console.error = originalError;
+  }
+}
+
 function stubB2ApiUrlInspection(inspection: B2ApiUrlInspection): () => void {
   const mutableWorkspace = vscode.workspace as unknown as {
     getConfiguration: typeof vscode.workspace.getConfiguration;
@@ -3307,6 +3322,36 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("ignores transfer temp ENOENT races during stale cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-race-"));
+    const stale = path.join(dir, "b2-transfer-1-race.tmp");
+    fs.writeFileSync(stale, "stale");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(stale, oldTime, oldTime);
+    const originalLstat = fs.promises.lstat;
+
+    try {
+      fs.promises.lstat = (async (
+        target: fs.PathLike,
+        options?: Parameters<typeof fs.promises.lstat>[1],
+      ) => {
+        if (path.resolve(String(target)) === path.resolve(stale)) {
+          fs.rmSync(stale, { force: true });
+        }
+        return originalLstat(target, options);
+      }) as typeof fs.promises.lstat;
+
+      const errors = await captureConsoleErrors(() =>
+        cleanupStaleTransferTempFiles({ directory: dir, maxAgeMs: 1_000 }),
+      );
+
+      assert.deepStrictEqual(errors, []);
+    } finally {
+      fs.promises.lstat = originalLstat;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("cleans stale destination temp files without restoring orphaned backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
     const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
@@ -3623,6 +3668,41 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(restored), false);
       assert.strictEqual(fs.existsSync(backup), false);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores destination temp ENOENT races during stale cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-race-"));
+    const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const restoredDestination = path.join(dir, "file.bin");
+    fs.writeFileSync(orphanedBackup, "original");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(orphanedBackup, oldTime, oldTime);
+    const originalRename = fs.promises.rename;
+
+    try {
+      fs.promises.rename = (async (oldPath: fs.PathLike, newPath: fs.PathLike) => {
+        if (path.resolve(String(oldPath)) === path.resolve(orphanedBackup)) {
+          fs.rmSync(orphanedBackup, { force: true });
+          const error = new Error(
+            `ENOENT: no such file or directory, rename '${oldPath}'`,
+          ) as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        }
+        return originalRename(oldPath, newPath);
+      }) as typeof fs.promises.rename;
+
+      const errors = await captureConsoleErrors(() =>
+        cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 }),
+      );
+
+      assert.deepStrictEqual(errors, []);
+      assert.strictEqual(fs.existsSync(orphanedBackup), false);
+      assert.strictEqual(fs.existsSync(restoredDestination), false);
+    } finally {
+      fs.promises.rename = originalRename;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
