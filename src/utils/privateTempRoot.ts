@@ -60,9 +60,7 @@ export async function cleanupStalePrivateTempRoots(
       if (stats.mtimeMs > cutoff) {
         continue;
       }
-      if (stats.isDirectory() || stats.isSymbolicLink()) {
-        await fs.promises.rm(candidate, { recursive: true, force: true });
-      }
+      await fs.promises.rm(candidate, { recursive: true, force: true });
     } catch {
       // Best effort: another extension host may have already removed it.
     }

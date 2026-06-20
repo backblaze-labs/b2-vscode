@@ -1963,20 +1963,25 @@ suite("B2 transfer helpers", () => {
     const prefix = `b2-vscode-stale-cache-${process.pid}`;
     const staleRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
     const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+    const staleFile = path.join(os.tmpdir(), `${prefix}-ABC123`);
     const unrelatedRoot = path.join(os.tmpdir(), `${prefix}-manualbackup`);
+    fs.rmSync(staleFile, { recursive: true, force: true });
     fs.rmSync(unrelatedRoot, { recursive: true, force: true });
     fs.writeFileSync(path.join(staleRoot, "downloaded.bin"), "private data");
     fs.writeFileSync(path.join(freshRoot, "active.bin"), "keep");
+    fs.writeFileSync(staleFile, "stale");
     fs.mkdirSync(unrelatedRoot);
     fs.writeFileSync(path.join(unrelatedRoot, "unrelated.bin"), "keep");
     const oldTime = new Date(Date.now() - 10_000);
     fs.utimesSync(staleRoot, oldTime, oldTime);
+    fs.utimesSync(staleFile, oldTime, oldTime);
     fs.utimesSync(unrelatedRoot, oldTime, oldTime);
 
     try {
       await cleanupStalePrivateTempRoots(prefix, { maxAgeMs: 1_000 });
 
       assert.strictEqual(fs.existsSync(staleRoot), false);
+      assert.strictEqual(fs.existsSync(staleFile), false);
       assert.strictEqual(fs.existsSync(freshRoot), true);
       assert.strictEqual(fs.existsSync(unrelatedRoot), true);
       assert.strictEqual(fs.readFileSync(path.join(freshRoot, "active.bin"), "utf8"), "keep");
@@ -1987,6 +1992,7 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.rmSync(staleRoot, { recursive: true, force: true });
       fs.rmSync(freshRoot, { recursive: true, force: true });
+      fs.rmSync(staleFile, { recursive: true, force: true });
       fs.rmSync(unrelatedRoot, { recursive: true, force: true });
     }
   });
