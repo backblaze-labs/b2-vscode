@@ -67,6 +67,12 @@ function normalizedCommand(command) {
   return command.replace(/\s+/g, " ").trim();
 }
 
+function stepIndexByName(jobName, stepName) {
+  const index = jobSteps(jobName).findIndex((candidate) => candidate.name === stepName);
+  assert(index >= 0, `${jobName} must include step: ${stepName}.`);
+  return index;
+}
+
 function jobNeeds(jobName) {
   const needs = jobs[jobName]?.needs ?? [];
   return Array.isArray(needs) ? needs : [needs];
@@ -117,21 +123,93 @@ function assertPublishIsReleaseOnly() {
     "publish job must be able to read marketplace environment protection.",
   );
 
+  assertPublishUsesIsolatedPublisher();
+  assertMarketplaceSecretStepsUseIsolatedPublisher();
+}
+
+function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
+  const publishJob = workflowToCheck.jobs?.publish;
+  assert(publishJob, "release workflow is missing job: publish");
+  const steps = publishJob.steps;
+  assert(Array.isArray(steps), "publish must declare steps.");
+
+  const installStepIndex = stepIndexByName("publish", "Install isolated Marketplace publisher");
+  const installStep = steps[installStepIndex];
+  assert(
+    installStep.id === "publisher",
+    "isolated Marketplace publisher step must expose id: publisher.",
+  );
+  const installRun = normalizedCommand(String(installStep.run ?? ""));
+  assert(
+    installRun.includes("$RUNNER_TEMP/vsce-publisher"),
+    "isolated Marketplace publisher must be installed outside the repository.",
+  );
+  assert(
+    installStep.env?.VSCE_VERSION === "3.7.1" &&
+      /\bnpm\s+install\b/.test(installRun) &&
+      installRun.includes("@vscode/vsce@$VSCE_VERSION"),
+    "isolated Marketplace publisher must install a pinned @vscode/vsce version.",
+  );
+  assert(
+    installRun.includes("--ignore-scripts"),
+    "isolated Marketplace publisher install must not run package lifecycle scripts.",
+  );
+
   const verifyPatRun = normalizedCommand(stepRun("publish", "Verify Marketplace publisher token"));
   assert(
-    /\bnpm\s+exec\s+--no-install\s+--\s+vsce\s+verify-pat\b/.test(verifyPatRun),
-    "publish job must verify the Marketplace token with the lockfile-installed vsce binary.",
+    /\benv\s+-u\s+NODE_OPTIONS\s+-u\s+NODE_PATH\s+"\$VSCE_BIN"\s+verify-pat\b/.test(verifyPatRun),
+    "publish job must verify the Marketplace token with the isolated vsce binary.",
   );
 
   const publishRun = normalizedCommand(stepRun("publish", "Publish to VS Code Marketplace"));
   assert(
-    /\bnpm\s+exec\s+--no-install\s+--\s+vsce\s+publish\b/.test(publishRun),
-    "publish job must publish with the lockfile-installed vsce binary.",
+    /\benv\s+-u\s+NODE_OPTIONS\s+-u\s+NODE_PATH\s+"\$VSCE_BIN"\s+publish\b/.test(publishRun),
+    "publish job must publish with the isolated vsce binary.",
   );
   assert(
     /--skip-duplicate\b/.test(publishRun),
     "publish job must tolerate already-published versions.",
   );
+
+  const verifyPatStepIndex = stepIndexByName("publish", "Verify Marketplace publisher token");
+  const publishStepIndex = stepIndexByName("publish", "Publish to VS Code Marketplace");
+  assert(
+    installStepIndex < verifyPatStepIndex && installStepIndex < publishStepIndex,
+    "isolated Marketplace publisher must be installed before VSCE_PAT is exposed.",
+  );
+}
+
+function assertMarketplaceSecretStepsUseIsolatedPublisher(workflowToCheck = workflow) {
+  const publishJob = workflowToCheck.jobs?.publish;
+  assert(publishJob, "release workflow is missing job: publish");
+  const steps = publishJob.steps;
+  assert(Array.isArray(steps), "publish must declare steps.");
+
+  const secretSteps = steps.filter((step) => marketplaceSecretPattern.test(stringify(step.env)));
+  assert(secretSteps.length > 0, "publish job must expose VSCE_PAT only to publisher steps.");
+
+  for (const step of secretSteps) {
+    const stepName = step.name ?? "<unnamed>";
+    const run = normalizedCommand(String(step.run ?? ""));
+    assert(
+      step.env?.VSCE_BIN === "${{ steps.publisher.outputs.bin }}",
+      `${stepName} must invoke the isolated publisher binary when VSCE_PAT is in scope.`,
+    );
+    assert(
+      run.includes('cd "$RUNNER_TEMP"'),
+      `${stepName} must leave the repository before invoking vsce with VSCE_PAT.`,
+    );
+    assert(
+      /\benv\s+-u\s+NODE_OPTIONS\s+-u\s+NODE_PATH\s+"\$VSCE_BIN"\s+(verify-pat|publish)\b/.test(
+        run,
+      ),
+      `${stepName} must invoke the isolated vsce binary with repo Node hooks cleared.`,
+    );
+    assert(
+      !/\bnpm\s+(?:ci|exec|install|run)\b|\bnpx\b|node_modules\/\.bin\/vsce/.test(run),
+      `${stepName} must not execute repo-controlled dependencies while VSCE_PAT is in scope.`,
+    );
+  }
 }
 
 function assertReleaseSourceGate() {
@@ -221,6 +299,7 @@ function main() {
 
   assertMarketplaceSecretOnlyInPublish();
   assertPublishIsReleaseOnly();
+  assertMarketplaceSecretStepsUseIsolatedPublisher();
   assertReleaseSourceGate();
   assertAttestIsReleaseOnly();
   assertReleaseAfterPublish();
@@ -239,6 +318,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertMarketplaceSecretStepsUseIsolatedPublisher,
   assertMarketplaceSecretOnlyInPublish,
   main,
   marketplaceSecretPattern,
