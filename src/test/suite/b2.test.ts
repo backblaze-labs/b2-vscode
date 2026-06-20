@@ -1699,29 +1699,26 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("rejects B2 object keys that escape the temp cache", async () => {
+  test("sanitizes B2 object keys that attempt to escape the temp cache", async () => {
     const manager = new TempFileManager();
     const outsidePath = path.join(os.tmpdir(), `b2-vscode-outside-${Date.now()}`, "owned.txt");
     const maliciousKey = `../../${path.basename(path.dirname(outsidePath))}/owned.txt`;
 
     try {
-      await assert.rejects(
-        () =>
-          manager.saveStream(
-            "bucket",
-            maliciousKey,
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(new Uint8Array([1, 2, 3]));
-                controller.close();
-              },
-            }),
-          ),
-        /path traversal|relative path inside/i,
+      const cachedPath = await manager.saveStream(
+        "bucket",
+        maliciousKey,
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+            controller.close();
+          },
+        }),
       );
 
       assert.strictEqual(fs.existsSync(outsidePath), false);
-      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), undefined);
+      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), cachedPath);
+      assert.deepStrictEqual(await fs.promises.readFile(cachedPath), Buffer.from([1, 2, 3]));
     } finally {
       manager.dispose();
       fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
