@@ -2,10 +2,13 @@
 
 ## Dependency Audit Policy
 
-The required `VS Code Extension Tests` check runs `npm audit` through
+The required `Dependency Audit Gate` check runs `npm audit` through
 `scripts/run-npm-audit.js`, which reads `audit-policy.jsonc` and audits the full
-npm dependency tree, including development and release tooling. The release
-workflow runs the same advisory gate before building and packaging the VSIX.
+npm dependency tree, including development and release tooling. The required
+`VS Code Extension Tests` check is a separate unprivileged `pull_request` job
+that checks out the PR head and runs lifecycle-disabled install, compile, lint,
+and `xvfb-run -a npm test` against PR code. The release workflow runs the same
+advisory gate before building and packaging the VSIX.
 
 The required test check, release workflow, and pull-request build/documentation
 workflows install dependencies with `npm ci --ignore-scripts`, so package
@@ -17,6 +20,11 @@ The advisory and signature gates pin npm operations to
 `https://registry.npmjs.org/` and ignore user/global npm config so a repository
 or user `.npmrc` cannot redirect audit results or signature metadata to another
 registry.
+
+`npm-shrinkwrap.json` is not supported. npm gives shrinkwrap files precedence
+over `package-lock.json`, so a shrinkwrap-only dependency tree could differ
+from the audited lockfile. Pull-request metadata download, policy guardrails,
+and `scripts/run-npm-audit.js` reject shrinkwrap files fail-closed.
 
 The gate fails on moderate, high, or critical advisories because tooling
 dependencies participate in building, packaging, and testing the VSIX.
@@ -48,17 +56,18 @@ and unknown policy keys. Both the required test check and the release workflow
 honor this list, so a tracked no-fix advisory can unblock merges and releases
 without turning off the audit gate.
 
-Changes to the policy file, dependency manifests, `.npmrc`, audit helpers, and
-audit workflows are listed in `.github/CODEOWNERS`; branch protection must
-require CODEOWNER review so a PR cannot introduce a vulnerable dependency and
-approve its own accepted-advisory entry. On pull requests, the required test
-check runs from `pull_request_target`, checks out audit scripts from the
-protected base branch, downloads only the PR metadata needed for the dependency
-gate, and points the trusted scripts at the PR lockfile. The PR build workflow
-that compiles and packages PR code runs under unprivileged `pull_request`
-instead. The audit gate uses the accepted-advisory list from the protected base
-branch, so a PR-local exception does not silence a newly introduced finding until
-that exception has landed through the protected policy path.
+Changes to the policy file, dependency manifests, `.npmrc`, `npm-shrinkwrap.json`,
+audit helpers, and audit workflows are listed in `.github/CODEOWNERS`; branch
+protection must require CODEOWNER review so a PR cannot introduce a vulnerable
+dependency and approve its own accepted-advisory entry. On pull requests, the
+required dependency audit check runs from `pull_request_target`, checks out audit
+scripts from the protected base branch, downloads only the PR metadata needed
+for the dependency gate, and points the trusted scripts at the PR lockfile. The
+PR test and build workflows that compile, test, and package PR code run under
+unprivileged `pull_request` instead. The audit gate uses the accepted-advisory
+list from the protected base branch, so a PR-local exception does not silence a
+newly introduced finding until that exception has landed through the protected
+policy path.
 
 For emergency or unrelated changes blocked by a new moderate-or-higher advisory
 without an available fix:
@@ -84,18 +93,22 @@ enabled.
 The audit gate depends on npm registry and advisory API availability. The retry
 helper retries transient failures, and infrastructure failures are reported as
 `npm audit infrastructure error` so they are distinguishable from dependency
-advisories. The required PR check intentionally fails closed when npm advisory
-or signature services are unavailable or when an accepted advisory expires, so
-the repository can experience a merge freeze at the UTC date boundary. The gate
-warns during the final seven days before `reviewBy`; maintainers should use that
-warning to renew or remove the entry before unrelated PRs and releases are
-blocked. On-call maintainers unblock normal merges by removing/upgrading the
-affected dependency, refreshing the accepted advisory through the protected
-policy process, waiting for npm service recovery, or using administrator
-branch-protection break-glass only when the operational emergency is documented.
-The scheduled weekly audit is an early signal only; maintainers must still
-monitor failed scheduled runs in GitHub Actions and renew or remove accepted
-advisories before their `reviewBy` date.
+advisories. The required dependency audit check intentionally fails closed when
+npm advisory services are unavailable or when an accepted advisory expires, so
+the repository can experience a merge freeze at the UTC date boundary. Signature
+verification is also fail-closed in release and unprivileged build workflows; if
+npm signature services are unavailable, the security CODEOWNERS own the outage
+decision and either wait for service recovery or document an administrator
+branch-protection/release emergency before bypassing it. The gate warns during
+the final seven days before `reviewBy`; maintainers should use that warning to
+renew or remove the entry before unrelated PRs and releases are blocked. On-call
+maintainers unblock normal merges by removing/upgrading the affected dependency,
+refreshing the accepted advisory through the protected policy process, waiting
+for npm service recovery, or using administrator branch-protection break-glass
+only when the operational emergency is documented. The scheduled weekly audit is
+an early signal only; maintainers must still monitor failed scheduled runs in
+GitHub Actions and renew or remove accepted advisories before their `reviewBy`
+date.
 
 ## Unfinished Large File Cleanup
 

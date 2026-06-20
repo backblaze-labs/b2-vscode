@@ -137,6 +137,24 @@ function readTrustedPolicyFile(policyPath) {
   return parseStrictJsonPolicy(fs.readFileSync(policyPath, "utf8"), policyPath);
 }
 
+function assertUnsupportedInstallMetadataAbsent(directory) {
+  for (const [fileName, reason] of [
+    [
+      "npm-shrinkwrap.json",
+      "npm-shrinkwrap.json takes precedence over package-lock.json and can make the installed tree differ from the audited tree.",
+    ],
+    [
+      ".npmrc",
+      "project .npmrc files can redirect npm transport and are not trusted by the audit gate.",
+    ],
+  ]) {
+    const candidate = path.join(directory, fileName);
+    if (fs.existsSync(candidate)) {
+      throw new Error(`${fileName} is not supported in the audited directory. ${reason}`);
+    }
+  }
+}
+
 function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedOptions) {
   const { trustedBaseRef, trustedPolicy } = trustedOptions;
   if (!trustedBaseRef && !trustedPolicy) {
@@ -169,6 +187,7 @@ function trustedAcceptedAdvisories(repoRoot, auditPolicy, packageJson, trustedOp
 
 try {
   const args = parseArgs(process.argv.slice(2));
+  assertUnsupportedInstallMetadataAbsent(args.directory);
   const { auditPolicy, packageJson } = loadCurrentPolicy(args.directory, args.policy);
   validateAuditPolicy(auditPolicy, packageJson, { checkPackageScripts: false });
 

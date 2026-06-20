@@ -154,6 +154,13 @@ try {
     `${JSON.stringify(packageLock(packageJson.name, "dependencies"), null, 2)}\n`,
   );
   fs.writeFileSync(path.join(tempRoot, ".npmrc"), "registry=https://example.invalid/\n");
+  const npmrcResult = runGate();
+  if (npmrcResult.status === 0 || !npmrcResult.output.includes(".npmrc is not supported")) {
+    throw new Error(
+      `audit gate must reject project .npmrc before auditing:\n${npmrcResult.output}`,
+    );
+  }
+  fs.rmSync(path.join(tempRoot, ".npmrc"), { force: true });
 
   const result = runGate();
   if (result.error) {
@@ -181,7 +188,6 @@ try {
     path.join(devOnlyTempRoot, "package-lock.json"),
     `${JSON.stringify(packageLock(devOnlyPackageJson.name, "devDependencies"), null, 2)}\n`,
   );
-  fs.writeFileSync(path.join(devOnlyTempRoot, ".npmrc"), "omit=dev\n");
 
   const devOnlyResult = runGate(devOnlyTempRoot, [], {
     env: {

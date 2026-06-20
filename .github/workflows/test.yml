@@ -12,6 +12,7 @@ on:
       - "audit-policy.jsonc"
       - "package.json"
       - "package-lock.json"
+      - "npm-shrinkwrap.json"
       - ".npmrc"
       - "README.md"
       - "SECURITY.md"
@@ -25,6 +26,8 @@ on:
       - ".github/workflows/test.yml"
   pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.
     branches: [main]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -34,8 +37,9 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: VS Code Extension Tests
+  dependency-audit:
+    name: Dependency Audit Gate
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -71,6 +75,41 @@ jobs:
             const owner = pr.head.repo.owner.login;
             const repo = pr.head.repo.name;
             const ref = pr.head.sha;
+            const retryableStatuses = new Set([403, 408, 429, 500, 502, 503, 504]);
+
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            async function getContentWithRetry(file) {
+              let attempt = 0;
+              while (true) {
+                try {
+                  return await github.rest.repos.getContent({
+                    owner,
+                    repo,
+                    path: file,
+                    ref,
+                  });
+                } catch (error) {
+                  attempt += 1;
+                  if (!retryableStatuses.has(error.status) || attempt >= 3) {
+                    throw error;
+                  }
+                  await sleep(attempt * 1000);
+                }
+              }
+            }
+
+            try {
+              await getContentWithRetry('npm-shrinkwrap.json');
+              throw new Error('npm-shrinkwrap.json is not supported by the audit gate; use package-lock.json.');
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
             const files = [
               '.github/CODEOWNERS',
               '.github/workflows/build-extension.yml',
@@ -84,12 +123,7 @@ jobs:
             ];
 
             for (const file of files) {
-              const response = await github.rest.repos.getContent({
-                owner,
-                repo,
-                path: file,
-                ref,
-              });
+              const response = await getContentWithRetry(file);
               const data = response.data;
               if (Array.isArray(data) || data.type !== 'file' || !data.content) {
                 throw new Error(`${file} is not a readable file in the PR head.`);
@@ -166,8 +200,37 @@ jobs:
         working-directory: trusted-source
         run: NODE_PATH="$GITHUB_WORKSPACE/trusted-source/node_modules" node scripts/assert-audit-workflow.js --repo-root "$GITHUB_WORKSPACE/source"
 
+  vscode-tests:
+    name: VS Code Extension Tests
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install dependencies without lifecycle scripts
+        timeout-minutes: 10
+        working-directory: source
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Compile extension
+        working-directory: source
+        run: npm run compile
+
+      - name: Lint extension
+        working-directory: source
+        run: npm run lint
+
       - name: Run VS Code tests with discovery guard
-        if: github.event_name != 'pull_request_target'
         timeout-minutes: 20
         working-directory: source
         run: xvfb-run -a npm test

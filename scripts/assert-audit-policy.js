@@ -15,6 +15,7 @@ const {
   loadCurrentPolicy,
   validateAuditPolicy,
 } = require("./audit-policy");
+const { trustedNpmEnv } = require("./npm-command");
 
 function parseArgs(argv) {
   const args = {
@@ -152,6 +153,7 @@ function assertCodeOwnerProtection() {
     "/audit-policy.jsonc",
     "/package.json",
     "/package-lock.json",
+    "/npm-shrinkwrap.json",
     "/.npmrc",
     "/scripts/audit-policy.js",
     "/scripts/run-npm-audit.js",
@@ -163,6 +165,50 @@ function assertCodeOwnerProtection() {
     if (!protectedPaths.has(requiredPath)) {
       throw new Error(`CODEOWNERS must require review for ${requiredPath}.`);
     }
+  }
+}
+
+function assertUnsupportedInstallMetadataAbsent() {
+  for (const fileName of ["npm-shrinkwrap.json", ".npmrc"]) {
+    const filePath = path.join(repoRoot, fileName);
+    if (fs.existsSync(filePath)) {
+      throw new Error(`${fileName} must not be present in the audited directory.`);
+    }
+  }
+}
+
+function assertTrustedNpmEnvNeutralizesTransportConfig() {
+  const env = trustedNpmEnv({
+    npm_config_registry: "https://attacker.example/",
+    npm_config_audit_registry: "https://attacker.example/",
+    npm_config_userconfig: "/tmp/attacker-user-npmrc",
+    npm_config_globalconfig: "/tmp/attacker-global-npmrc",
+    npm_config_proxy: "http://attacker.example/",
+    npm_config_https_proxy: "http://attacker.example/",
+    npm_config_cafile: "/tmp/attacker-ca.pem",
+    npm_config_ca: "attacker-ca",
+    npm_config_cert: "attacker-cert",
+    npm_config_key: "attacker-key",
+    npm_config_strict_ssl: "false",
+    npm_config_offline: "true",
+    npm_config_future_knob: "attacker-value",
+    NPM_CONFIG_PROXY: "http://uppercase-attacker.example/",
+  });
+
+  for (const key of Object.keys(env)) {
+    if (/^npm_config_future_knob$/iu.test(key) || /^NPM_CONFIG_/u.test(key)) {
+      throw new Error(`trusted npm env must drop untrusted npm config key ${key}.`);
+    }
+  }
+
+  if (env.npm_config_proxy !== "" || env.npm_config_https_proxy !== "") {
+    throw new Error("trusted npm env must clear proxy config.");
+  }
+  if (env.npm_config_strict_ssl !== "true" || env.npm_config_offline !== "false") {
+    throw new Error("trusted npm env must pin strict TLS and online mode.");
+  }
+  if (env.npm_config_registry !== "https://registry.npmjs.org/") {
+    throw new Error("trusted npm env must pin the public npm registry.");
   }
 }
 
@@ -192,6 +238,8 @@ try {
   assertAcceptedPathScope();
   assertUnknownSeverityBlocks();
   assertCodeOwnerProtection();
+  assertUnsupportedInstallMetadataAbsent();
+  assertTrustedNpmEnvNeutralizesTransportConfig();
   assertRetryPropagatesFailure();
 
   // Validator self-checks: these do not inspect repository state, they prove

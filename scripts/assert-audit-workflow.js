@@ -102,13 +102,6 @@ function assertPathFilterCovers(workflow, eventName, targetPath) {
   );
 }
 
-function assertNoPullRequestEvent(workflow, workflowName) {
-  assert(
-    !workflowHasEvent(workflow, "pull_request"),
-    `${workflowName} must not use pull_request because PRs can rewrite that workflow.`,
-  );
-}
-
 function assertNoPullRequestTargetEvent(workflow, workflowName) {
   assert(
     !workflowHasEvent(workflow, "pull_request_target"),
@@ -116,12 +109,12 @@ function assertNoPullRequestTargetEvent(workflow, workflowName) {
   );
 }
 
-function assertNoPullRequestTargetPaths(workflow) {
-  const config = eventConfig(workflow, "pull_request_target");
-  assert(config !== undefined, "test workflow must run on pull_request_target.");
+function assertEventHasNoPathFilters(workflow, eventName, workflowName) {
+  const config = eventConfig(workflow, eventName);
+  assert(config !== undefined, `${workflowName} must run on ${eventName}.`);
   assert(
     config.paths === undefined && config["paths-ignore"] === undefined,
-    "pull_request_target must not use path filters because the required check must report on every PR.",
+    `${eventName} must not use path filters because required checks must report on every PR.`,
   );
 }
 
@@ -304,6 +297,15 @@ function assertInstallStep(label, step, options = {}) {
   assertTrustedNpmInstallConfig(label, command);
 }
 
+function assertDirectInstallStep(label, step) {
+  const command = normalizedRun(step);
+  assert(
+    /\bnpm\s+ci\b/.test(command) && command.includes("--ignore-scripts"),
+    `${label} must install with lifecycle scripts disabled.`,
+  );
+  assertTrustedNpmInstallConfig(label, command);
+}
+
 function assertSignatureStep(label, step, options = {}) {
   if (options.skipsPrTarget) {
     assert(
@@ -400,6 +402,15 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
     String(step.if ?? "").includes("github.event_name == 'pull_request_target'"),
     `${workflowName} PR metadata download must run only for pull_request_target.`,
   );
+  assert(
+    script.includes("getContentWithRetry") && script.includes("retryableStatuses"),
+    `${workflowName} PR metadata download must retry transient GitHub API failures.`,
+  );
+  assert(
+    script.includes("'npm-shrinkwrap.json'") &&
+      script.includes("npm-shrinkwrap.json is not supported"),
+    `${workflowName} PR metadata download must reject npm-shrinkwrap.json.`,
+  );
   for (const requiredFile of [
     ".github/CODEOWNERS",
     ".github/workflows/build-extension.yml",
@@ -443,8 +454,8 @@ function assertTestWorkflow(testWorkflow) {
     "test workflow must include a scheduled audit run.",
   );
   assert(workflowHasEvent(testWorkflow, "push"), "test workflow must run on push.");
-  assertNoPullRequestEvent(testWorkflow, "test workflow");
-  assertNoPullRequestTargetPaths(testWorkflow);
+  assertEventHasNoPathFilters(testWorkflow, "pull_request", "test workflow");
+  assertEventHasNoPathFilters(testWorkflow, "pull_request_target", "test workflow");
 
   for (const targetPath of [
     "README.md",
@@ -452,6 +463,7 @@ function assertTestWorkflow(testWorkflow) {
     "audit-policy.jsonc",
     "package.json",
     "package-lock.json",
+    "npm-shrinkwrap.json",
     ".npmrc",
     "scripts/audit-policy.js",
     "scripts/run-npm-audit.js",
@@ -461,33 +473,51 @@ function assertTestWorkflow(testWorkflow) {
     assertPathFilterCovers(testWorkflow, "push", targetPath);
   }
 
-  const testJob = job(testWorkflow, "test");
-  const sourceCheckoutIndex = assertPrTargetSourceCheckoutIsSkipped(testJob, "test workflow");
-  const trustedCheckoutIndex = assertTrustedCheckout(testJob, "test workflow");
-  const metadataDownloadIndex = assertPrMetadataDownload(testJob, "test workflow");
-  const setupNodeIndex = stepIndex(testJob, "test node setup", (step) =>
+  const auditJob = job(testWorkflow, "dependency-audit");
+  const testJob = job(testWorkflow, "vscode-tests");
+  assert(
+    auditJob.name === "Dependency Audit Gate",
+    "trusted dependency audit job must have a distinct check name.",
+  );
+  assert(
+    String(auditJob.if ?? "").includes("github.event_name != 'pull_request'"),
+    "trusted dependency audit job must not run on PR-controlled pull_request workflows.",
+  );
+  assert(
+    testJob.name === "VS Code Extension Tests",
+    "unprivileged test job must keep the required VS Code Extension Tests check name.",
+  );
+  assert(
+    String(testJob.if ?? "").includes("github.event_name != 'pull_request_target'"),
+    "VS Code tests job must not run in the privileged pull_request_target workflow.",
+  );
+
+  const sourceCheckoutIndex = assertPrTargetSourceCheckoutIsSkipped(auditJob, "test workflow");
+  const trustedCheckoutIndex = assertTrustedCheckout(auditJob, "test workflow");
+  const metadataDownloadIndex = assertPrMetadataDownload(auditJob, "test workflow");
+  const setupNodeIndex = stepIndex(auditJob, "audit node setup", (step) =>
     String(step.uses ?? "").startsWith("actions/setup-node@"),
   );
   const trustedInstallIndex = stepIndex(
-    testJob,
-    "test trusted guard install",
+    auditJob,
+    "audit trusted guard install",
     (step, run) => step["working-directory"] === "trusted-source" && /\bnpm\s+ci\b/.test(run),
   );
   const installIndex = stepIndex(
-    testJob,
-    "test source install",
+    auditJob,
+    "audit source install",
     (step, run) => step["working-directory"] === "source" && /\bnpm\s+ci\b/.test(run),
   );
-  const lifecycleIndex = stepIndex(testJob, "ignore-scripts guard", (_step, run) =>
+  const lifecycleIndex = stepIndex(auditJob, "ignore-scripts guard", (_step, run) =>
     run.includes("scripts/assert-ignore-scripts-install.js"),
   );
-  const policyIndex = stepIndex(testJob, "audit policy guard", (_step, run) =>
+  const policyIndex = stepIndex(auditJob, "audit policy guard", (_step, run) =>
     run.includes("scripts/assert-audit-policy.js"),
   );
-  const fixtureIndex = stepIndex(testJob, "audit gate fixture", (_step, run) =>
+  const fixtureIndex = stepIndex(auditJob, "audit gate fixture", (_step, run) =>
     run.includes("scripts/assert-audit-gate-fixture.js"),
   );
-  const auditSteps = testJob.steps
+  const auditSteps = auditJob.steps
     .map((step, index) => ({ index, step, run: normalizedRun(step) }))
     .filter(({ run }) => run.includes("scripts/run-npm-audit.js"));
   assert(
@@ -504,17 +534,14 @@ function assertTestWorkflow(testWorkflow) {
   assert(trustedBranchAudit, "test workflow must keep a non-pull_request_target audit step.");
   const prAuditIndex = prAudit.index;
   const trustedBranchAuditIndex = trustedBranchAudit.index;
-  const signatureIndex = stepIndex(testJob, "dependency signature verification", (_step, run) =>
+  const signatureIndex = stepIndex(auditJob, "dependency signature verification", (_step, run) =>
     /\bnpm\s+audit\s+signatures\b/.test(run),
   );
-  const workflowGuardIndex = stepIndex(testJob, "audit workflow guard", (_step, run) =>
+  const workflowGuardIndex = stepIndex(auditJob, "audit workflow guard", (_step, run) =>
     run.includes("scripts/assert-audit-workflow.js"),
   );
-  const testRunIndex = stepIndex(testJob, "VS Code tests", (_step, run) =>
-    /\bnpm\s+test\b/.test(run),
-  );
 
-  assertSetupNodeDoesNotCache("test node setup", stepByIndex(testJob, setupNodeIndex));
+  assertSetupNodeDoesNotCache("audit node setup", stepByIndex(auditJob, setupNodeIndex));
   assert(sourceCheckoutIndex < setupNodeIndex, "test source checkout must run before setup.");
   assert(trustedCheckoutIndex < setupNodeIndex, "test trusted checkout must run before setup.");
   assert(
@@ -528,18 +555,6 @@ function assertTestWorkflow(testWorkflow) {
     "workflow guard imports trusted YAML tooling and must run after trusted dependency install.",
   );
   assert(lifecycleIndex < installIndex, "ignore-scripts guard must run before source install.");
-  for (const [label, index] of [
-    ["trusted guard install", trustedInstallIndex],
-    ["install", installIndex],
-    ["audit policy guard", policyIndex],
-    ["audit gate fixture", fixtureIndex],
-    ["PR dependency advisory audit", prAuditIndex],
-    ["trusted-branch dependency advisory audit", trustedBranchAuditIndex],
-    ["dependency signature verification", signatureIndex],
-    ["audit workflow guard", workflowGuardIndex],
-  ]) {
-    assert(index < testRunIndex, `${label} must run before VS Code tests.`);
-  }
   assert(
     installIndex < trustedBranchAuditIndex,
     "test workflow must install source dependencies before trusted-branch auditing.",
@@ -560,22 +575,22 @@ function assertTestWorkflow(testWorkflow) {
     "workflow guard imports installed YAML tooling and must run after signature verification.",
   );
 
-  assertInstallStep("test trusted guard install step", stepByIndex(testJob, trustedInstallIndex));
-  assertInstallStep("test source install step", stepByIndex(testJob, installIndex), {
+  assertInstallStep("test trusted guard install step", stepByIndex(auditJob, trustedInstallIndex));
+  assertInstallStep("test source install step", stepByIndex(auditJob, installIndex), {
     trusted: true,
   });
   assert(
-    String(stepByIndex(testJob, installIndex).if ?? "").includes(
+    String(stepByIndex(auditJob, installIndex).if ?? "").includes(
       "github.event_name != 'pull_request_target'",
     ),
     "test source install step must be skipped for pull_request_target.",
   );
-  assertFixtureStep("test audit fixture step", stepByIndex(testJob, fixtureIndex));
-  assertAuditStep("test PR audit step", stepByIndex(testJob, prAuditIndex), {
+  assertFixtureStep("test audit fixture step", stepByIndex(auditJob, fixtureIndex));
+  assertAuditStep("test PR audit step", stepByIndex(auditJob, prAuditIndex), {
     trustedPolicy: true,
   });
-  assertAuditStep("test trusted-branch audit step", stepByIndex(testJob, trustedBranchAuditIndex));
-  assertSignatureStep("test signature step", stepByIndex(testJob, signatureIndex), {
+  assertAuditStep("test trusted-branch audit step", stepByIndex(auditJob, trustedBranchAuditIndex));
+  assertSignatureStep("test signature step", stepByIndex(auditJob, signatureIndex), {
     trusted: true,
     skipsPrTarget: true,
   });
@@ -587,20 +602,53 @@ function assertTestWorkflow(testWorkflow) {
     ["test trusted-branch audit step", trustedBranchAuditIndex],
     ["test workflow guard step", workflowGuardIndex],
   ]) {
-    assertRunsInTrustedSource(label, stepByIndex(testJob, index));
+    assertRunsInTrustedSource(label, stepByIndex(auditJob, index));
   }
   for (const [label, index] of [
     ["test source install step", installIndex],
     ["test signature step", signatureIndex],
+  ]) {
+    assertRunsInSource(label, stepByIndex(auditJob, index));
+  }
+
+  const testSourceCheckoutIndex = assertUnprivilegedSourceCheckout(testJob, "VS Code test job");
+  const testSetupNodeIndex = stepIndex(testJob, "VS Code test node setup", (step) =>
+    String(step.uses ?? "").startsWith("actions/setup-node@"),
+  );
+  const testInstallIndex = stepIndex(testJob, "VS Code test source install", (_step, run) =>
+    /\bnpm\s+ci\b/.test(run),
+  );
+  const compileIndex = stepIndex(testJob, "VS Code test compile", (_step, run) =>
+    run.includes("npm run compile"),
+  );
+  const lintIndex = stepIndex(testJob, "VS Code test lint", (_step, run) =>
+    run.includes("npm run lint"),
+  );
+  const testRunIndex = stepIndex(testJob, "VS Code tests", (_step, run) =>
+    run.includes("xvfb-run -a npm test"),
+  );
+
+  assertSetupNodeDoesNotCache("VS Code test node setup", stepByIndex(testJob, testSetupNodeIndex));
+  assert(
+    testSourceCheckoutIndex < testSetupNodeIndex,
+    "VS Code test source checkout must run before setup.",
+  );
+  assert(testSetupNodeIndex < testInstallIndex, "VS Code tests must setup Node before install.");
+  assert(testInstallIndex < compileIndex, "VS Code tests must install before compiling.");
+  assert(compileIndex < lintIndex, "VS Code tests must compile before linting.");
+  assert(lintIndex < testRunIndex, "VS Code tests must lint before running tests.");
+  assertDirectInstallStep("VS Code test install step", stepByIndex(testJob, testInstallIndex));
+  for (const [label, index] of [
+    ["VS Code test install step", testInstallIndex],
+    ["VS Code test compile step", compileIndex],
+    ["VS Code test lint step", lintIndex],
     ["VS Code test step", testRunIndex],
   ]) {
     assertRunsInSource(label, stepByIndex(testJob, index));
   }
   assert(
-    String(stepByIndex(testJob, testRunIndex).if ?? "").includes(
-      "github.event_name != 'pull_request_target'",
-    ),
-    "VS Code tests must be skipped for pull_request_target.",
+    !testJob.steps.some((step) => normalizedRun(step).includes("scripts/run-npm-audit.js")),
+    "VS Code tests job must not share the trusted dependency audit implementation.",
   );
 }
 
@@ -807,15 +855,69 @@ function expectGuardFailure(name, run) {
   throw new Error(`negative workflow case unexpectedly passed: ${name}`);
 }
 
+function assertRawContains(text, label, snippets) {
+  for (const snippet of snippets) {
+    assert(text.includes(snippet), `${label} raw workflow text must include: ${snippet}`);
+  }
+}
+
+function assertRawTestWorkflowText(text) {
+  assertRawContains(text, "test", [
+    "pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.",
+    "pull_request:",
+    "name: Dependency Audit Gate",
+    "if: github.event_name != 'pull_request'",
+    "name: VS Code Extension Tests",
+    "if: github.event_name != 'pull_request_target'",
+    "path: trusted-source",
+    "path: source",
+    "getContentWithRetry",
+    "'npm-shrinkwrap.json'",
+    "npm-shrinkwrap.json is not supported by the audit gate",
+    'node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"',
+    'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
+    "npm audit signatures --registry=https://registry.npmjs.org/",
+    "npm run compile",
+    "npm run lint",
+    "xvfb-run -a npm test",
+  ]);
+}
+
+function assertDependencyGateDocs() {
+  const security = fs.readFileSync(path.join(repoRoot, "SECURITY.md"), "utf8");
+  assert(
+    security.includes("signature verification runs on release and unprivileged build workflows"),
+    "SECURITY.md must document that privileged PR metadata audits do not run signature verification.",
+  );
+  assert(
+    security.includes("npm-shrinkwrap.json") && security.includes("is not supported"),
+    "SECURITY.md must document npm-shrinkwrap.json rejection.",
+  );
+}
+
+function runNegativeRawWorkflowTests(testWorkflowText) {
+  expectGuardFailure("raw workflow audit command removed", () =>
+    assertRawTestWorkflowText(
+      testWorkflowText.replace(
+        'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
+        'node -e "process.exit(0)"',
+      ),
+    ),
+  );
+  expectGuardFailure("raw workflow PR tests removed", () =>
+    assertRawTestWorkflowText(testWorkflowText.replace("xvfb-run -a npm test", "true")),
+  );
+}
+
 function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
   const mutablePrWorkflow = clone(testWorkflow);
-  const on = workflowOn(mutablePrWorkflow);
-  on.pull_request = on.pull_request_target;
-  delete on.pull_request_target;
-  expectGuardFailure("PR-controlled workflow trigger", () => assertTestWorkflow(mutablePrWorkflow));
+  job(mutablePrWorkflow, "dependency-audit").if = undefined;
+  expectGuardFailure("trusted audit runs on PR-controlled workflow trigger", () =>
+    assertTestWorkflow(mutablePrWorkflow),
+  );
 
   const prTargetCheckoutWorkflow = clone(testWorkflow);
-  const sourceCheckoutStep = job(prTargetCheckoutWorkflow, "test").steps.find(
+  const sourceCheckoutStep = job(prTargetCheckoutWorkflow, "dependency-audit").steps.find(
     (step) =>
       String(step.uses ?? "").startsWith("actions/checkout@") && step.with?.path === "source",
   );
@@ -827,7 +929,7 @@ function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
   );
 
   const localAuditScriptWorkflow = clone(testWorkflow);
-  const auditStep = job(localAuditScriptWorkflow, "test").steps.find((step) =>
+  const auditStep = job(localAuditScriptWorkflow, "dependency-audit").steps.find((step) =>
     normalizedRun(step).includes("scripts/run-npm-audit.js"),
   );
   auditStep["working-directory"] = "source";
@@ -835,7 +937,7 @@ function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
   expectGuardFailure("PR-local audit script", () => assertTestWorkflow(localAuditScriptWorkflow));
 
   const envOverrideWorkflow = clone(testWorkflow);
-  const envAuditStep = job(envOverrideWorkflow, "test").steps.find((step) =>
+  const envAuditStep = job(envOverrideWorkflow, "dependency-audit").steps.find((step) =>
     normalizedRun(step).includes("scripts/run-npm-audit.js"),
   );
   envAuditStep.env = { ...envAuditStep.env, GITHUB_EVENT_NAME: "push" };
@@ -843,6 +945,21 @@ function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
     assertNoEventEnvOverride(envOverrideWorkflow, "test workflow");
     assertTestWorkflow(envOverrideWorkflow);
   });
+
+  const skippedTestsWorkflow = clone(testWorkflow);
+  job(skippedTestsWorkflow, "vscode-tests").if = "github.event_name == 'push'";
+  expectGuardFailure("PR test job skipped for pull_request", () =>
+    assertTestWorkflow(skippedTestsWorkflow),
+  );
+
+  const removedTestStepWorkflow = clone(testWorkflow);
+  job(removedTestStepWorkflow, "vscode-tests").steps = job(
+    removedTestStepWorkflow,
+    "vscode-tests",
+  ).steps.filter((step) => !normalizedRun(step).includes("xvfb-run -a npm test"));
+  expectGuardFailure("required PR test step removed", () =>
+    assertTestWorkflow(removedTestStepWorkflow),
+  );
 
   const privilegedBuildWorkflow = clone(buildWorkflow);
   const buildOn = workflowOn(privilegedBuildWorkflow);
@@ -854,7 +971,9 @@ function runNegativeWorkflowTests(testWorkflow, buildWorkflow) {
 }
 
 function runGuardrails() {
-  const { workflow: testWorkflow } = readWorkflow(".github/workflows/test.yml");
+  const { text: testWorkflowText, workflow: testWorkflow } = readWorkflow(
+    ".github/workflows/test.yml",
+  );
   const { workflow: releaseWorkflow } = readWorkflow(".github/workflows/release.yml");
   const { workflow: buildExtensionWorkflow } = readWorkflow(
     ".github/workflows/build-extension.yml",
@@ -871,6 +990,7 @@ function runGuardrails() {
   ];
 
   runNegativeWorkflowTests(testWorkflow, buildExtensionWorkflow);
+  runNegativeRawWorkflowTests(testWorkflowText);
   for (const [workflowName, workflow] of workflows) {
     assertNoAuditCi(workflow, workflowName);
     assertNoEventEnvOverride(workflow, workflowName);
@@ -880,6 +1000,8 @@ function runGuardrails() {
   assertNoPlainPrWorkflowInstalls(workflows);
   assertNoPlainNpmCi(releaseWorkflow, "release workflow");
   assertTestWorkflow(testWorkflow);
+  assertRawTestWorkflowText(testWorkflowText);
+  assertDependencyGateDocs();
   assertBuildExtensionWorkflow(buildExtensionWorkflow);
   assertReleaseWorkflow(releaseWorkflow);
 }
