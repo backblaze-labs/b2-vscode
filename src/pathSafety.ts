@@ -346,6 +346,10 @@ export async function readFileNoFollow(filePath: string): Promise<Buffer> {
   const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (noFollow ?? 0));
 
   try {
+    const postOpenStat = await fs.promises.lstat(filePath);
+    if (postOpenStat.isSymbolicLink()) {
+      throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
+    }
     return await handle.readFile();
   } finally {
     await handle.close().catch(() => undefined);

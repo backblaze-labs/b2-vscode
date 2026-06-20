@@ -940,6 +940,47 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("no-follow reads recheck symlinks after opening", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-nofollow-"));
+    const localPath = path.join(outputRoot, "upload.txt");
+    const outsideFile = path.join(outputRoot, "outside.txt");
+    const originalOpen = fs.promises.open;
+    let swapped = false;
+
+    try {
+      await fs.promises.writeFile(localPath, "safe");
+      await fs.promises.writeFile(outsideFile, "secret");
+
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async (
+        ...args: Parameters<typeof fs.promises.open>
+      ) => {
+        const handle = await originalOpen(...args);
+        if (args[0].toString() === localPath && !swapped) {
+          swapped = true;
+          await fs.promises.rm(localPath, { force: true });
+          await fs.promises.symlink(outsideFile, localPath);
+        }
+        return handle;
+      }) as typeof fs.promises.open;
+
+      await assert.rejects(
+        () => readFileNoFollow(localPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("symbolic link") &&
+          (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
+      );
+      assert.strictEqual(swapped, true);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("default downloads detect existing targets before downloading", async () => {
     const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-default-"));
     const targetPath = path.join(outputRoot, "file.txt");
@@ -1116,6 +1157,7 @@ suite("Adversarial untrusted input fuzzing", () => {
       { bucket: "bucket", path: "safe/../../target.txt" },
       { bucket: "bucket", path: "." },
       { bucket: "bucket", path: ".." },
+      { bucket: "bucket", path: "./../notes.txt" },
       { bucket: "..", path: "file.txt" },
     ];
 
