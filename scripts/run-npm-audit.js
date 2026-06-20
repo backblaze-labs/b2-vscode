@@ -73,12 +73,23 @@ function npmAuditScopeArgs(auditPolicy) {
   return auditPolicy.includeDev ? ["--include=dev"] : ["--omit=dev"];
 }
 
+function spawnFailureDetails(result) {
+  return [result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n");
+}
+
 function readBaseBranchPolicy(repoRoot, baseRef) {
   const basePolicySpec = `refs/remotes/origin/${baseRef}:${AUDIT_POLICY_FILE}`;
   let result = spawnSync("git", ["show", basePolicySpec], {
     cwd: repoRoot,
     encoding: "utf8",
   });
+  if (result.error) {
+    failInfrastructure(
+      `could not read ${AUDIT_POLICY_FILE} from base branch ${baseRef}.\n${spawnFailureDetails(
+        result,
+      )}`,
+    );
+  }
 
   if (result.status !== 0) {
     const fetchResult = spawnSync(
@@ -89,11 +100,18 @@ function readBaseBranchPolicy(repoRoot, baseRef) {
         encoding: "utf8",
       },
     );
+    if (fetchResult.error) {
+      failInfrastructure(
+        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${spawnFailureDetails(
+          fetchResult,
+        )}`,
+      );
+    }
     if (fetchResult.status !== 0) {
       failInfrastructure(
-        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${
-          fetchResult.stdout ?? ""
-        }\n${fetchResult.stderr ?? ""}`,
+        `could not fetch base branch ${baseRef} for trusted accepted advisories.\n${spawnFailureDetails(
+          fetchResult,
+        )}`,
       );
     }
 
@@ -101,6 +119,13 @@ function readBaseBranchPolicy(repoRoot, baseRef) {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    if (result.error) {
+      failInfrastructure(
+        `could not read ${AUDIT_POLICY_FILE} from base branch ${baseRef}.\n${spawnFailureDetails(
+          result,
+        )}`,
+      );
+    }
   }
 
   if (result.status !== 0 || !result.stdout) {
