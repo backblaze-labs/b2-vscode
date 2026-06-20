@@ -24,6 +24,7 @@ import {
   SIMULATOR_BUCKET_NAME,
   type SimulatorBucketFixture,
 } from "../../testSupport/b2Simulator";
+import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
 import { tempDir } from "../../testSupport/tempDir";
 import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/workspace";
 
@@ -47,32 +48,6 @@ async function createUploadedToolFixture(): Promise<UploadedToolFixture> {
     extras: { getClient: () => fixture.client },
     uploaded,
   };
-}
-
-function createDirectorySymlink(target: string, linkPath: string): boolean {
-  try {
-    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function createFileSymlink(target: string, linkPath: string): boolean {
-  try {
-    fs.symlinkSync(target, linkPath, "file");
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
-      return false;
-    }
-    throw error;
-  }
 }
 
 suite("B2 LM tool operations with simulator", () => {
@@ -535,7 +510,7 @@ suite("B2 LM tool operations with simulator", () => {
     assert.strictEqual(presigned.message.includes(authorization), false);
     assert.match(presigned.message, /dedicated url field/i);
     assert.match(presigned.message, /file-name prefix/i);
-    assert.match(presigned.message, /same prefix/i);
+    assert.match(presigned.message, /Objects created later with the same prefix/i);
   });
 
   test("presignUrl rejects bucket and folder prefix authorizations", async () => {
@@ -632,6 +607,38 @@ suite("B2 LM tool operations with simulator", () => {
 
     const url = new URL(presigned.url);
     assert.strictEqual(url.searchParams.get("Authorization"), "object-token");
+  });
+
+  test("presignUrl proceeds for share-only keys that cannot list files", async () => {
+    const bucket = {
+      async listFileNames() {
+        throw Object.assign(new Error("missing listFiles capability"), {
+          status: 401,
+          code: "missing_capability",
+        });
+      },
+      async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
+        assert.strictEqual(fileNamePrefix, REMOTE_PATH);
+        assert.strictEqual(validDurationInSeconds, 123);
+        return { authorizationToken: "share-only-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    const presigned = await presignUrlOperation.execute(
+      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+      { getClient: () => client as never },
+    );
+
+    const url = new URL(presigned.url);
+    assert.strictEqual(url.searchParams.get("Authorization"), "share-only-token");
+    assert.match(presigned.message, /cannot list files/i);
+    assert.match(presigned.message, /Objects created later with the same prefix/i);
   });
 
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {

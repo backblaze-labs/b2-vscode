@@ -62,8 +62,8 @@ For a stable release:
 
 Prerelease tags containing `-` create prerelease GitHub Releases and skip the
 stable Marketplace publish path. Stable GitHub Releases are created only after
-the Marketplace publish job succeeds, so a publish failure does not advertise an
-unpublished stable version.
+the Marketplace publish job succeeds, so a publish failure blocks the GitHub
+Release and does not advertise an unpublished stable version.
 
 ## Rollback
 

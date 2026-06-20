@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } fro
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compiledTestFilesGlob, mochaOptions } from "./test-harness.config.mjs";
+import { compiledTestFilesGlob, mochaOptions, vscodeTestVersion } from "./test-harness.config.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const testHome = join(root, ".vscode-test", "home");
@@ -69,7 +69,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 export default defineConfig([
   {
     files: compiledTestFilesGlob,
-    version: "stable",
+    version: vscodeTestVersion,
     env: {
       B2_APPLICATION_KEY_ID: "",
       B2_APPLICATION_KEY: "",

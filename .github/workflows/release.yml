@@ -454,7 +454,8 @@ jobs:
         startsWith(github.ref, 'refs/tags/v') &&
         needs.build.result == 'success' &&
         needs.package-install-smoke.result == 'success' &&
-        needs.attest.result == 'success'
+        needs.attest.result == 'success' &&
+        needs.publish.result == 'success'
       }}
     permissions:
       contents: write # Create GitHub Releases.

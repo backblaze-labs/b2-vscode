@@ -34,6 +34,9 @@ function assertNeverRisk(risk: never): never {
   throw new Error(`Unhandled tool risk: ${String(risk)}`);
 }
 
+const DEFAULT_EXFILTRATION_DETAIL =
+  "This can expose local file contents outside your machine. Only continue if you intended to share this data.";
+
 /**
  * Adapter that wraps a B2ToolDefinition + B2ToolOperation into a
  * vscode.LanguageModelTool for registration with vscode.lm.registerTool().
@@ -73,15 +76,7 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
         parts.push(
           `Warning: this will ${formatInlineCode(effect ?? "expose data outside the local workspace or B2 account")}.`,
         );
-        if (this.definition.name === "b2_presignUrl") {
-          parts.push(
-            "Anyone who obtains the link can download authorized B2 objects until it expires, with no Backblaze login required.",
-          );
-        } else {
-          parts.push(
-            "This can expose local file contents outside your machine. Only continue if you intended to share this data.",
-          );
-        }
+        parts.push(this.definition.exfiltrationDetail ?? DEFAULT_EXFILTRATION_DETAIL);
         break;
       case "write":
         parts.push(

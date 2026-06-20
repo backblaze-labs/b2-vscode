@@ -7,23 +7,11 @@
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
-import { DownloadSizeLimitError } from "../../services/fileTransfers";
+import { DownloadSizeLimitError, MAX_DOWNLOAD_BYTES } from "../../services/fileTransfers";
 import { TempFileManager } from "../../services/tempFileManager";
+import { createDirectorySymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
 import { tempDir } from "../../testSupport/tempDir";
-
-function createDirectorySymlink(target: string, linkPath: string): boolean {
-  try {
-    fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
-      return false;
-    }
-    throw error;
-  }
-}
 
 suite("TempFileManager", () => {
   test("saves downloaded streams, returns cached paths, and clears cache on cleanup", async () => {
@@ -85,6 +73,23 @@ suite("TempFileManager", () => {
 
       assert.strictEqual(manager.getCachedPath("bucket", "large.txt"), undefined);
       assert.strictEqual(fs.existsSync(path.join(tempRoot, "bucket", "large.txt")), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("does not apply the LM download byte cap to cached open-file streams", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      const localPath = await manager.saveStream("bucket", "large.txt", streamFromText("cached"), {
+        knownBytes: MAX_DOWNLOAD_BYTES + 1,
+      });
+
+      assert.strictEqual(fs.readFileSync(localPath, "utf8"), "cached");
+      assert.strictEqual(manager.getCachedPath("bucket", "large.txt"), localPath);
     } finally {
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });

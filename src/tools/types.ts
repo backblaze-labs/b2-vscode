@@ -42,6 +42,14 @@ export interface B2ToolDefinition {
    * in the confirmation prompt (e.g. "permanently delete b2://bucket/key").
    */
   describeEffect?: (input: Record<string, unknown>) => string;
+  /**
+   * Optional: additional warning copy for exfiltration-risk tools.
+   *
+   * Tool definitions own this wording because "exfiltration" can mean exposing
+   * local file contents, creating a shareable B2 credential, or another
+   * tool-specific data exposure path.
+   */
+  exfiltrationDetail?: string;
 }
 
 /**
