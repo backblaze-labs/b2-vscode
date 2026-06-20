@@ -455,7 +455,10 @@ jobs:
         needs.build.result == 'success' &&
         needs.package-install-smoke.result == 'success' &&
         needs.attest.result == 'success' &&
-        needs.publish.result == 'success'
+        (
+          (!contains(github.ref_name, '-') && needs.publish.result == 'success') ||
+          (contains(github.ref_name, '-') && needs.publish.result == 'skipped')
+        )
       }}
     permissions:
       contents: write # Create GitHub Releases.
