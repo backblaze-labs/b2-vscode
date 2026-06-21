@@ -25,15 +25,9 @@ const publisherLockPath = path.join(
   "marketplace-publisher",
   "package-lock.json",
 );
-const workflowText = fs.readFileSync(workflowPath, "utf8");
-const workflow = yaml.load(workflowText);
-const codeQualityWorkflow = yaml.load(fs.readFileSync(codeQualityWorkflowPath, "utf8"));
-const jobs = workflow.jobs ?? {};
+
 const marketplaceSecretPattern =
   /(?:secrets\s*(?:\.\s*VSCE_KEY|\[\s*["']VSCE_KEY["']\s*\])|\bVSCE_(?:KEY|PAT)\b)/;
-const repoControlledCommandPattern = /\bnpm\s+(?:ci|exec|install|run)\b|\bnpx\b|\bnode\s+scripts\//;
-const marketplacePublisherPackage = JSON.parse(fs.readFileSync(publisherPackagePath, "utf8"));
-const marketplacePublisherLock = JSON.parse(fs.readFileSync(publisherLockPath, "utf8"));
 
 function assert(condition, message) {
   if (!condition) {
@@ -41,41 +35,69 @@ function assert(condition, message) {
   }
 }
 
+function readYamlFile(filePath) {
+  return yaml.load(fs.readFileSync(filePath, "utf8"));
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function loadReleaseWorkflow() {
+  return readYamlFile(workflowPath);
+}
+
+function loadCodeQualityWorkflow() {
+  return readYamlFile(codeQualityWorkflowPath);
+}
+
+function loadMarketplacePublisherPackage() {
+  return readJsonFile(publisherPackagePath);
+}
+
+function loadMarketplacePublisherLock() {
+  return readJsonFile(publisherLockPath);
+}
+
 function stringify(value) {
   return JSON.stringify(value ?? {});
 }
 
-function jobIf(jobName) {
-  return String(jobs[jobName]?.if ?? "");
+function jobsFor(workflowToCheck) {
+  return workflowToCheck.jobs ?? {};
 }
 
-function assertJobExists(jobName) {
-  assert(jobs[jobName], `release workflow is missing job: ${jobName}`);
+function jobIf(workflowToCheck, jobName) {
+  return String(jobsFor(workflowToCheck)[jobName]?.if ?? "");
 }
 
-function assertTimeout(jobName) {
-  assertJobExists(jobName);
+function assertJobExists(workflowToCheck, jobName) {
+  assert(jobsFor(workflowToCheck)[jobName], `release workflow is missing job: ${jobName}`);
+}
+
+function assertTimeout(workflowToCheck, jobName) {
+  assertJobExists(workflowToCheck, jobName);
   assert(
-    Number.isInteger(jobs[jobName]["timeout-minutes"]),
+    Number.isInteger(jobsFor(workflowToCheck)[jobName]["timeout-minutes"]),
     `${jobName} must declare timeout-minutes.`,
   );
 }
 
-function jobSteps(jobName) {
-  assertJobExists(jobName);
-  const steps = jobs[jobName].steps;
+function jobSteps(workflowToCheck, jobName) {
+  assertJobExists(workflowToCheck, jobName);
+  const steps = jobsFor(workflowToCheck)[jobName].steps;
   assert(Array.isArray(steps), `${jobName} must declare steps.`);
   return steps;
 }
 
-function stepByName(jobName, stepName) {
-  const step = jobSteps(jobName).find((candidate) => candidate.name === stepName);
+function stepByName(workflowToCheck, jobName, stepName) {
+  const step = jobSteps(workflowToCheck, jobName).find((candidate) => candidate.name === stepName);
   assert(step, `${jobName} must include step: ${stepName}.`);
   return step;
 }
 
-function stepRun(jobName, stepName) {
-  const run = stepByName(jobName, stepName).run;
+function stepRun(workflowToCheck, jobName, stepName) {
+  const run = stepByName(workflowToCheck, jobName, stepName).run;
   assert(typeof run === "string", `${jobName} step ${stepName} must be a run step.`);
   return run;
 }
@@ -97,18 +119,19 @@ function stepRunInSteps(steps, jobName, stepName) {
   return step.run;
 }
 
-function jobNeeds(jobName) {
-  const needs = jobs[jobName]?.needs ?? [];
+function jobNeeds(workflowToCheck, jobName) {
+  const needs = jobsFor(workflowToCheck)[jobName]?.needs ?? [];
   return Array.isArray(needs) ? needs : [needs];
 }
 
-function allRunCommands() {
+function allRunCommands(workflowToCheck) {
+  const jobs = jobsFor(workflowToCheck);
   return Object.keys(jobs).flatMap((jobName) =>
     (jobs[jobName].steps ?? []).map((step) => step.run).filter((run) => typeof run === "string"),
   );
 }
 
-function assertMarketplaceSecretOnlyInPublish(workflowToCheck = workflow) {
+function assertMarketplaceSecretOnlyInPublish(workflowToCheck = loadReleaseWorkflow()) {
   const workflowWithoutJobs = { ...workflowToCheck };
   delete workflowWithoutJobs.jobs;
   assert(
@@ -127,9 +150,10 @@ function assertMarketplaceSecretOnlyInPublish(workflowToCheck = workflow) {
   }
 }
 
-function assertPublishIsReleaseOnly() {
-  assertJobExists("publish");
-  const publishIf = jobIf("publish");
+function assertPublishIsReleaseOnly(workflowToCheck = loadReleaseWorkflow()) {
+  assertJobExists(workflowToCheck, "publish");
+  const jobs = jobsFor(workflowToCheck);
+  const publishIf = jobIf(workflowToCheck, "publish");
   assert(
     publishIf.includes("startsWith(github.ref, 'refs/tags/v')"),
     "publish job must be gated to v* tag refs.",
@@ -147,10 +171,11 @@ function assertPublishIsReleaseOnly() {
     "publish job must be able to read marketplace environment protection.",
   );
 
-  assertPublishUsesIsolatedPublisher();
+  assertPublishUsesIsolatedPublisher(workflowToCheck);
+  assertMarketplacePublisherDependencyGate(workflowToCheck);
 }
 
-function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
+function assertPublishUsesIsolatedPublisher(workflowToCheck = loadReleaseWorkflow()) {
   const publishJob = workflowToCheck.jobs?.publish;
   assert(publishJob, "release workflow is missing job: publish");
   const steps = publishJob.steps;
@@ -242,17 +267,63 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = workflow) {
   );
 
   const firstSecretStepIndex = Math.min(verifyPatStepIndex, publishStepIndex);
-  const postPublisherPreSecretRuns = steps
-    .slice(installStepIndex + 1, firstSecretStepIndex)
-    .map((step) => normalizedCommand(String(step.run ?? "")))
-    .filter(Boolean);
+  const postPublisherPreSecretSteps = steps.slice(installStepIndex + 1, firstSecretStepIndex);
   assert(
-    !postPublisherPreSecretRuns.some((run) => repoControlledCommandPattern.test(run)),
-    "repo-controlled commands must not run after the isolated publisher is created and before VSCE_PAT is used.",
+    postPublisherPreSecretSteps.length === 0,
+    `No step may run between the isolated publisher install and VSCE_PAT use: ${postPublisherPreSecretSteps
+      .map((step) => step.name ?? "<unnamed>")
+      .join(", ")}.`,
   );
 }
 
-function assertMarketplacePublisherLockfile() {
+function assertMarketplacePublisherDependencyGate(workflowToCheck = loadReleaseWorkflow()) {
+  const publishJob = workflowToCheck.jobs?.publish;
+  assert(publishJob, "release workflow is missing job: publish");
+  const steps = publishJob.steps;
+  assert(Array.isArray(steps), "publish must declare steps.");
+
+  const gateStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Verify Marketplace publisher dependency tree",
+  );
+  const installStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Install isolated Marketplace publisher",
+  );
+  assert(
+    gateStepIndex < installStepIndex,
+    "Marketplace publisher dependency tree must be verified before install.",
+  );
+
+  const gateStep = steps[gateStepIndex];
+  assert(
+    gateStep.env?.EXPECTED_PUBLISHER_PACKAGE_SHA256 ===
+      "${{ vars.MARKETPLACE_PUBLISHER_PACKAGE_SHA256 }}",
+    "Marketplace publisher package hash must come from protected environment variables.",
+  );
+  assert(
+    gateStep.env?.EXPECTED_PUBLISHER_LOCK_SHA256 ===
+      "${{ vars.MARKETPLACE_PUBLISHER_LOCK_SHA256 }}",
+    "Marketplace publisher lockfile hash must come from protected environment variables.",
+  );
+
+  const gateRun = normalizedCommand(String(gateStep.run ?? ""));
+  assert(
+    gateRun.includes("EXPECTED_PUBLISHER_PACKAGE_SHA256") &&
+      gateRun.includes("EXPECTED_PUBLISHER_LOCK_SHA256") &&
+      gateRun.includes(".github/marketplace-publisher/package.json") &&
+      gateRun.includes(".github/marketplace-publisher/package-lock.json") &&
+      gateRun.includes("sha256sum --check --strict"),
+    "Marketplace publisher dependency gate must verify package and lockfile SHA-256 values.",
+  );
+}
+
+function assertMarketplacePublisherLockfile(
+  marketplacePublisherPackage = loadMarketplacePublisherPackage(),
+  marketplacePublisherLock = loadMarketplacePublisherLock(),
+) {
   assert(
     marketplacePublisherPackage.dependencies?.["@vscode/vsce"] === "3.7.1",
     "Marketplace publisher package must pin @vscode/vsce exactly.",
@@ -271,7 +342,7 @@ function assertMarketplacePublisherLockfile() {
   );
 }
 
-function assertMarketplaceSecretStepsUseIsolatedPublisher(workflowToCheck = workflow) {
+function assertMarketplaceSecretStepsUseIsolatedPublisher(workflowToCheck = loadReleaseWorkflow()) {
   const publishJob = workflowToCheck.jobs?.publish;
   assert(publishJob, "release workflow is missing job: publish");
   const steps = publishJob.steps;
@@ -304,10 +375,10 @@ function assertMarketplaceSecretStepsUseIsolatedPublisher(workflowToCheck = work
   }
 }
 
-function assertReleaseSourceGate() {
-  assertJobExists("verify-release-source");
+function assertReleaseSourceGate(workflowToCheck = loadReleaseWorkflow()) {
+  assertJobExists(workflowToCheck, "verify-release-source");
   const sourceGateRun = normalizedCommand(
-    stepRun("verify-release-source", "Verify tag is reachable from main"),
+    stepRun(workflowToCheck, "verify-release-source", "Verify tag is reachable from main"),
   );
   assert(
     /\bgit\s+merge-base\s+--is-ancestor\b/.test(sourceGateRun) &&
@@ -315,34 +386,35 @@ function assertReleaseSourceGate() {
     "verify-release-source must reject tags outside origin/main.",
   );
   assert(
-    jobNeeds("build").includes("verify-release-source"),
+    jobNeeds(workflowToCheck, "build").includes("verify-release-source"),
     "build must depend on verify-release-source.",
   );
 }
 
-function assertAttestIsReleaseOnly() {
-  assertJobExists("attest");
+function assertAttestIsReleaseOnly(workflowToCheck = loadReleaseWorkflow()) {
+  assertJobExists(workflowToCheck, "attest");
   assert(
-    jobIf("attest").includes("startsWith(github.ref, 'refs/tags/v')"),
+    jobIf(workflowToCheck, "attest").includes("startsWith(github.ref, 'refs/tags/v')"),
     "attest job must only run for release tag refs.",
   );
 }
 
-function assertReleaseAfterPublish() {
-  assertJobExists("release");
+function assertReleaseAfterPublish(workflowToCheck = loadReleaseWorkflow()) {
+  assertJobExists(workflowToCheck, "release");
   assert(
-    jobNeeds("release").includes("publish"),
+    jobNeeds(workflowToCheck, "release").includes("publish"),
     "GitHub Release creation must depend on Marketplace publish.",
   );
   assert(
-    jobIf("release").includes("needs.publish.result == 'success'"),
+    jobIf(workflowToCheck, "release").includes("needs.publish.result == 'success'"),
     "stable GitHub Release must require successful Marketplace publish.",
   );
 }
 
-function assertPublishVerifiesAttestation() {
+function assertPublishVerifiesAttestation(workflowToCheck = loadReleaseWorkflow()) {
+  const jobs = jobsFor(workflowToCheck);
   const attestationRun = normalizedCommand(
-    stepRun("publish", "Verify VSIX build provenance attestation"),
+    stepRun(workflowToCheck, "publish", "Verify VSIX build provenance attestation"),
   );
   assert(
     /\bgh\s+attestation\s+verify\b/.test(attestationRun),
@@ -354,8 +426,8 @@ function assertPublishVerifiesAttestation() {
   );
 }
 
-function assertArtifactResolverUsage() {
-  const runCommands = allRunCommands();
+function assertArtifactResolverUsage(workflowToCheck = loadReleaseWorkflow()) {
+  const runCommands = allRunCommands(workflowToCheck);
   assert(
     runCommands.some((command) => command.includes("scripts/resolve-vsix-artifact.js")),
     "release workflow must use the deterministic VSIX resolver.",
@@ -372,7 +444,25 @@ function assertArtifactResolverUsage() {
   );
 }
 
-function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = workflow) {
+function assertReleaseInstallsIgnoreLifecycleScripts(workflowToCheck = loadReleaseWorkflow()) {
+  for (const [jobName, job] of Object.entries(workflowToCheck.jobs ?? {})) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.run !== "string") {
+        continue;
+      }
+      for (const line of step.run.split(/\r?\n/u)) {
+        if (/\bnpm\s+ci\b/.test(line)) {
+          assert(
+            line.includes("--ignore-scripts"),
+            `${jobName} step ${step.name ?? "<unnamed>"} must use npm ci --ignore-scripts.`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = loadReleaseWorkflow()) {
   const preflightJob = workflowToCheck.jobs?.["publish-preflight"];
   assert(preflightJob, "release workflow is missing job: publish-preflight");
   const steps = preflightJob.steps;
@@ -392,7 +482,7 @@ function eventPaths(workflowToCheck, eventName) {
   return Array.isArray(eventConfig?.paths) ? eventConfig.paths : [];
 }
 
-function assertCodeQualityRunsReleaseGuard(workflowToCheck = codeQualityWorkflow) {
+function assertCodeQualityRunsReleaseGuard(workflowToCheck = loadCodeQualityWorkflow()) {
   const qualityJob = workflowToCheck.jobs?.quality;
   assert(qualityJob, "code-quality workflow is missing job: quality");
   const steps = qualityJob.steps;
@@ -425,6 +515,11 @@ function assertCodeQualityRunsReleaseGuard(workflowToCheck = codeQualityWorkflow
 }
 
 function main() {
+  const workflow = loadReleaseWorkflow();
+  const codeQualityWorkflow = loadCodeQualityWorkflow();
+  const marketplacePublisherPackage = loadMarketplacePublisherPackage();
+  const marketplacePublisherLock = loadMarketplacePublisherLock();
+
   for (const jobName of [
     "verify-release-source",
     "quality",
@@ -438,20 +533,21 @@ function main() {
     "publish",
     "release",
   ]) {
-    assertTimeout(jobName);
+    assertTimeout(workflow, jobName);
   }
 
-  assertMarketplaceSecretOnlyInPublish();
-  assertMarketplacePublisherLockfile();
-  assertPublishIsReleaseOnly();
-  assertMarketplaceSecretStepsUseIsolatedPublisher();
-  assertReleaseSourceGate();
-  assertAttestIsReleaseOnly();
-  assertReleaseAfterPublish();
-  assertPublishVerifiesAttestation();
-  assertArtifactResolverUsage();
-  assertPublishPreflightIgnoresLifecycleScripts();
-  assertCodeQualityRunsReleaseGuard();
+  assertMarketplaceSecretOnlyInPublish(workflow);
+  assertMarketplacePublisherLockfile(marketplacePublisherPackage, marketplacePublisherLock);
+  assertPublishIsReleaseOnly(workflow);
+  assertMarketplaceSecretStepsUseIsolatedPublisher(workflow);
+  assertReleaseSourceGate(workflow);
+  assertAttestIsReleaseOnly(workflow);
+  assertReleaseAfterPublish(workflow);
+  assertPublishVerifiesAttestation(workflow);
+  assertArtifactResolverUsage(workflow);
+  assertReleaseInstallsIgnoreLifecycleScripts(workflow);
+  assertPublishPreflightIgnoresLifecycleScripts(workflow);
+  assertCodeQualityRunsReleaseGuard(codeQualityWorkflow);
 }
 
 if (require.main === module) {
@@ -467,10 +563,13 @@ if (require.main === module) {
 module.exports = {
   assertMarketplaceSecretStepsUseIsolatedPublisher,
   assertMarketplaceSecretOnlyInPublish,
+  assertMarketplacePublisherDependencyGate,
   assertMarketplacePublisherLockfile,
   assertPublishUsesIsolatedPublisher,
   assertPublishPreflightIgnoresLifecycleScripts,
+  assertReleaseInstallsIgnoreLifecycleScripts,
   assertCodeQualityRunsReleaseGuard,
+  loadReleaseWorkflow,
   main,
   marketplaceSecretPattern,
 };

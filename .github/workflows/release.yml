@@ -91,7 +91,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run VS Code tests
         run: xvfb-run -a npm test
@@ -116,7 +116,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run npm audit
         run: npm run audit:release
@@ -148,7 +148,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build extension for analysis
         run: npm run compile
@@ -179,7 +179,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Package VSIX
         run: npm run vsix
@@ -223,7 +223,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -384,6 +384,18 @@ jobs:
             fi
             sleep $((attempt * 10))
           done
+
+      - name: Verify Marketplace publisher dependency tree
+        env:
+          EXPECTED_PUBLISHER_PACKAGE_SHA256: ${{ vars.MARKETPLACE_PUBLISHER_PACKAGE_SHA256 }}
+          EXPECTED_PUBLISHER_LOCK_SHA256: ${{ vars.MARKETPLACE_PUBLISHER_LOCK_SHA256 }}
+        run: |
+          if [ -z "$EXPECTED_PUBLISHER_PACKAGE_SHA256" ] || [ -z "$EXPECTED_PUBLISHER_LOCK_SHA256" ]; then
+            echo "Marketplace publisher dependency hashes must be configured as protected marketplace environment variables."
+            exit 1
+          fi
+          printf '%s  %s\n' "$EXPECTED_PUBLISHER_PACKAGE_SHA256" ".github/marketplace-publisher/package.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PUBLISHER_LOCK_SHA256" ".github/marketplace-publisher/package-lock.json" | sha256sum --check --strict
 
       - name: Install isolated Marketplace publisher
         id: publisher
