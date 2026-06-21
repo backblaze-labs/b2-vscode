@@ -77,7 +77,7 @@ In agent mode, treat bucket listings and file contents as untrusted input: an ag
 
 Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
 
-Large uploads tag in-progress multipart sessions so the extension can cancel its own failed uploads and reclaim stale extension-owned sessions before later uploads to the same key. The extension does not run account-wide stale cleanup at activation because it cannot prove another VS Code window or machine is not actively writing an old unfinished upload. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. The extension does not run age-based stale cleanup because it cannot prove another process is not actively writing an old unfinished upload. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
 
 ## Development
 

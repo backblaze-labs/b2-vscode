@@ -40,14 +40,12 @@
   bucket may already be public.
 - Automatic global cleanup of stale unfinished multipart uploads has been
   removed because B2 file info is caller-controlled. Failed uploads cancel
-  unfinished uploads that match the active upload session, and bounded
-  extension-owned stale cleanup runs before future same-key uploads to reclaim
-  sessions from prior crashes. The extension does not run account-wide cleanup
-  at activation because another live VS Code window or machine could still be
-  writing an old unfinished upload. Operators should configure a B2 lifecycle
-  rule or use B2 tools to clean legacy unfinished multipart uploads so older
-  extension versions, crashes, or power-loss orphans cannot accumulate storage
-  cost.
+  unfinished uploads that match the active upload session only. The extension
+  does not run age-based stale cleanup because another live VS Code window or
+  machine could still be writing an old unfinished upload. Operators should
+  configure a B2 lifecycle rule or use B2 tools to clean legacy unfinished
+  multipart uploads so older extension versions, crashes, or power-loss orphans
+  cannot accumulate storage cost.
 - Workspace downloads and open-file cache downloads now enforce a 1 GiB default
   size cap, abort oversized streams, and remove partial local files.
 - Interactive open-file downloads now stream with the same 5-minute stall
