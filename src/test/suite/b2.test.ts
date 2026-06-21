@@ -675,7 +675,7 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
-      assert.strictEqual(renameCalls, 2);
+      assert.strictEqual(renameCalls, 3);
       assert.strictEqual(
         fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
         false,

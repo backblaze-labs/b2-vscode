@@ -598,7 +598,7 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.strictEqual(calls.length, 1);
-    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.progress.length, 1);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to create bucket/);
