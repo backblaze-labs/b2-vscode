@@ -46,6 +46,7 @@ import {
   isPublicPrivateBucketType,
   PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
   shouldConfirmPublicBucketVisibility,
+  type PublicPrivateBucketType,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 
@@ -281,15 +282,16 @@ async function warnUnknownPublicBucketState(
   services: BucketCommandServices,
   action: PublicBucketVisibilityAction,
   bucketName: string,
+  targetType: PublicPrivateBucketType,
   error: unknown,
 ): Promise<void> {
   services.treeProvider.refresh();
   logError(
-    `B2: Unconfirmed public bucket state after ${action} of "${bucketName}"; bucket may be public and a tree refresh was requested`,
+    `B2: Unconfirmed public bucket state after ${action} of "${bucketName}" to ${targetType}; bucket may be public and a tree refresh was requested`,
     error,
   );
   await vscode.window.showWarningMessage(
-    buildPublicBucketUnknownStateWarningMessage(action, bucketName),
+    buildPublicBucketUnknownStateWarningMessage(action, bucketName, targetType),
     { modal: true },
   );
 }
@@ -376,9 +378,12 @@ export async function createBucketCommand(services: CreateBucketCommandServices)
     vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
   } catch (error) {
     if (visibility.value === "allPublic" && isPostRequestB2MutationStateAmbiguous(error)) {
-      await warnUnknownPublicBucketState(services, "create", bucketName, error);
+      await warnUnknownPublicBucketState(services, "create", bucketName, visibility.value, error);
       showCommandError("B2: Could not confirm public bucket creation", error);
       return;
+    }
+    if (isPostRequestB2MutationStateAmbiguous(error)) {
+      treeProvider.refresh();
     }
     showCommandError("B2: Failed to create bucket", error);
   }
@@ -469,11 +474,11 @@ export async function changeBucketVisibilityCommand(
     vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
   } catch (error) {
     if (publicStateCouldRemainUnknown && isPostRequestB2MutationStateAmbiguous(error)) {
-      await warnUnknownPublicBucketState(services, "change", item.bucketName, error);
+      await warnUnknownPublicBucketState(services, "change", item.bucketName, newType, error);
       showCommandError("B2: Could not confirm public bucket visibility change", error);
       return;
     }
-    if (isBucketRevisionConflict(error)) {
+    if (isBucketRevisionConflict(error) || isPostRequestB2MutationStateAmbiguous(error)) {
       treeProvider.refresh();
     }
     showCommandError("B2: Failed to update bucket", error);

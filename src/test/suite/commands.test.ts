@@ -375,7 +375,7 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.strictEqual(calls.length, 1);
-    assert.strictEqual(commandServices.refreshCount(), 0);
+    assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /timed out/i);
@@ -949,7 +949,9 @@ suite("B2 public bucket command safety", () => {
     assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
-    assert.match(ui.warnings[0]?.message ?? "", /may already be public/);
+    assert.match(ui.warnings[0]?.message ?? "", /to private completed/);
+    assert.doesNotMatch(ui.warnings[0]?.message ?? "", /to public completed/);
+    assert.match(ui.warnings[0]?.message ?? "", /may remain public/);
     assert.match(ui.errors[0] ?? "", /timed out/i);
   });
 
@@ -972,7 +974,9 @@ suite("B2 public bucket command safety", () => {
     assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
-    assert.match(ui.warnings[0]?.message ?? "", /may already be public/);
+    assert.match(ui.warnings[0]?.message ?? "", /to private completed/);
+    assert.doesNotMatch(ui.warnings[0]?.message ?? "", /to public completed/);
+    assert.match(ui.warnings[0]?.message ?? "", /may remain public/);
     assert.match(ui.errors[0] ?? "", /Could not confirm public bucket visibility change/);
   });
 

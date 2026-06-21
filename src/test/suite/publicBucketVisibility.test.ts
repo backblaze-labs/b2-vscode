@@ -88,11 +88,30 @@ suite("Public bucket visibility warnings", () => {
     assert.ok(message.includes("accessible without authorization"));
   });
 
-  test("change unknown-state warning tells users the bucket may already be public", () => {
-    const message = buildPublicBucketUnknownStateWarningMessage("change", "public-assets");
+  test("private-to-public unknown-state warning names the public target", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage(
+      "change",
+      "public-assets",
+      "allPublic",
+    );
 
     assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("to public completed"));
     assert.ok(message.includes("may already be public"));
+    assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("public-to-private unknown-state warning names the private target", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage(
+      "change",
+      "public-assets",
+      "allPrivate",
+    );
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("to private completed"));
+    assert.ok(message.includes("may remain public"));
+    assert.ok(!message.includes("to public completed"));
     assert.ok(message.includes("accessible without authorization"));
   });
 });
