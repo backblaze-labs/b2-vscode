@@ -36,7 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logError("Could not clean stale transfer temp files during activation", error);
   });
   try {
-    await cleanupStaleTempFileCache({ maxAgeMs: 0 });
+    await cleanupStaleTempFileCache();
   } catch (error) {
     logError("Could not clean stale temp file cache during activation", error);
   }
