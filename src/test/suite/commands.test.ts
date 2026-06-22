@@ -120,6 +120,26 @@ function makeBucketTreeItem(
   };
 }
 
+function createBucketRequestWithoutSignal(
+  options: AbortableCreateBucketOptions,
+): CreateBucketOptions {
+  const { signal: _signal, ...request } = options;
+  return request;
+}
+
+function updateBucketRequestWithoutSignal(
+  options: AbortableUpdateBucketOptions,
+): UpdateBucketOptions {
+  const { signal: _signal, ...request } = options;
+  return request;
+}
+
+function assertAbortSignalIsEnumerable(options: { readonly signal?: AbortSignal }): void {
+  assert.ok(options.signal);
+  assert.strictEqual(Object.prototype.propertyIsEnumerable.call(options, "signal"), true);
+  assert.strictEqual({ ...options }.signal, options.signal);
+}
+
 suite("B2 commands error handling", () => {
   test("authentication errors surface invalid credential guidance", () => {
     const message = buildCommandErrorMessage(
@@ -308,7 +328,10 @@ suite("B2 public bucket command safety", () => {
       () => createBucketCommand(commandServices.services),
     );
 
-    assert.deepStrictEqual(calls, [{ bucketName: "private-bucket", bucketType: "allPrivate" }]);
+    assert.deepStrictEqual(calls.map(createBucketRequestWithoutSignal), [
+      { bucketName: "private-bucket", bucketType: "allPrivate" },
+    ]);
+    assertAbortSignalIsEnumerable(calls[0] ?? {});
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 1);
     assert.strictEqual(ui.progress.length, 1);
@@ -330,7 +353,10 @@ suite("B2 public bucket command safety", () => {
       () => createBucketCommand(commandServices.services),
     );
 
-    assert.deepStrictEqual(calls, [{ bucketName: "public-bucket", bucketType: "allPublic" }]);
+    assert.deepStrictEqual(calls.map(createBucketRequestWithoutSignal), [
+      { bucketName: "public-bucket", bucketType: "allPublic" },
+    ]);
+    assertAbortSignalIsEnumerable(calls[0] ?? {});
     assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.warnings[0]?.options?.modal, true);
     assert.deepStrictEqual(ui.warnings[0]?.items, [CONFIRM_PUBLIC_BUCKET_LABEL]);
@@ -497,7 +523,10 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPublic", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPublic", ifRevisionIs: 7 },
+    ]);
+    assertAbortSignalIsEnumerable(updates[0] ?? {});
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.warnings[0]?.message ?? "", /accessible without authorization/);
     assert.strictEqual(ui.inputs.length, 1);
@@ -560,7 +589,10 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPrivate", ifRevisionIs: 7 },
+    ]);
+    assertAbortSignalIsEnumerable(updates[0] ?? {});
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.inputs.length, 0);
     assert.strictEqual(ui.progress.length, 1);
@@ -595,7 +627,9 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPrivate", ifRevisionIs: 7 },
+    ]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.errors.length, 1);
@@ -904,7 +938,9 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPublic", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPublic", ifRevisionIs: 7 },
+    ]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
@@ -957,7 +993,9 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPublic", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPublic", ifRevisionIs: 7 },
+    ]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 2);
     assert.match(ui.errors[0] ?? "", /timed out/i);
@@ -985,7 +1023,9 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPrivate", ifRevisionIs: 7 },
+    ]);
     assert.strictEqual(updates[0]?.signal?.aborted, true);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
@@ -1011,7 +1051,9 @@ suite("B2 public bucket command safety", () => {
       () => changeBucketVisibilityCommand(commandServices.services, item),
     );
 
-    assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.deepStrictEqual(updates.map(updateBucketRequestWithoutSignal), [
+      { bucketType: "allPrivate", ifRevisionIs: 7 },
+    ]);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.warnings[0]?.message ?? "", /to private completed/);

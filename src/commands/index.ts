@@ -133,10 +133,7 @@ function withAbortSignal<T extends object>(
   options: T,
   signal: AbortSignal,
 ): T & { readonly signal: AbortSignal } {
-  return Object.defineProperty({ ...options }, "signal", {
-    value: signal,
-    enumerable: false,
-  }) as T & { readonly signal: AbortSignal };
+  return { ...options, signal };
 }
 
 async function withBucketMutationTimeout<T>(
