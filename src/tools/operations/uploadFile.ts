@@ -121,7 +121,7 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
         fileId: result.fileId,
         fileName: result.fileName,
         size: result.contentLength,
-        message: `Uploaded ${source.path} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
+        message: `Uploaded ${params.localPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
       };
     } finally {
       if (!sourceConsumed) {

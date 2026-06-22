@@ -26,6 +26,7 @@ import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
+import { withWindowUiStubs } from "./windowStubs";
 
 const definitions = [
   listBucketsTool,
@@ -287,6 +288,46 @@ suite("B2 LM tool failure handling", () => {
         () => entry.operation.execute(entry.input, noClientExtras),
         /Not authenticated/i,
       );
+    }
+  });
+
+  test("upload tool result reports workspace-relative source path", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-result-"));
+    const localPath = path.join(workspaceDir, "payload.txt");
+    fs.writeFileSync(localPath, "");
+    const bucket = {
+      async upload(options: { fileName: string }) {
+        return {
+          fileId: "uploaded-id",
+          fileName: options.fileName,
+          contentLength: 0,
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        let result: Awaited<ReturnType<typeof uploadFileOperation.execute>> | undefined;
+        await withWindowUiStubs({}, async () => {
+          result = await uploadFileOperation.execute(
+            { bucket: "b", localPath: "payload.txt", remotePath: "remote/payload.txt" },
+            { getClient: () => client },
+          );
+        });
+
+        if (!result) {
+          throw new Error("uploadFileOperation did not return a result.");
+        }
+        assert.match(result.message, /Uploaded payload\.txt to b2:\/\/b\/remote\/payload\.txt/);
+        assert.strictEqual(result.message.includes(workspaceDir), false);
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
   });
 
