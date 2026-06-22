@@ -47,6 +47,50 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
   }
 }
 
+function replaceAllLiteral(value: string, search: string, replacement: string): string {
+  return search ? value.split(search).join(replacement) : value;
+}
+
+function sanitizeWorkspaceLocalError(
+  error: unknown,
+  relativePath: string,
+  absolutePaths: ReadonlyArray<string | undefined>,
+): unknown {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+
+  const displayPath = relativePath || ".";
+  const errnoError = error as NodeJS.ErrnoException;
+  let message = error.message;
+  const pathsToReplace = [
+    ...absolutePaths,
+    typeof errnoError.path === "string" ? errnoError.path : undefined,
+  ];
+  for (const absolutePath of pathsToReplace) {
+    message = replaceAllLiteral(message, absolutePath ?? "", displayPath);
+  }
+  if (message === error.message) {
+    return error;
+  }
+
+  const sanitized = new Error(message);
+  sanitized.name = error.name;
+  if (typeof errnoError.code === "string") {
+    (sanitized as NodeJS.ErrnoException).code = errnoError.code;
+  }
+  if (typeof errnoError.errno === "number") {
+    (sanitized as NodeJS.ErrnoException).errno = errnoError.errno;
+  }
+  if (typeof errnoError.syscall === "string") {
+    (sanitized as NodeJS.ErrnoException).syscall = errnoError.syscall;
+  }
+  if (typeof errnoError.path === "string") {
+    (sanitized as NodeJS.ErrnoException).path = displayPath;
+  }
+  return sanitized;
+}
+
 async function workspaceUploadSource(relativePath: string): Promise<UploadSourceFile> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
@@ -57,25 +101,35 @@ async function workspaceUploadSource(relativePath: string): Promise<UploadSource
   const lexicalPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
   assertNoControlDirectoryRead(workspaceRoot, lexicalPath);
 
-  const [workspaceRealPath, localRealPath] = await Promise.all([
-    fs.promises.realpath(workspaceRoot),
-    fs.promises.realpath(lexicalPath),
-  ]);
-  if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
-    throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
-  }
-  assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
-  const localRealStats = await fs.promises.stat(localRealPath);
-  const source = await openUploadSourceFile(lexicalPath);
+  let workspaceRealPath: string | undefined;
+  let localRealPath: string | undefined;
+  let source: UploadSourceFile | undefined;
   try {
+    [workspaceRealPath, localRealPath] = await Promise.all([
+      fs.promises.realpath(workspaceRoot),
+      fs.promises.realpath(lexicalPath),
+    ]);
+    if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
+      throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+    }
+    assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
+    const localRealStats = await fs.promises.stat(localRealPath);
+    source = await openUploadSourceFile(lexicalPath);
     if (!sameFileIdentity(source.stats, localRealStats)) {
       throw new Error(`localPath changed while opening upload source: ${relativePath}`);
     }
 
     return source;
   } catch (error) {
-    await closeUploadSource(source);
-    throw error;
+    if (source) {
+      await closeUploadSource(source);
+    }
+    throw sanitizeWorkspaceLocalError(error, relativePath, [
+      lexicalPath,
+      localRealPath,
+      workspaceRealPath,
+      workspaceRoot,
+    ]);
   }
 }
 

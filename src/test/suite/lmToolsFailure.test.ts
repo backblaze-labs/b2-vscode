@@ -325,21 +325,26 @@ suite("B2 LM tool failure handling", () => {
 
     try {
       await withWorkspaceFolder(dir, () =>
-        withCancellationToken((token) =>
-          assert.rejects(
-            () =>
-              adapter.invoke(
-                {
-                  input: { bucket: "b", localPath: "missing.txt" },
-                } as vscode.LanguageModelToolInvocationOptions<{
-                  bucket: string;
-                  localPath: string;
-                }>,
-                token,
-              ),
-            /B2: Upload File failed: ENOENT.*missing\.txt/i,
-          ),
-        ),
+        withCancellationToken(async (token) => {
+          let message = "";
+          try {
+            await adapter.invoke(
+              {
+                input: { bucket: "b", localPath: "missing.txt" },
+              } as vscode.LanguageModelToolInvocationOptions<{
+                bucket: string;
+                localPath: string;
+              }>,
+              token,
+            );
+            assert.fail("Expected missing local file to reject.");
+          } catch (error) {
+            message = error instanceof Error ? error.message : String(error);
+          }
+
+          assert.match(message, /B2: Upload File failed: ENOENT.*missing\.txt/i);
+          assert.strictEqual(message.includes(dir), false);
+        }),
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
