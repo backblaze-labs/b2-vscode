@@ -69,8 +69,9 @@
   `expiresIn` between 1 and 3600 seconds, checks that the requested path
   currently names exactly one downloadable object with no adjacent same-prefix
   object, and explicitly reports that B2 download authorization tokens remain
-  name-prefix scoped. Presigned URLs default to 300 seconds; longer-lived links
-  require an explicit `expiresIn`.
+  name-prefix scoped for current and future matching names. It now requires B2
+  keys with both `listFiles` and `shareFiles`. Presigned URLs default to 300
+  seconds; longer-lived links require an explicit `expiresIn`.
 - Temp-open downloads now use a private per-process cache directory with
   owner-only file permissions. Stale temp-root cleanup preserves active roots
   with live owner markers or recently updated child files.

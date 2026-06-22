@@ -471,7 +471,7 @@ test("presign operation supports object names with empty path segments", async (
   assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
   assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
   assert.equal(result.authorizedPrefix, "a//b.txt");
-  assert.match(result.message, /ALL B2 object names beginning with a\/\/b\.txt/);
+  assert.match(result.message, /ALL current and future B2 object names beginning with a\/\/b\.txt/);
   assert.equal(result.message.includes("token/with #spaces"), false);
   assert.equal(result.message.includes(result.url), false);
 });
@@ -511,6 +511,130 @@ test("presign operation rejects adjacent same-prefix objects", async () => {
   );
 
   assert.deepEqual(authorizationRequests, []);
+});
+
+test("presign operation rejects paginated adjacent same-prefix objects", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async listFileNames() {
+            return {
+              files: [{ fileName: "customers/123" }],
+              nextFileName: "customers/1234/tax.pdf",
+            };
+          },
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  await assert.rejects(
+    () => presignUrlOperation.execute({ bucket: "bucket", path: "customers/123" }, extras),
+    /ambiguous/i,
+  );
+
+  assert.deepEqual(authorizationRequests, []);
+});
+
+test("presign operation ignores hidden same-prefix markers", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async listFileNames() {
+            return {
+              files: [
+                { fileName: "customers/123" },
+                { fileName: "customers/123.bak", action: "hide" },
+              ],
+              nextFileName: null,
+            };
+          },
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute(
+    { bucket: "bucket", path: "customers/123" },
+    extras,
+  );
+
+  assert.deepEqual(authorizationRequests, [["customers/123", 300]]);
+  assert.match(result.message, /no adjacent same-prefix downloadable object/);
+});
+
+test("presign operation rejects missing listFiles capability", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const error = new Error("missing listFiles") as Error & { code?: string };
+  error.code = "missing_capability";
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async listFileNames() {
+            throw error;
+          },
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  await assert.rejects(
+    () => presignUrlOperation.execute({ bucket: "bucket", path: "customers/123" }, extras),
+    /requires the B2 listFiles capability/i,
+  );
+
+  assert.deepEqual(authorizationRequests, []);
+});
+
+test("presign operation reports future same-prefix authorization", async () => {
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async listFileNames() {
+            return { files: [{ fileName: "report" }], nextFileName: null };
+          },
+          async getDownloadAuthorization() {
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute({ bucket: "bucket", path: "report" }, extras);
+
+  assert.equal("report-2024-payroll.csv".startsWith(result.authorizedPrefix), true);
+  assert.match(result.message, /ALL current and future B2 object names beginning with report/);
 });
 
 test("presign operation defaults to short-lived prefix authorization", async () => {

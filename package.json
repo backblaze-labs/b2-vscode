@@ -525,7 +525,7 @@
           "url"
         ],
         "toolReferenceName": "presignUrl",
-        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
+        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires the B2 listFiles and shareFiles capabilities. B2 tokens remain prefix-scoped: the URL can download any current or future object whose name starts with the supplied path until it expires.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -537,7 +537,7 @@
             "path": {
               "type": "string",
               "minLength": 1,
-              "description": "B2 object name to authorize. The path must currently match exactly one downloadable object and no other current object may start with that value. B2 still grants prefix scope, so future names such as \"reports/q4.pdf.bak\" may also be authorized until expiry."
+              "description": "B2 object name to authorize. The key must have listFiles capability because the path must currently match exactly one downloadable object and no other current downloadable object may start with that value. B2 still grants prefix scope, so future names such as \"reports/q4.pdf.bak\" may also be authorized until expiry."
             },
             "expiresIn": {
               "type": "integer",

@@ -731,16 +731,24 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("root-bound downloads write new files without exposing a loose overwrite mode", async () => {
+  test("root-bound downloads publish only a complete placement temp", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-root-"));
     const destination = path.join(dir, "nested", "file.bin");
     const existing = path.join(dir, "existing.bin");
     const originalLink = fs.promises.link;
     let linkCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
-    fs.promises.link = async (): Promise<void> => {
+    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
       linkCalls += 1;
-      throw new Error("root-bound downloads must not hardlink into place");
+      assert.strictEqual(
+        path.resolve(String(newPath)),
+        path.resolve(linkCalls === 1 ? destination : existing),
+      );
+      if (path.resolve(String(newPath)) === path.resolve(destination)) {
+        assert.strictEqual(fs.existsSync(newPath), false);
+      }
+      assert.match(path.basename(String(existingPath)), /^b2-transfer-\d+-[a-f0-9]{24}\.tmp$/);
+      await fs.promises.copyFile(existingPath, newPath, fs.constants.COPYFILE_EXCL);
     };
 
     try {
@@ -756,7 +764,7 @@ suite("B2 transfer helpers", () => {
       );
 
       assert.strictEqual(size, 3);
-      assert.strictEqual(linkCalls, 0);
+      assert.strictEqual(linkCalls, 1);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -782,6 +790,7 @@ suite("B2 transfer helpers", () => {
           ),
         /EEXIST|file already exists/i,
       );
+      assert.strictEqual(linkCalls, 2);
       assert.deepStrictEqual([...fs.readFileSync(existing)], [1]);
     } finally {
       fs.promises.link = originalLink;
@@ -1802,6 +1811,55 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("activation stale-upload sweep caps bucket scans and list timeout", async () => {
+    const timeoutClient = {
+      async listBuckets() {
+        return new Promise<never>(() => undefined);
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    await assert.rejects(
+      () =>
+        cleanupStaleUnfinishedUploadsForClient(timeoutClient, {
+          listBucketsTimeoutMs: 5,
+        }),
+      /bucket listing timed out/i,
+    );
+
+    const scannedBuckets: string[] = [];
+    const bucket = (name: string): UploadBucketHandle & { name: string } => {
+      const value: UploadBucketHandle & { name: string } = {
+        name,
+        async listUnfinishedLargeFiles() {
+          scannedBuckets.push(name);
+          return { files: [], nextFileId: null };
+        },
+        async cancelLargeFile() {
+          assert.fail("Empty cleanup pages should not cancel uploads");
+        },
+        file() {
+          assert.fail("Activation cleanup test should not open an upload stream");
+        },
+        async upload() {
+          assert.fail("Activation cleanup test should not upload a file");
+        },
+      };
+      return value;
+    };
+    const cappedClient = {
+      async listBuckets() {
+        return [bucket("one"), bucket("two")];
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    const result = await cleanupStaleUnfinishedUploadsForClient(cappedClient, {
+      maxBuckets: 1,
+    });
+
+    assert.strictEqual(result.bucketCount, 1);
+    assert.deepStrictEqual(scannedBuckets, ["one"]);
+  });
+
   test("does not trust spoofable remote unfinished upload metadata", async () => {
     const spoofedId = largeFileId("spoofed-upload");
     const otherSessionId = largeFileId("other-session-upload");
@@ -2612,6 +2670,34 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(activeFile, "utf8"), "active");
     } finally {
       fs.rmSync(activeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("continues stale private temp cleanup after one root hits scan cap", async () => {
+    const prefix = `b2-vscode-capped-cache-${process.pid}`;
+    const largeRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+    const cheapRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.writeFileSync(path.join(largeRoot, "first.bin"), "stale");
+    fs.writeFileSync(path.join(largeRoot, "second.bin"), "stale");
+    fs.utimesSync(largeRoot, oldTime, oldTime);
+    fs.utimesSync(path.join(largeRoot, "first.bin"), oldTime, oldTime);
+    fs.utimesSync(path.join(largeRoot, "second.bin"), oldTime, oldTime);
+    fs.utimesSync(cheapRoot, oldTime, oldTime);
+
+    try {
+      await cleanupStalePrivateTempRoots(prefix, {
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        candidateBudgetMs: 1_000,
+        maxEntries: 1,
+      });
+
+      assert.strictEqual(fs.existsSync(largeRoot), true);
+      assert.strictEqual(fs.existsSync(cheapRoot), false);
+    } finally {
+      fs.rmSync(largeRoot, { recursive: true, force: true });
+      fs.rmSync(cheapRoot, { recursive: true, force: true });
     }
   });
 

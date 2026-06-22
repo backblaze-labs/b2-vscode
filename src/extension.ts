@@ -32,6 +32,10 @@ import { cleanupStalePrivateTempRoots } from "./utils/privateTempRoot";
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
 
+const STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS = 25;
+const STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS = 30_000;
+const STALE_UNFINISHED_UPLOAD_LIST_BUCKETS_TIMEOUT_MS = 10_000;
+
 export interface StaleUnfinishedUploadSweepResult {
   readonly bucketCount: number;
   readonly reclaimedOwnedStaleUploadCount: number;
@@ -39,38 +43,123 @@ export interface StaleUnfinishedUploadSweepResult {
   readonly failedBucketCount: number;
 }
 
+export interface StaleUnfinishedUploadSweepOptions extends StaleUnfinishedUploadCleanupOptions {
+  readonly maxBuckets?: number;
+  readonly aggregateBudgetMs?: number;
+  readonly listBucketsTimeoutMs?: number;
+}
+
+function remainingBudgetMs(startedAt: number, budgetMs: number): number {
+  return Math.max(0, startedAt + budgetMs - Date.now());
+}
+
+async function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  description: string,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return operation;
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${description} timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export async function cleanupStaleUnfinishedUploadsForClient(
   client: Pick<B2Client, "listBuckets">,
-  options: StaleUnfinishedUploadCleanupOptions = {},
+  options: StaleUnfinishedUploadSweepOptions = {},
 ): Promise<StaleUnfinishedUploadSweepResult> {
-  const buckets = await client.listBuckets();
+  const startedAt = Date.now();
+  const aggregateBudgetMs = options.aggregateBudgetMs ?? STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS;
+  const buckets = await withTimeout(
+    client.listBuckets(),
+    options.listBucketsTimeoutMs ?? STALE_UNFINISHED_UPLOAD_LIST_BUCKETS_TIMEOUT_MS,
+    "Activation stale unfinished-upload bucket listing",
+  );
+  const maxBuckets = options.maxBuckets ?? STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS;
+  const bucketsToScan = buckets.slice(0, Math.max(0, maxBuckets));
   let reclaimedOwnedStaleUploadCount = 0;
   let ignoredUnownedStaleUploadCount = 0;
   let failedBucketCount = 0;
+  let scannedBucketCount = 0;
 
-  for (const bucket of buckets) {
+  await cleanupStaleUploadSessionMarkers().catch((error) => {
+    logError("Could not clean stale upload session markers before stale-upload sweep", error);
+  });
+
+  if (buckets.length > bucketsToScan.length) {
+    log(
+      `Activation stale unfinished-upload sweep capped bucket scan at ${bucketsToScan.length} of ${buckets.length} bucket(s).`,
+    );
+  }
+
+  for (const bucket of bucketsToScan) {
+    const bucketBudgetMs = remainingBudgetMs(startedAt, aggregateBudgetMs);
+    if (bucketBudgetMs <= 0) {
+      log(
+        `Activation stale unfinished-upload sweep stopped after reaching the ${aggregateBudgetMs} ms aggregate budget.`,
+      );
+      break;
+    }
+
     let result: StaleUnfinishedUploadCleanupResult;
     try {
-      result = await cleanupStaleUnfinishedUploads(bucket, options);
+      result = await cleanupStaleUnfinishedUploads(bucket, {
+        ...options,
+        unfinishedCleanupBudgetMs: Math.min(
+          options.unfinishedCleanupBudgetMs ?? bucketBudgetMs,
+          bucketBudgetMs,
+        ),
+        skipUploadSessionMarkerCleanup: true,
+      });
     } catch (error) {
       failedBucketCount += 1;
       logError(`Could not clean stale unfinished uploads for bucket ${bucket.name}`, error);
       continue;
     }
 
+    scannedBucketCount += 1;
     reclaimedOwnedStaleUploadCount += result.reclaimedOwnedStaleUploadCount;
     ignoredUnownedStaleUploadCount += result.ignoredUnownedStaleUploadCount;
   }
 
   log(
-    `Activation stale unfinished-upload sweep scanned ${buckets.length} bucket(s), reclaimed ${reclaimedOwnedStaleUploadCount}, ignored ${ignoredUnownedStaleUploadCount}, failed ${failedBucketCount}.`,
+    `Activation stale unfinished-upload sweep scanned ${scannedBucketCount} bucket(s), reclaimed ${reclaimedOwnedStaleUploadCount}, ignored ${ignoredUnownedStaleUploadCount}, failed ${failedBucketCount}.`,
   );
 
   return {
-    bucketCount: buckets.length,
+    bucketCount: scannedBucketCount,
     reclaimedOwnedStaleUploadCount,
     ignoredUnownedStaleUploadCount,
     failedBucketCount,
+  };
+}
+
+type AuthenticatedCleanupScheduler = (client: B2Client) => void;
+
+export function createAuthenticatedClientSetter(
+  setClient: (client: B2Client | null) => void,
+  scheduleCleanups: AuthenticatedCleanupScheduler = scheduleAuthenticatedCleanups,
+): (client: B2Client | null) => void {
+  return (client) => {
+    setClient(client);
+    if (client !== null) {
+      scheduleCleanups(client);
+    }
   };
 }
 
@@ -122,6 +211,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 2. Tree provider
   const treeProvider = new B2TreeProvider(authService);
+  const setAuthenticatedClient = createAuthenticatedClientSetter((client) => {
+    currentClient = client;
+  });
 
   // 3. Register tree view
   const treeView = vscode.window.createTreeView(VIEW_BUCKETS, {
@@ -140,9 +232,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tempFileManager,
     isAuthenticated: () => currentClient !== null,
     getClient: () => currentClient,
-    setClient: (client) => {
-      currentClient = client;
-    },
+    setClient: setAuthenticatedClient,
   });
   registerB2Tools(context, () => currentClient);
 
@@ -160,7 +250,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       await client.authorize();
 
-      currentClient = client;
+      setAuthenticatedClient(client);
       treeProvider.setClient(client);
 
       await authService.setAuthState({
@@ -171,7 +261,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
-      scheduleAuthenticatedCleanups(client);
     } else {
       const warning = authService.getCredentialResolutionWarning();
       await authService.setAuthState({

@@ -27,6 +27,7 @@ import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
 import {
   ensureContainedDirectoryPath,
+  assertSafeFileWritePath,
   assertPrivateDirectory,
   ensurePrivateDirectory,
   ensureRealDirectory,
@@ -145,6 +146,7 @@ export interface StaleUnfinishedUploadCleanupOptions extends Pick<
 > {
   readonly remotePath?: string;
   readonly unfinishedCleanupMaxAgeMs?: number;
+  readonly skipUploadSessionMarkerCleanup?: boolean;
 }
 
 export interface StaleUnfinishedUploadCleanupResult {
@@ -683,14 +685,7 @@ async function copyIntoPlaceNoFollow(
     if (options.overwrite !== false) {
       throw new Error("Root-bound downloads must be written without overwrite.");
     }
-    await writeNewFileNoFollowWithinRoot(
-      allowedRootDirectory,
-      destinationPath,
-      fs.createReadStream(sourcePath),
-      {
-        label: "download target",
-      },
-    );
+    await linkRootBoundCompleteTempIntoPlace(sourcePath, destinationPath, allowedRootDirectory);
   } else {
     if (options.overwrite === false) {
       await writeNewFileNoFollow(destinationPath, fs.createReadStream(sourcePath));
@@ -699,6 +694,54 @@ async function copyIntoPlaceNoFollow(
     }
   }
   await removeTempFile(sourcePath);
+}
+
+async function copyToRootBoundPlacementTemp(
+  sourcePath: string,
+  destinationPath: string,
+  allowedRootDirectory: string,
+): Promise<string> {
+  const placementTempPath = transferTempPath(path.dirname(destinationPath));
+  try {
+    await writeNewFileNoFollowWithinRoot(
+      allowedRootDirectory,
+      placementTempPath,
+      fs.createReadStream(sourcePath),
+      {
+        label: "download placement temp",
+      },
+    );
+    return placementTempPath;
+  } catch (error) {
+    await removeTempFile(placementTempPath);
+    throw error;
+  }
+}
+
+async function linkRootBoundCompleteTempIntoPlace(
+  sourcePath: string,
+  destinationPath: string,
+  allowedRootDirectory: string,
+): Promise<void> {
+  const placementTempPath = await copyToRootBoundPlacementTemp(
+    sourcePath,
+    destinationPath,
+    allowedRootDirectory,
+  );
+  let linkedDestination = false;
+  try {
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await fs.promises.link(placementTempPath, destinationPath);
+    linkedDestination = true;
+    await assertSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+  } catch (error) {
+    if (linkedDestination) {
+      await removeTempFile(destinationPath);
+    }
+    throw error;
+  } finally {
+    await removeTempFile(placementTempPath);
+  }
 }
 
 async function replaceExistingDestination(
@@ -1115,11 +1158,22 @@ function remainingCleanupBudget(startedAt: number, budgetMs: number): number {
   return Math.max(0, startedAt + budgetMs - Date.now());
 }
 
+function isMissingCapabilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const details = error as Error & { code?: string };
+  return String(details.code ?? "").toLowerCase() === "missing_capability";
+}
+
 function startedMsFromFileInfo(fileInfo: Record<string, string> | undefined): number | undefined {
   const startedMs = Number(fileInfo?.[UPLOAD_STARTED_MS_INFO_KEY]);
   return Number.isFinite(startedMs) ? startedMs : undefined;
 }
 
+// Upload-session marker storage. The cleanup paths below only trust markers
+// from this private directory when authorizing B2 unfinished-upload cancellation.
 interface UploadSessionMarker {
   readonly remotePath: string;
   readonly uploadSessionId: string;
@@ -1256,6 +1310,8 @@ async function readUploadSessionMarker(markerPath: string): Promise<Partial<Uplo
   }
 }
 
+// Unfinished multipart cleanup orchestration. Keep marker authorization and B2
+// cancellation policy together so ownership checks stay visible at call sites.
 async function cancelLargeFileSafely(
   bucket: UploadBucketHandle,
   fileId: LargeFileId,
@@ -1292,9 +1348,11 @@ export async function cleanupStaleUnfinishedUploads(
   bucket: UploadBucketHandle,
   options: StaleUnfinishedUploadCleanupOptions = {},
 ): Promise<StaleUnfinishedUploadCleanupResult> {
-  await cleanupStaleUploadSessionMarkers().catch((error) => {
-    logError("Could not clean stale upload session markers", error);
-  });
+  if (options.skipUploadSessionMarkerCleanup !== true) {
+    await cleanupStaleUploadSessionMarkers().catch((error) => {
+      logError("Could not clean stale upload session markers", error);
+    });
+  }
 
   const cutoff =
     Date.now() - (options.unfinishedCleanupMaxAgeMs ?? STALE_UNFINISHED_UPLOAD_MAX_AGE_MS);
@@ -1486,6 +1544,8 @@ async function cleanupMatchingUnfinishedUploads(
     } catch (error) {
       if (error instanceof CleanupOperationTimeoutError) {
         recordUnfinishedUploadCleanupTimeout(`${description} list`, error);
+      } else if (isMissingCapabilityError(error)) {
+        log(`${description} cleanup skipped because the B2 key lacks the required capability.`);
       } else {
         logError(`${description} list failed`, error);
       }

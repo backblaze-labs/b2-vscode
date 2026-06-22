@@ -12,6 +12,7 @@ const STALE_PRIVATE_TEMP_ROOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PRIVATE_TEMP_ROOT_OWNER_FILE = ".b2-vscode-owner.json";
 const PRIVATE_TEMP_ROOT_HEARTBEAT_MS = 60 * 1000;
 const PRIVATE_TEMP_ROOT_CLEANUP_BUDGET_MS = 2_000;
+const PRIVATE_TEMP_ROOT_CANDIDATE_BUDGET_MS = 200;
 const PRIVATE_TEMP_ROOT_CLEANUP_MAX_ENTRIES = 2_000;
 
 const privateTempRootHeartbeats = new Map<string, NodeJS.Timeout>();
@@ -156,19 +157,23 @@ async function hasRecentChildActivity(
 
 export async function cleanupStalePrivateTempRoots(
   prefix: string,
-  options: { maxAgeMs?: number; budgetMs?: number; maxEntries?: number } = {},
+  options: {
+    maxAgeMs?: number;
+    budgetMs?: number;
+    candidateBudgetMs?: number;
+    maxEntries?: number;
+  } = {},
 ): Promise<void> {
   assertSimpleTempPrefix(prefix);
 
   const tempRoot = os.tmpdir();
   const entryPrefix = `${prefix}-`;
   const cutoff = Date.now() - (options.maxAgeMs ?? STALE_PRIVATE_TEMP_ROOT_MAX_AGE_MS);
-  const scanBudget: ChildActivityScanBudget = {
-    deadlineMs: Date.now() + Math.max(0, options.budgetMs ?? PRIVATE_TEMP_ROOT_CLEANUP_BUDGET_MS),
-    maxEntries: Math.max(0, options.maxEntries ?? PRIVATE_TEMP_ROOT_CLEANUP_MAX_ENTRIES),
-    scannedEntries: 0,
-    capHit: false,
-  };
+  const cleanupDeadlineMs =
+    Date.now() + Math.max(0, options.budgetMs ?? PRIVATE_TEMP_ROOT_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? PRIVATE_TEMP_ROOT_CLEANUP_MAX_ENTRIES);
+  let scannedEntries = 0;
+  let capHit = false;
   let entries: string[];
   try {
     entries = await fs.promises.readdir(tempRoot);
@@ -178,8 +183,9 @@ export async function cleanupStalePrivateTempRoots(
 
   const mkdtempEntryPattern = new RegExp(`^${escapeRegExp(entryPrefix)}[A-Za-z0-9]{6}$`);
   for (const entry of entries) {
-    if (Date.now() >= scanBudget.deadlineMs || scanBudget.scannedEntries >= scanBudget.maxEntries) {
-      scanBudget.capHit = true;
+    const remainingCleanupMs = cleanupDeadlineMs - Date.now();
+    if (remainingCleanupMs <= 0) {
+      capHit = true;
       break;
     }
 
@@ -193,24 +199,41 @@ export async function cleanupStalePrivateTempRoots(
       if (stats.mtimeMs > cutoff) {
         continue;
       }
+      const scanBudget: ChildActivityScanBudget = {
+        deadlineMs:
+          Date.now() +
+          Math.max(
+            0,
+            Math.min(
+              remainingCleanupMs,
+              options.candidateBudgetMs ?? PRIVATE_TEMP_ROOT_CANDIDATE_BUDGET_MS,
+            ),
+          ),
+        maxEntries,
+        scannedEntries: 0,
+        capHit: false,
+      };
       if (
         stats.isDirectory() &&
         ((await hasLiveOwnerMarker(candidate, cutoff)) ||
           (await hasRecentChildActivity(candidate, cutoff, scanBudget)))
       ) {
+        scannedEntries += scanBudget.scannedEntries;
+        capHit = capHit || scanBudget.capHit;
         continue;
       }
+      scannedEntries += scanBudget.scannedEntries;
       await fs.promises.rm(candidate, { recursive: true, force: true });
     } catch {
       // Best effort: another extension host may have already removed it.
     }
   }
 
-  if (scanBudget.capHit) {
+  if (capHit) {
     void import("../logger")
       .then(({ log }) => {
         log(
-          `Stale private temp-root cleanup stopped after scanning ${scanBudget.scannedEntries} entr${scanBudget.scannedEntries === 1 ? "y" : "ies"} because a cleanup cap was reached.`,
+          `Stale private temp-root cleanup hit a cap after scanning ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}.`,
         );
       })
       .catch(() => undefined);

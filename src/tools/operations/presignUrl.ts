@@ -77,7 +77,7 @@ async function assertExactCurrentObjectWithoutAdjacentPrefix(
   } catch (error) {
     if (isMissingListFilesCapabilityError(error)) {
       throw new Error(
-        "presignUrl requires listFiles capability to verify the object before issuing B2's prefix-scoped download authorization.",
+        "presignUrl requires the B2 listFiles capability to verify current prefix scope before issuing B2's prefix-scoped download authorization.",
       );
     }
     throw error;
@@ -121,7 +121,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
       url,
       expiresIn,
       authorizedPrefix: filePath,
-      message: `Pre-signed URL authorizes ALL B2 object names beginning with ${filePath}, not just this file, for ${expiresIn}s. Current bucket contents were checked and no adjacent same-prefix object was found. Use the dedicated url field for the token-bearing link.`,
+      message: `Pre-signed URL authorizes ALL current and future B2 object names beginning with ${filePath}, not just this file, for ${expiresIn}s. Current bucket contents were checked and no adjacent same-prefix downloadable object was found. Use the dedicated url field for the token-bearing link.`,
     };
   },
 };
