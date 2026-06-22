@@ -11,8 +11,9 @@
   retry with backoff, and an SSRF guard.
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
-- `presignUrl` now requires an integer expiration from 1 to 604800 seconds and
-  rejects empty paths, folder-like paths, and paths that `listFiles` cannot
+- `presignUrl` now requires an integer expiration from 1 to 3600 seconds,
+  defaults to 300 seconds, and rejects empty paths, folder-like paths, and paths
+  that `listFiles` cannot
   verify as one existing downloadable B2 file with no current same-prefix
   sibling files before issuing a prefix-based download authorization. The
   token-bearing link is returned in the structured `url` field rather than
@@ -46,9 +47,9 @@
   bucket may already be public.
 - Automatic global cleanup of stale unfinished multipart uploads has been
   removed because B2 file info is caller-controlled. Failed uploads cancel
-  unfinished uploads that match the active upload session only. The extension
-  does not run age-based stale cleanup because another live VS Code window or
-  machine could still be writing an old unfinished upload. Operators should
+  unfinished uploads that match the active upload session only. Activation-time
+  stale cleanup is limited to uploads with locally persisted session markers so
+  another live VS Code window or machine is not touched. Operators should
   configure a B2 lifecycle rule or use B2 tools to clean legacy unfinished
   multipart uploads so older extension versions, crashes, or power-loss orphans
   cannot accumulate storage cost.

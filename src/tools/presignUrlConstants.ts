@@ -1,11 +1,10 @@
 /**
- * Shared pre-signed URL bounds.
- *
- * Kept outside tool definitions and operations so declarative metadata does
- * not import operation execution logic.
+ * Backward-compatible aliases for shared pre-signed URL bounds.
  *
  * @module tools/presignUrlConstants
  */
 
-export const MAX_PRESIGN_URL_EXPIRATION_SECONDS = 604800;
-export const DEFAULT_PRESIGN_URL_EXPIRATION_SECONDS = 3600;
+export {
+  DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS as DEFAULT_PRESIGN_URL_EXPIRATION_SECONDS,
+  MAX_PRESIGN_URL_EXPIRES_IN_SECONDS as MAX_PRESIGN_URL_EXPIRATION_SECONDS,
+} from "./presignUrlLimits";
