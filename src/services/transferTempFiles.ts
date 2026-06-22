@@ -27,9 +27,21 @@ const STALE_CLEANUP_MAX_ENTRIES = 2_000;
 const MAX_CLEANUP_THROTTLE_ENTRIES = 256;
 
 const lastCleanupByDirectory = new Map<string, number>();
+let defaultTransferTempDirectory: string | undefined;
+
+function defaultTransferTempDirectoryName(): string {
+  const uid = typeof process.getuid === "function" ? `uid-${process.getuid()}` : "user";
+  const random = crypto.randomBytes(12).toString("hex");
+  return `${TRANSFER_TEMP_DIR_NAME}-${uid}-${process.pid}-${random}`;
+}
 
 export function transferTempDirectory(directory?: string): string {
-  return directory ?? path.join(os.tmpdir(), TRANSFER_TEMP_DIR_NAME);
+  if (directory !== undefined) {
+    return directory;
+  }
+
+  defaultTransferTempDirectory ??= path.join(os.tmpdir(), defaultTransferTempDirectoryName());
+  return defaultTransferTempDirectory;
 }
 
 export async function ensurePrivateDirectory(directory: string): Promise<void> {
@@ -161,13 +173,18 @@ async function scanBoundedDirectoryEntries(
   let dir: fs.Dir | undefined;
   try {
     dir = await fs.promises.opendir(directory);
-    for await (const entry of dir) {
+    while (true) {
       if (Date.now() >= deadlineMs) {
         budgetHit = true;
         break;
       }
       if (scannedEntries >= maxEntries) {
         maxEntriesHit = true;
+        break;
+      }
+
+      const entry = await dir.read();
+      if (entry === null) {
         break;
       }
 
@@ -178,6 +195,12 @@ async function scanBoundedDirectoryEntries(
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") {
       logError(`Could not inspect ${label}: ${directory}`, error);
+    }
+  } finally {
+    if (dir !== undefined) {
+      await dir.close().catch((error) => {
+        logError(`Could not close ${label}: ${directory}`, error);
+      });
     }
   }
 

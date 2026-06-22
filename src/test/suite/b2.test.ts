@@ -62,6 +62,11 @@ import {
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
 } from "../../services/pathSafety";
+import {
+  cleanupStaleTransferTempFiles as cleanupStaleManagedTransferTempFiles,
+  TRANSFER_TEMP_DIR_NAME as MANAGED_TRANSFER_TEMP_DIR_NAME,
+  transferTempDirectory,
+} from "../../services/transferTempFiles";
 import { humanSize } from "../../utils/humanSize";
 import {
   cleanupStalePrivateTempRoots,
@@ -1659,6 +1664,16 @@ suite("B2 transfer helpers", () => {
       mutableFs.chmodSync = originalSyncChmod;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("uses a randomized process transfer temp directory by default", () => {
+    const first = transferTempDirectory();
+    const second = transferTempDirectory();
+
+    assert.strictEqual(second, first);
+    assert.strictEqual(path.dirname(first), os.tmpdir());
+    assert.notStrictEqual(first, path.join(os.tmpdir(), MANAGED_TRANSFER_TEMP_DIR_NAME));
+    assert.match(path.basename(first), new RegExp(`^${MANAGED_TRANSFER_TEMP_DIR_NAME}-`));
   });
 
   test("streams non-empty uploads through the SDK write stream", async () => {
@@ -3840,6 +3855,70 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(userLike, "utf8"), "user data");
       assert.strictEqual(fs.existsSync(complete), true);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds stale managed transfer temp cleanup work", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-bound-"));
+    const staleFiles = ["first", "second", "third"].map((name) =>
+      path.join(dir, `b2-transfer-1-${name}.tmp`),
+    );
+    const oldTime = new Date(Date.now() - 10_000);
+    for (const filePath of staleFiles) {
+      fs.writeFileSync(filePath, "stale");
+      fs.utimesSync(filePath, oldTime, oldTime);
+    }
+
+    try {
+      await cleanupStaleManagedTransferTempFiles({
+        directory: dir,
+        maxAgeMs: 1_000,
+        maxEntries: 2,
+        budgetMs: 1_000,
+      });
+
+      const remaining = staleFiles.filter((filePath) => fs.existsSync(filePath));
+      assert.strictEqual(remaining.length, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("closes bounded transfer cleanup handles on early exit", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-close-"));
+    const stale = path.join(dir, "b2-transfer-1-first.tmp");
+    const secondStale = path.join(dir, "b2-transfer-1-second.tmp");
+    const originalOpendir = fs.promises.opendir;
+    let closeCalls = 0;
+    fs.writeFileSync(stale, "stale");
+    fs.writeFileSync(secondStale, "stale");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(stale, oldTime, oldTime);
+    fs.utimesSync(secondStale, oldTime, oldTime);
+
+    fs.promises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      assert.strictEqual(path.resolve(String(args[0])), path.resolve(dir));
+      const handle = await originalOpendir(...args);
+      const close = handle.close.bind(handle);
+      handle.close = async () => {
+        closeCalls += 1;
+        await close();
+      };
+      return handle;
+    }) as typeof fs.promises.opendir;
+
+    try {
+      await cleanupStaleManagedTransferTempFiles({
+        directory: dir,
+        maxAgeMs: 1_000,
+        maxEntries: 1,
+        budgetMs: 1_000,
+      });
+
+      assert.strictEqual(closeCalls, 1);
+    } finally {
+      fs.promises.opendir = originalOpendir;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
