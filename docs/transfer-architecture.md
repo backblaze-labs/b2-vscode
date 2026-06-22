@@ -15,13 +15,15 @@ helper owns a particular temp-file convention. The stable API is:
 - `cleanupStaleTransferTempFiles`
 - `cleanupStaleDestinationTempFiles`
 - `cleanupWorkspaceDestinationTempFiles`
-- transfer constants and timeout re-exports consumed by tools and tests
+- transfer constants and stall-timeout helpers consumed by tools and tests
 
 Supporting concerns that can be reused safely live outside the facade:
 
 - `pathSafety.ts` owns contained path and real-directory checks.
 - `sourceFileIdentity.ts` owns upload source identity construction.
-- `transferTimeout.ts` owns stall and fixed-deadline timeout primitives.
+- `transferTimeout.ts` owns reusable fixed-deadline helpers, while
+  `fileTransfers.ts` remains the facade for download/upload stall-timeout
+  exports until those public imports are consolidated.
 - `tempFileManager.ts` owns editor cache lifecycle and startup cache sweeping.
 
 Future refactors should keep the exported facade stable and move only a full
