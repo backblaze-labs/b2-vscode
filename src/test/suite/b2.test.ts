@@ -495,7 +495,12 @@ suite("B2 transfer helpers", () => {
             maxBytes: 8,
             temporaryDirectory: tempDir,
           }),
-        DownloadSizeLimitError,
+        (error) => {
+          assert.ok(error instanceof DownloadSizeLimitError);
+          assert.match(error.message, /Download to limited\.bin exceeded the 8 byte limit/i);
+          assert.strictEqual(error.message.includes(dir), false);
+          return true;
+        },
       );
 
       assert.strictEqual(fs.existsSync(destination), false);

@@ -226,7 +226,7 @@ function createDownloadSizeLimitTransform(
       if (bytes > maxBytes) {
         callback(
           new DownloadSizeLimitError(
-            `Download to ${destinationPath} exceeded the ${maxBytes} byte limit.`,
+            `Download to ${path.basename(destinationPath)} exceeded the ${maxBytes} byte limit.`,
           ),
         );
         return;
