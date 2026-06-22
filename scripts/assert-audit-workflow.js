@@ -507,6 +507,7 @@ function assertTestWorkflow(testWorkflow) {
     auditJob.name === "Dependency Audit Gate",
     "trusted dependency audit job must have a distinct check name.",
   );
+  assertHasTimeout("test dependency audit job", auditJob);
 
   const sourceCheckoutIndex = assertPrTargetSourceCheckoutIsSkipped(auditJob, "test workflow");
   const trustedCheckoutIndex = assertTrustedCheckout(auditJob, "test workflow");
@@ -610,6 +611,23 @@ function assertTestWorkflow(testWorkflow) {
     trusted: true,
     skipsPrTarget: true,
   });
+  for (const [label, index] of [
+    ["test source checkout step", sourceCheckoutIndex],
+    ["test trusted checkout step", trustedCheckoutIndex],
+    ["test PR metadata download step", metadataDownloadIndex],
+    ["test setup-node step", setupNodeIndex],
+    ["test trusted guard install step", trustedInstallIndex],
+    ["test ignore-scripts guard step", lifecycleIndex],
+    ["test source install step", installIndex],
+    ["test audit policy guard step", policyIndex],
+    ["test audit fixture step", fixtureIndex],
+    ["test PR audit step", prAuditIndex],
+    ["test trusted-branch audit step", trustedBranchAuditIndex],
+    ["test signature step", signatureIndex],
+    ["test workflow guard step", workflowGuardIndex],
+  ]) {
+    assertHasTimeout(label, stepByIndex(auditJob, index));
+  }
   for (const [label, index] of [
     ["test trusted guard install step", trustedInstallIndex],
     ["test ignore-scripts guard step", lifecycleIndex],

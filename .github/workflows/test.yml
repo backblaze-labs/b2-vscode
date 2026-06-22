@@ -47,12 +47,14 @@ jobs:
     steps:
       - name: Checkout source
         if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           path: source
           persist-credentials: false
 
       - name: Checkout trusted gate source
+        timeout-minutes: 10
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: ${{ github.repository }}
@@ -62,6 +64,7 @@ jobs:
 
       - name: Download PR audit metadata
         if: github.event_name == 'pull_request_target'
+        timeout-minutes: 10
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
@@ -173,6 +176,7 @@ jobs:
             }
 
       - name: Setup Node.js
+        timeout-minutes: 10
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -183,6 +187,7 @@ jobs:
         run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert lifecycle scripts stay disabled
+        timeout-minutes: 10
         working-directory: trusted-source
         run: node scripts/assert-ignore-scripts-install.js
 
@@ -195,6 +200,7 @@ jobs:
         run: bash ../trusted-source/scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit policy guardrails
+        timeout-minutes: 10
         working-directory: trusted-source
         run: node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"
 
@@ -236,5 +242,6 @@ jobs:
         run: bash ../trusted-source/scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit workflow guardrails
+        timeout-minutes: 10
         working-directory: trusted-source
         run: NODE_PATH="$GITHUB_WORKSPACE/trusted-source/node_modules" node scripts/assert-audit-workflow.js --repo-root "$GITHUB_WORKSPACE/source"
