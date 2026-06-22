@@ -147,6 +147,11 @@ src/
     └── statusBar.ts          # Status bar integration
 ```
 
+Transfer orchestration remains consolidated in `fileTransfers.ts` in this PR so timeout,
+temp-file, atomic publish, unfinished-upload cleanup, and upload/download changes ship against
+the existing service boundary. A future refactor can split those helpers once the internal
+contracts settle.
+
 ## License
 
 MIT
