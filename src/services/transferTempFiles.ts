@@ -55,6 +55,7 @@ export async function ensureTransferTempDirectory(
       { recursive: true, mode: 0o700 },
     );
     await setPrivateDirectoryPermissions(directory);
+    await ensurePrivateDirectory(directory);
     return;
   }
 
