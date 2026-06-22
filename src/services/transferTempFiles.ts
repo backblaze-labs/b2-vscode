@@ -29,10 +29,32 @@ const MAX_CLEANUP_THROTTLE_ENTRIES = 256;
 const lastCleanupByDirectory = new Map<string, number>();
 let defaultTransferTempDirectory: string | undefined;
 
+function defaultTransferTempDirectoryUserPart(): string {
+  return typeof process.getuid === "function" ? `uid-${process.getuid()}` : "user";
+}
+
+function defaultTransferTempDirectoryPrefix(): string {
+  return `${TRANSFER_TEMP_DIR_NAME}-${defaultTransferTempDirectoryUserPart()}-`;
+}
+
 function defaultTransferTempDirectoryName(): string {
-  const uid = typeof process.getuid === "function" ? `uid-${process.getuid()}` : "user";
   const random = crypto.randomBytes(12).toString("hex");
-  return `${TRANSFER_TEMP_DIR_NAME}-${uid}-${process.pid}-${random}`;
+  return `${defaultTransferTempDirectoryPrefix()}${process.pid}-${random}`;
+}
+
+function isCurrentUserOwned(stats: fs.Stats): boolean {
+  return typeof process.getuid !== "function" || stats.uid === process.getuid();
+}
+
+function isCurrentDefaultTransferTempDirectory(directory: string): boolean {
+  return (
+    defaultTransferTempDirectory !== undefined &&
+    path.resolve(directory) === path.resolve(defaultTransferTempDirectory)
+  );
+}
+
+function isDefaultTransferTempDirectoryEntry(entry: string): boolean {
+  return entry === TRANSFER_TEMP_DIR_NAME || entry.startsWith(defaultTransferTempDirectoryPrefix());
 }
 
 export function transferTempDirectory(directory?: string): string {
@@ -215,12 +237,11 @@ function logBoundedCleanup(label: string, stats: BoundedCleanupStats): void {
   }
 }
 
-export async function cleanupStaleTransferTempFiles(
-  options: { directory?: string; maxAgeMs?: number } & BoundedCleanupOptions = {},
+async function cleanupStaleTransferTempDirectory(
+  directory: string,
+  maxAgeMs: number,
+  options: BoundedCleanupOptions,
 ): Promise<void> {
-  const directory = transferTempDirectory(options.directory);
-  const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
-
   try {
     if (!(await pathExistsAsRealDirectory(directory, "Transfer temp directory"))) {
       return;
@@ -252,6 +273,71 @@ export async function cleanupStaleTransferTempFiles(
     },
   );
   logBoundedCleanup("Transfer temp", stats);
+}
+
+async function removeEmptyTransferTempDirectory(directory: string): Promise<void> {
+  try {
+    await fs.promises.rmdir(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") {
+      logError(`Could not remove empty transfer temp directory: ${directory}`, error);
+    }
+  }
+}
+
+async function cleanupDefaultTransferTempDirectories(
+  maxAgeMs: number,
+  options: BoundedCleanupOptions,
+): Promise<void> {
+  const directory = os.tmpdir();
+  const cutoff = Date.now() - maxAgeMs;
+  const stats = await scanBoundedDirectoryEntries(
+    directory,
+    "system temp directory",
+    options,
+    async (entry) => {
+      if (!isDefaultTransferTempDirectoryEntry(entry)) {
+        return;
+      }
+
+      const transferDirectory = path.join(directory, entry);
+      let transferDirectoryStats: fs.Stats;
+      try {
+        transferDirectoryStats = await fs.promises.lstat(transferDirectory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          logError(`Could not inspect transfer temp directory: ${transferDirectory}`, error);
+        }
+        return;
+      }
+
+      if (!transferDirectoryStats.isDirectory() || !isCurrentUserOwned(transferDirectoryStats)) {
+        return;
+      }
+
+      await cleanupStaleTransferTempDirectory(transferDirectory, maxAgeMs, options);
+      if (
+        !isCurrentDefaultTransferTempDirectory(transferDirectory) &&
+        transferDirectoryStats.mtimeMs <= cutoff
+      ) {
+        await removeEmptyTransferTempDirectory(transferDirectory);
+      }
+    },
+  );
+  logBoundedCleanup("Transfer temp root", stats);
+}
+
+export async function cleanupStaleTransferTempFiles(
+  options: { directory?: string; maxAgeMs?: number } & BoundedCleanupOptions = {},
+): Promise<void> {
+  const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
+  if (options.directory !== undefined) {
+    await cleanupStaleTransferTempDirectory(options.directory, maxAgeMs, options);
+    return;
+  }
+
+  await cleanupDefaultTransferTempDirectories(maxAgeMs, options);
 }
 
 export async function cleanupStaleDestinationTempFiles(
@@ -306,6 +392,13 @@ export async function cleanupStaleDestinationTempFiles(
 }
 
 export async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {
+  if (
+    isCurrentDefaultTransferTempDirectory(directory) &&
+    shouldRunThrottledCleanup(`transfer-root:${defaultTransferTempDirectoryPrefix()}`)
+  ) {
+    await cleanupStaleTransferTempFiles();
+  }
+
   if (shouldRunThrottledCleanup(`transfer:${path.resolve(directory)}`)) {
     await cleanupStaleTransferTempFiles({ directory });
   }

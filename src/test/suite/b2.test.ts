@@ -1676,6 +1676,35 @@ suite("B2 transfer helpers", () => {
     assert.match(path.basename(first), new RegExp(`^${MANAGED_TRANSFER_TEMP_DIR_NAME}-`));
   });
 
+  test("cleans stale transfer temp files from previous default sessions", async () => {
+    const currentDefault = transferTempDirectory();
+    const currentName = path.basename(currentDefault);
+    const processMarker = `-${process.pid}-`;
+    const markerIndex = currentName.indexOf(processMarker);
+    assert.notStrictEqual(markerIndex, -1);
+    const sessionPrefix = currentName.slice(0, markerIndex + 1);
+    const previousDirectory = path.join(os.tmpdir(), `${sessionPrefix}previous-test`);
+    const staleFile = path.join(previousDirectory, "b2-transfer-1-stale.tmp");
+    fs.mkdirSync(previousDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(staleFile, "stale");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(staleFile, oldTime, oldTime);
+    fs.utimesSync(previousDirectory, oldTime, oldTime);
+
+    try {
+      await cleanupStaleTransferTempFiles({
+        maxAgeMs: 1_000,
+        maxEntries: Number.MAX_SAFE_INTEGER,
+        budgetMs: 5_000,
+      });
+
+      assert.strictEqual(fs.existsSync(staleFile), false);
+      assert.strictEqual(fs.existsSync(previousDirectory), false);
+    } finally {
+      fs.rmSync(previousDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("streams non-empty uploads through the SDK write stream", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-"));
     const localPath = path.join(dir, "file.bin");
