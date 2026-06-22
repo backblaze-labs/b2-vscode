@@ -87,13 +87,13 @@ async function workspaceUploadSource(relativePath: string): Promise<UploadSource
       fs.promises.realpath(lexicalPath),
     ]);
     if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
-      throw new Error(`localPath resolves outside the open workspace: ${relativePath}`);
+      throw new B2ToolInputError(`localPath resolves outside the open workspace: ${relativePath}`);
     }
     assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
     const localRealStats = await fs.promises.stat(localRealPath);
     source = await openUploadSourceFile(lexicalPath);
     if (!sameFileIdentity(source.stats, localRealStats)) {
-      throw new Error(`localPath changed while opening upload source: ${relativePath}`);
+      throw new B2ToolInputError(`localPath changed while opening upload source: ${relativePath}`);
     }
 
     return source;

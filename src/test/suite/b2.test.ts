@@ -2788,9 +2788,10 @@ suite("B2 transfer helpers", () => {
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     let streamCreated = false;
     let listCalls = 0;
+    let abortCalls = 0;
 
     const bucket = {
-      listUnfinishedLargeFiles() {
+      listUnfinishedLargeFiles(options?: { signal?: AbortSignal }) {
         listCalls += 1;
         if (listCalls === 1) {
           return Promise.resolve({
@@ -2798,7 +2799,16 @@ suite("B2 transfer helpers", () => {
             nextFileId: null,
           });
         }
-        return new Promise<never>(() => undefined);
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              abortCalls += 1;
+              reject(options.signal?.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
       },
       async cancelLargeFile() {
         assert.fail("Expected stalled listing to prevent cancellation attempts");
@@ -2834,21 +2844,32 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(streamCreated, true);
       assert.strictEqual(listCalls, 2);
+      assert.strictEqual(abortCalls, 1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("releases stalled unfinished-upload cleanup slots after timeout", async () => {
+  test("aborts stalled unfinished-upload cleanup slots after timeout", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-list-slot-timeout-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     let listCalls = 0;
+    let abortCalls = 0;
 
     const bucket = {
-      listUnfinishedLargeFiles() {
+      listUnfinishedLargeFiles(options?: { signal?: AbortSignal }) {
         listCalls += 1;
-        return new Promise<never>(() => undefined);
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              abortCalls += 1;
+              reject(options.signal?.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
       },
       async cancelLargeFile() {
         assert.fail("Expected stalled listing to prevent cancellation attempts");
@@ -2876,6 +2897,7 @@ suite("B2 transfer helpers", () => {
       }
 
       assert.strictEqual(listCalls, 17);
+      assert.strictEqual(abortCalls, 17);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
