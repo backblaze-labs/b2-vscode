@@ -80,15 +80,27 @@ async function runCodeCommand(codeCliPath, args, label) {
     child.stderr?.setEncoding("utf8").on("data", (data) => {
       stderr += data;
     });
-    child.on("error", reject);
-    child.on("exit", (code) => {
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+
+    child.on("error", (error) => settle(() => reject(error)));
+    child.on("close", (code, signal) => {
       if (code === 0) {
-        resolve({ stdout, stderr });
+        settle(() => resolve({ stdout, stderr }));
         return;
       }
 
       const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n\n");
-      reject(new Error(`${label} failed with exit code ${code}${details ? `:\n${details}` : "."}`));
+      const status = code === null ? `signal ${signal ?? "unknown"}` : `exit code ${code}`;
+      settle(() =>
+        reject(new Error(`${label} failed with ${status}${details ? `:\n${details}` : "."}`)),
+      );
     });
   });
 }

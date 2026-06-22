@@ -5,6 +5,7 @@
  */
 
 import * as assert from "assert";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -70,6 +71,16 @@ const CUSTOM_API_URL = "https://b2-compatible.example.com";
 const ATTACKER_API_URL = "https://attacker.example.com";
 const TEST_CREDENTIALS: B2Credentials = { keyId: "key-id", appKey: "app-key" };
 const TEST_VERSION = "0.0.1";
+
+function uploadSessionMarkerPathForTest(remotePath: string, uploadSessionId: string): string {
+  const digest = crypto
+    .createHash("sha256")
+    .update(remotePath)
+    .update("\0")
+    .update(uploadSessionId)
+    .digest("hex");
+  return path.join(os.tmpdir(), "b2-vscode-upload-sessions", `session-${digest}.json`);
+}
 
 function fakeFileVersion(fileName: string, contentLength: number, id: string): FileVersion {
   return {
@@ -1574,6 +1585,112 @@ suite("B2 transfer helpers", () => {
 
       assert.deepStrictEqual(reclaimed, [largeFileId("locally-owned-stale-upload")]);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("stale upload cleanup ignores symlinked upload session markers", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-marker-"));
+    const localPath = path.join(dir, "file.bin");
+    const remotePath = `remote/symlink-marker-${Date.now()}.bin`;
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let capturedFileInfo: Record<string, string> | undefined;
+
+    const interruptedBucket = {
+      async listUnfinishedLargeFiles() {
+        return { files: [], nextFileId: null };
+      },
+      async cancelLargeFile() {
+        assert.fail("First cleanup should not have a matching remote upload to cancel");
+      },
+      file(fileName: string) {
+        assert.strictEqual(fileName, remotePath);
+        return {
+          createWriteStream(options) {
+            capturedFileInfo = options?.fileInfo;
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("symlink marker setup failure");
+                },
+              }),
+              done: new Promise<FileVersion>(() => undefined),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    let markerPath: string | undefined;
+    let symlinkTargetPath: string | undefined;
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(interruptedBucket, localPath, remotePath),
+        /symlink marker setup failure/i,
+      );
+      assert.ok(capturedFileInfo);
+      const uploadSessionId = capturedFileInfo["b2-vscode-upload-session-id"];
+      const startedMs = Number(capturedFileInfo["b2-vscode-upload-started-ms"]);
+      assert.ok(uploadSessionId);
+      assert.ok(Number.isFinite(startedMs));
+
+      markerPath = uploadSessionMarkerPathForTest(remotePath, uploadSessionId);
+      symlinkTargetPath = path.join(dir, "forged-marker.json");
+      fs.writeFileSync(
+        symlinkTargetPath,
+        JSON.stringify({ remotePath, uploadSessionId, startedMs }),
+      );
+      fs.rmSync(markerPath, { force: true });
+      fs.symlinkSync(symlinkTargetPath, markerPath);
+
+      let cancelCalls = 0;
+      const reclaimBucket = {
+        async listUnfinishedLargeFiles() {
+          return {
+            files: [
+              {
+                fileId: largeFileId("symlink-marker-upload"),
+                fileName: remotePath,
+                fileInfo: capturedFileInfo,
+              },
+            ],
+            nextFileId: null,
+          };
+        },
+        async cancelLargeFile() {
+          cancelCalls += 1;
+        },
+        file() {
+          assert.fail("Expected cleanup test not to open an upload stream");
+        },
+        async upload() {
+          assert.fail("Expected cleanup test not to upload a file");
+        },
+      } satisfies UploadBucketHandle;
+
+      const result = await cleanupStaleUnfinishedUploads(reclaimBucket, {
+        unfinishedCleanupMaxAgeMs: -1,
+      });
+
+      assert.strictEqual(cancelCalls, 0);
+      assert.deepStrictEqual(result, {
+        reclaimedOwnedStaleUploadCount: 0,
+        ignoredUnownedStaleUploadCount: 1,
+      });
+    } finally {
+      if (markerPath !== undefined) {
+        fs.rmSync(markerPath, { force: true });
+      }
+      if (symlinkTargetPath !== undefined) {
+        fs.rmSync(symlinkTargetPath, { force: true });
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

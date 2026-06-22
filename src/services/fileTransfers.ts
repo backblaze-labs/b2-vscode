@@ -1223,10 +1223,10 @@ async function hasMatchingUploadSessionMarker(
   }
 
   try {
-    await assertPrivateDirectory(uploadSessionMarkerDirectory(), "Upload session marker directory");
-    const marker = JSON.parse(
-      await fs.promises.readFile(uploadSessionMarkerPath(remotePath, uploadSessionId), "utf8"),
-    ) as Partial<UploadSessionMarker>;
+    const directory = uploadSessionMarkerDirectory();
+    await assertPrivateDirectory(directory, "Upload session marker directory");
+    const markerPath = uploadSessionMarkerPath(remotePath, uploadSessionId);
+    const marker = await readUploadSessionMarker(markerPath);
     return (
       marker.remotePath === remotePath &&
       marker.uploadSessionId === uploadSessionId &&
@@ -1234,6 +1234,25 @@ async function hasMatchingUploadSessionMarker(
     );
   } catch {
     return false;
+  }
+}
+
+async function readUploadSessionMarker(markerPath: string): Promise<Partial<UploadSessionMarker>> {
+  const stats = await fs.promises.lstat(markerPath);
+  if (!stats.isFile()) {
+    throw new Error(`Upload session marker must be a regular file: ${markerPath}`);
+  }
+
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fileHandle = await fs.promises.open(markerPath, fs.constants.O_RDONLY | noFollowFlag);
+  try {
+    const openedStats = await fileHandle.stat();
+    if (!openedStats.isFile()) {
+      throw new Error(`Upload session marker must be a regular file: ${markerPath}`);
+    }
+    return JSON.parse(await fileHandle.readFile("utf8")) as Partial<UploadSessionMarker>;
+  } finally {
+    await fileHandle.close();
   }
 }
 
