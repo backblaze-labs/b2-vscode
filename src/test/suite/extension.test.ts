@@ -6,8 +6,12 @@
 
 import * as assert from "assert";
 import * as vscode from "vscode";
+import type { B2Client } from "@backblaze-labs/b2-sdk";
+import { createAuthenticatedClientSetter } from "../../extension";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
+import { presignUrlTool } from "../../tools/definitions/presignUrl";
 import { uploadFileTool } from "../../tools/definitions/uploadFile";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 
 interface MenuContribution {
   command: string;
@@ -16,6 +20,7 @@ interface MenuContribution {
 
 interface LanguageModelToolContribution {
   name: string;
+  modelDescription: string;
   inputSchema: {
     properties: Record<string, unknown>;
   };
@@ -101,10 +106,43 @@ suite("B2 Extension Test Suite", () => {
       .languageModelTools as LanguageModelToolContribution[];
     const uploadFile = tools.find((tool) => tool.name === uploadFileTool.name);
     const downloadFile = tools.find((tool) => tool.name === downloadFileTool.name);
+    const presignUrl = tools.find((tool) => tool.name === presignUrlTool.name);
 
     assert.ok(uploadFile, "b2_uploadFile contribution should exist");
     assert.ok(downloadFile, "b2_downloadFile contribution should exist");
+    assert.ok(presignUrl, "b2_presignUrl contribution should exist");
     assert.deepStrictEqual(uploadFile.inputSchema, uploadFileTool.parameters);
     assert.deepStrictEqual(downloadFile.inputSchema, downloadFileTool.parameters);
+    assert.strictEqual(presignUrl.modelDescription, presignUrlTool.description);
+    assert.deepStrictEqual(
+      presignUrl.inputSchema.properties.path,
+      presignUrlTool.parameters.properties.path,
+    );
+
+    const expiresIn = presignUrl.inputSchema.properties.expiresIn as Record<string, unknown>;
+    assert.strictEqual(expiresIn.type, "integer");
+    assert.strictEqual(expiresIn.minimum, 1);
+    assert.strictEqual(expiresIn.maximum, MAX_PRESIGN_URL_EXPIRES_IN_SECONDS);
+    assert.deepStrictEqual(expiresIn, presignUrlTool.parameters.properties.expiresIn);
+  });
+
+  test("authenticated client setter schedules stale unfinished-upload cleanup", () => {
+    let currentClient: B2Client | null = null;
+    const scheduledClients: B2Client[] = [];
+    const setClient = createAuthenticatedClientSetter(
+      (client) => {
+        currentClient = client;
+      },
+      (client) => {
+        scheduledClients.push(client);
+      },
+    );
+    const client: B2Client = Object.create(null);
+
+    setClient(client);
+    setClient(null);
+
+    assert.strictEqual(currentClient, null);
+    assert.deepStrictEqual(scheduledClients, [client]);
   });
 });

@@ -67,17 +67,17 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `downloadFile` — download a file to the workspace by default, or to a workspace-relative `localPath`; existing files are not overwritten
 - `uploadFile` — upload a workspace-relative file to a bucket
 - `deleteFile` — delete a file by name
-- `presignUrl` — generate a time-limited download URL
+- `presignUrl` — generate a time-limited, prefix-scoped download URL
 
 ### Tool safety
 
-Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable download link. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
+Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable B2 name-prefix download authorization with an expiration from 1 to 3600 seconds. Presigned URLs default to 300 seconds, require an explicit `expiresIn` for longer-lived links, require B2 keys with both `listFiles` and `shareFiles`, and first verify that the requested path currently matches exactly one downloadable object with no adjacent same-prefix object. B2 still authorizes all current and future object names beginning with the requested path until the URL expires, not just that file. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 
-Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
+Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed. Workspace downloads stage temporary files next to their final destination by default, so large downloads use the destination volume instead of a RAM-backed system temp directory. Natural B2 object basenames remain readable when they are portable across supported hosts; names containing Windows-unsafe characters such as `:`, `?`, or `*` are encoded on every platform.
 
-Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. The extension does not run age-based stale cleanup because it cannot prove another process is not actively writing an old unfinished upload. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. For large uploads, the extension also persists a local owner marker before starting a multipart upload and uses that marker to reclaim matching stale unfinished uploads on later cleanup. Configure a B2 bucket lifecycle rule as a backstop for stale unfinished large files left by deleted workstations, lost local temp state, older extension versions, crashes, power loss, or failed cleanup.
 
 ## Development
 
@@ -94,8 +94,11 @@ npm run watch
 # Run all quality checks
 npm run check
 
-# Run VS Code extension tests
+# Run property/unit tests and VS Code extension tests
 npm test
+
+# Compile and run only Node unit/property tests
+npm run test:unit
 
 # Fix formatting and lint issues
 npm run check:fix
@@ -130,8 +133,10 @@ src/
 ├── commands/index.ts         # Command registrations
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
-│   ├── b2.ts                 # B2 SDK client factory + stream helper
+│   ├── b2.ts                 # B2 SDK client factory
+│   ├── fileTransfers.ts      # Upload/download streaming and staging
 │   └── tempFileManager.ts    # Downloaded file cache
+├── utils/                    # Pure path, URL, and formatting helpers
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider
 ├── models/
@@ -143,6 +148,9 @@ src/
 │   ├── b2ToolAdapter.ts
 │   ├── definitions/          # Tool schemas
 │   └── operations/           # Tool implementations
+├── test/
+│   ├── suite/                # VS Code extension-host tests
+│   └── unit/                 # Node property/unit tests
 └── ui/
     └── statusBar.ts          # Status bar integration
 ```

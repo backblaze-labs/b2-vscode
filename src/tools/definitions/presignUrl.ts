@@ -6,12 +6,30 @@
 
 import type { B2ToolDefinition } from "../types";
 import { inputText } from "./inputText";
+import {
+  DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
+  MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+} from "../presignUrlLimits";
+
+function describeExpiresIn(value: unknown): string {
+  if (value === undefined) {
+    return `${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds`;
+  }
+  if (
+    Number.isInteger(value) &&
+    Number(value) >= 1 &&
+    Number(value) <= MAX_PRESIGN_URL_EXPIRES_IN_SECONDS
+  ) {
+    return `${Number(value)} seconds`;
+  }
+  return "an invalid expiresIn value that the operation will reject";
+}
 
 export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
   displayName: "B2: Pre-sign URL",
   description:
-    "Generates a pre-signed download URL for a file in a B2 bucket. The URL is valid for the specified duration (default: 1 hour).",
+    "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires the B2 listFiles and shareFiles capabilities. B2 tokens remain prefix-scoped: the URL can download any current or future object whose name starts with the supplied path until it expires.",
   parameters: {
     type: "object",
     properties: {
@@ -21,12 +39,15 @@ export const presignUrlTool: B2ToolDefinition = {
       },
       path: {
         type: "string",
-        description: 'Full file path within the bucket. Example: "reports/q4.pdf"',
+        minLength: 1,
+        description:
+          'B2 object name to authorize. The key must have listFiles capability because the path must currently match exactly one downloadable object and no other current downloadable object may start with that value. B2 still grants prefix scope, so future names such as "reports/q4.pdf.bak" may also be authorized until expiry.',
       },
       expiresIn: {
-        type: "number",
-        description:
-          "URL validity duration in seconds. Default: 3600 (1 hour). Maximum: 604800 (7 days).",
+        type: "integer",
+        minimum: 1,
+        maximum: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+        description: `URL validity duration in seconds. Default: ${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} (5 minutes). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (1 hour).`,
       },
     },
     required: ["bucket", "path"],
@@ -34,5 +55,5 @@ export const presignUrlTool: B2ToolDefinition = {
   tags: ["b2", "file", "presign", "url"],
   risk: "exfiltration",
   describeEffect: (input) =>
-    `create a shareable download URL for b2://${inputText(input.bucket)}/${inputText(input.path)}`,
+    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)} that is valid for ${describeExpiresIn(input.expiresIn)} and authorizes ALL current and future object names beginning with that path, not just this file`,
 };

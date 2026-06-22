@@ -4,8 +4,10 @@
  * @module services/pathSafety
  */
 
-import * as path from "path";
 import * as fs from "fs";
+import * as path from "path";
+import type { FileHandle } from "fs/promises";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
 export class UnsafePathError extends Error {
   constructor(message: string) {
@@ -14,11 +16,11 @@ export class UnsafePathError extends Error {
   }
 }
 
-function isAbsolutePortable(value: string): boolean {
+export function isAbsolutePortable(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
-function assertNoNul(value: string, label: string): void {
+export function assertNoNul(value: string, label: string): void {
   if (value.includes("\0")) {
     throw new UnsafePathError(`${label} must not contain NUL bytes.`);
   }
@@ -42,20 +44,6 @@ function portableSegments(relativePath: string, label: string): string[] {
 
   return segments;
 }
-
-const WORKSPACE_CONTROL_DIRECTORIES = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  ".vscode",
-  ".idea",
-  ".github",
-  ".devcontainer",
-  ".husky",
-  ".circleci",
-  ".gitlab",
-  ".gitea",
-]);
 
 export interface EnsureRealDirectoryOptions {
   readonly mode?: number;
@@ -127,6 +115,83 @@ export async function ensureRealDirectory(
   assertRealDirectory(await fs.promises.lstat(directory), directory, label);
 }
 
+function assertPrivateDirectoryStats(stats: fs.Stats, directory: string, label: string): void {
+  assertRealDirectory(stats, directory, label);
+
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const getuid = process.getuid;
+  if (typeof getuid === "function" && stats.uid !== getuid()) {
+    throw new UnsafePathError(`${label} must be owned by the current user: ${directory}`);
+  }
+
+  if ((stats.mode & 0o077) !== 0) {
+    throw new UnsafePathError(
+      `${label} must not be readable or writable by other users: ${directory}`,
+    );
+  }
+}
+
+export async function assertPrivateDirectory(directory: string, label: string): Promise<void> {
+  assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+}
+
+export async function ensurePrivateDirectory(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): Promise<void> {
+  await ensureRealDirectory(directory, label, {
+    recursive: options.recursive ?? true,
+    mode: options.mode ?? 0o700,
+  });
+
+  let chmodFailed = false;
+  try {
+    await fs.promises.chmod(directory, options.mode ?? 0o700);
+  } catch {
+    chmodFailed = true;
+  }
+
+  try {
+    assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+  } catch (error) {
+    if (chmodFailed) {
+      throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+    }
+    throw error;
+  }
+}
+
+export function ensurePrivateDirectorySync(
+  directory: string,
+  label: string,
+  options: EnsureRealDirectoryOptions = {},
+): void {
+  ensureRealDirectorySync(directory, label, {
+    recursive: options.recursive ?? true,
+    mode: options.mode ?? 0o700,
+  });
+
+  let chmodFailed = false;
+  try {
+    fs.chmodSync(directory, options.mode ?? 0o700);
+  } catch {
+    chmodFailed = true;
+  }
+
+  try {
+    assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
+  } catch (error) {
+    if (chmodFailed) {
+      throw new UnsafePathError(`${label} permissions could not be restricted: ${directory}`);
+    }
+    throw error;
+  }
+}
+
 export async function ensureContainedDirectoryPath(
   rootPath: string,
   targetDirectory: string,
@@ -159,6 +224,255 @@ export function isPathInsideOrEqual(parentPath: string, childPath: string): bool
   return child === parent || child.startsWith(parentPrefix);
 }
 
+async function lstatIfExists(candidatePath: string): Promise<fs.Stats | undefined> {
+  try {
+    return await fs.promises.lstat(candidatePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+interface ExistingPath {
+  readonly path: string;
+  readonly stats: fs.Stats;
+}
+
+function isSameFilesystemEntry(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function writeStreamChunk(fileHandle: FileHandle, chunk: unknown): Promise<void> {
+  if (typeof chunk === "string") {
+    await fileHandle.write(chunk);
+    return;
+  }
+  if (chunk instanceof Uint8Array) {
+    await fileHandle.write(chunk);
+    return;
+  }
+
+  throw new TypeError("Safe file write streams must yield string or Uint8Array chunks.");
+}
+
+async function writeFileNoFollowInternal(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+  options: {
+    readonly overwrite: boolean;
+    readonly beforeWrite?: () => Promise<void>;
+    readonly cleanupOnFailure?: (openedStats: fs.Stats) => Promise<void>;
+  },
+): Promise<void> {
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const overwriteFlag = options.overwrite ? fs.constants.O_TRUNC : fs.constants.O_EXCL;
+  const fileHandle = await fs.promises.open(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
+    0o600,
+  );
+  const openedStats = await fileHandle.stat();
+  let completed = false;
+
+  try {
+    await options.beforeWrite?.();
+    if (typeof data === "string" || data instanceof Uint8Array) {
+      await fileHandle.writeFile(data);
+    } else {
+      for await (const chunk of data) {
+        await writeStreamChunk(fileHandle, chunk);
+      }
+    }
+    completed = true;
+  } finally {
+    try {
+      await fileHandle.close();
+    } finally {
+      if (!completed && !options.overwrite) {
+        await (
+          options.cleanupOnFailure?.(openedStats) ?? fs.promises.rm(filePath, { force: true })
+        ).catch(() => undefined);
+      }
+    }
+  }
+}
+
+async function removeRootBoundCreatedFileIfSafe(
+  rootPath: string,
+  filePath: string,
+  openedStats: fs.Stats,
+): Promise<void> {
+  const candidate = path.resolve(filePath);
+  const currentStats = await lstatIfExists(candidate);
+  if (
+    currentStats === undefined ||
+    currentStats.isSymbolicLink() ||
+    !isSameFilesystemEntry(currentStats, openedStats)
+  ) {
+    return;
+  }
+
+  const realRoot = await fs.promises.realpath(path.resolve(rootPath));
+  const realCandidate = await fs.promises.realpath(candidate);
+  if (!isPathInsideOrEqual(realRoot, realCandidate)) {
+    return;
+  }
+
+  await fs.promises.rm(candidate, { force: true });
+}
+
+export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
+  const beforeStats = await fs.promises.lstat(filePath);
+  if (beforeStats.isSymbolicLink() || !beforeStats.isFile()) {
+    throw new UnsafePathError(`${label} must be a real file, not a symlink or special file.`);
+  }
+
+  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fileHandle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollowFlag);
+  let completed = false;
+
+  try {
+    const [openedStats, afterStats] = await Promise.all([
+      fileHandle.stat(),
+      fs.promises.lstat(filePath),
+    ]);
+    if (afterStats.isSymbolicLink() || !afterStats.isFile() || !openedStats.isFile()) {
+      throw new UnsafePathError(`${label} must be a real file, not a symlink or special file.`);
+    }
+    if (
+      !isSameFilesystemEntry(beforeStats, openedStats) ||
+      !isSameFilesystemEntry(afterStats, openedStats)
+    ) {
+      throw new UnsafePathError(`${label} changed while it was being opened.`);
+    }
+
+    completed = true;
+    return fileHandle;
+  } finally {
+    if (!completed) {
+      await fileHandle.close().catch(() => undefined);
+    }
+  }
+}
+
+async function nearestExistingPath(candidatePath: string): Promise<ExistingPath> {
+  let currentPath = candidatePath;
+  for (;;) {
+    const stats = await lstatIfExists(currentPath);
+    if (stats) {
+      return { path: currentPath, stats };
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return { path: currentPath, stats: await fs.promises.lstat(currentPath) };
+    }
+    currentPath = parentPath;
+  }
+}
+
+export function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+
+  if (!isPathInsideOrEqual(root, resolved)) {
+    throw new UnsafePathError(`Path resolves outside the allowed root: ${resolved}`);
+  }
+
+  return resolved;
+}
+
+export async function assertSafeWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  assertNoNul(rootPath, "Root path");
+  assertNoNul(candidatePath, label);
+
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  if (!isPathInsideOrEqual(root, candidate)) {
+    throw new UnsafePathError(`${label} resolves outside the allowed root.`);
+  }
+
+  const realRoot = await fs.promises.realpath(root);
+  const existingPath = await nearestExistingPath(candidate);
+  if (path.resolve(existingPath.path) !== root && existingPath.stats.isSymbolicLink()) {
+    throw new UnsafePathError(`${label} resolves through a symlink.`);
+  }
+
+  const realExistingPath = await fs.promises.realpath(existingPath.path);
+  if (!isPathInsideOrEqual(realRoot, realExistingPath)) {
+    throw new UnsafePathError(`${label} resolves outside the allowed root through a symlink.`);
+  }
+
+  const candidateStats = await lstatIfExists(candidate);
+  if (candidateStats?.isSymbolicLink()) {
+    throw new UnsafePathError(`${label} must not be a symlink.`);
+  }
+}
+
+export async function assertSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  const candidate = path.resolve(candidatePath);
+  await assertSafeWritePath(rootPath, candidate, label);
+
+  const candidateStats = await lstatIfExists(candidate);
+  if (candidateStats?.isDirectory()) {
+    throw new UnsafePathError(`${label} must be a file path, not a directory.`);
+  }
+}
+
+export async function prepareSafeFileWritePath(
+  rootPath: string,
+  candidatePath: string,
+  label = "path",
+): Promise<void> {
+  const candidate = path.resolve(candidatePath);
+  const parentPath = path.dirname(candidate);
+
+  await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
+  await fs.promises.mkdir(parentPath, { recursive: true });
+  await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
+  await assertSafeFileWritePath(rootPath, candidate, label);
+}
+
+export async function writeNewFileNoFollow(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+): Promise<void> {
+  await writeFileNoFollowInternal(filePath, data, { overwrite: false });
+}
+
+export async function replaceFileNoFollow(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+): Promise<void> {
+  await writeFileNoFollowInternal(filePath, data, { overwrite: true });
+}
+
+export async function writeNewFileNoFollowWithinRoot(
+  rootPath: string,
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+  options: { label?: string } = {},
+): Promise<void> {
+  const label = options.label ?? "path";
+  await assertSafeFileWritePath(rootPath, filePath, label);
+  await writeFileNoFollowInternal(filePath, data, {
+    overwrite: false,
+    beforeWrite: () => assertSafeFileWritePath(rootPath, filePath, label),
+    cleanupOnFailure: (openedStats) =>
+      removeRootBoundCreatedFileIfSafe(rootPath, filePath, openedStats),
+  });
+}
+
 export function findWorkspaceControlDirectory(
   workspaceRoot: string,
   candidatePath: string,
@@ -167,9 +481,7 @@ export function findWorkspaceControlDirectory(
   return relative
     .split(path.sep)
     .filter((segment) => segment.length > 0)
-    .find((segment) =>
-      WORKSPACE_CONTROL_DIRECTORIES.has(segment.toLowerCase().replace(/[. ]+$/u, "")),
-    );
+    .find(isWorkspaceControlDirectorySegment);
 }
 
 export function resolveContainedRelativePath(
@@ -185,14 +497,4 @@ export function resolveContainedRelativePath(
   }
 
   return resolved;
-}
-
-export function b2KeyBasename(fileName: string): string {
-  assertNoNul(fileName, "B2 file name");
-
-  const segments = fileName
-    .split(/[\\/]+/)
-    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-
-  return segments[segments.length - 1] ?? "download";
 }

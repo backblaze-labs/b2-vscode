@@ -73,7 +73,7 @@ const operations: Array<{
   {
     name: "presignUrl",
     operation: presignUrlOperation as B2ToolOperation<unknown, unknown>,
-    input: { bucket: "b", path: "a.txt" },
+    input: { bucket: "b", path: "file.txt" },
   },
 ];
 
@@ -351,6 +351,35 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool requires a workspace before choosing localPath", async function () {
+    if (vscode.workspace.workspaceFolders?.length) {
+      this.skip();
+    }
+
+    const client = {
+      async getBucket() {
+        return {
+          async download() {
+            assert.fail("Expected workspace validation before download");
+          },
+        };
+      },
+    } as unknown as B2Client;
+
+    await assert.rejects(
+      () =>
+        downloadFileOperation.execute(
+          {
+            bucket: "b",
+            path: "a.txt",
+            localPath: path.join(os.tmpdir(), "a.txt"),
+          },
+          { getClient: () => client },
+        ),
+      /No workspace folder open/i,
+    );
+  });
+
   test("all tool operations report missing authentication", async () => {
     for (const entry of operations) {
       await assert.rejects(
@@ -370,10 +399,10 @@ suite("B2 LM tool failure handling", () => {
     await assert.rejects(
       () =>
         presignUrlOperation.execute(
-          { bucket: "b", path: "a.txt", expiresIn: 604_801 },
+          { bucket: "b", path: "a.txt", expiresIn: 3_601 },
           { getClient: () => client },
         ),
-      /between 1 and 604800 seconds/i,
+      /between 1 and 3600 seconds/i,
     );
   });
 
@@ -443,7 +472,7 @@ suite("B2 LM tool failure handling", () => {
         let result: Awaited<ReturnType<typeof downloadFileOperation.execute>> | undefined;
         await withWindowUiStubs({}, async () => {
           result = await downloadFileOperation.execute(
-            { bucket: "b", path: "remote/payload.txt", localPath: "./downloads/payload.txt" },
+            { bucket: "b", path: "remote/payload.txt", localPath: "downloads/payload.txt" },
             { getClient: () => client },
           );
         });
@@ -483,7 +512,11 @@ suite("B2 LM tool failure handling", () => {
       await withWorkspaceFolder(dir, async () => {
         for (const entry of operations.filter((operation) => operation.name !== "listBuckets")) {
           const input =
-            entry.name === "uploadFile" ? { bucket: "b", localPath: "a.txt" } : entry.input;
+            entry.name === "uploadFile"
+              ? { bucket: "b", localPath: "a.txt" }
+              : entry.name === "downloadFile"
+                ? { bucket: "b", path: "a.txt", localPath: "download.txt" }
+                : entry.input;
           await assert.rejects(
             () => entry.operation.execute(input, getMissingBucketExtras),
             /bucket .* not found/i,
@@ -498,6 +531,7 @@ suite("B2 LM tool failure handling", () => {
   test("download tool rejects workspace path traversal before writing", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-policy-"));
     let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
@@ -506,6 +540,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        bucketLookupWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -518,9 +553,10 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "../outside.txt" },
               { getClient: () => client },
             ),
-          /path traversal|relative path inside/i,
+          /path traversal|relative path inside|traversal segments/i,
         );
       });
+      assert.strictEqual(bucketLookupWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.existsSync(path.join(path.dirname(dir), "outside.txt")), false);
     } finally {
@@ -528,8 +564,10 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
-  test("download tool requires an open workspace for local writes", async () => {
+  test("download tool rejects trailing localPath separators before downloading", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-directory-path-"));
     let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
@@ -538,6 +576,84 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        bucketLookupWasCalled = true;
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "payload.txt", localPath: "downloads/" },
+              { getClient: () => client },
+            ),
+          /file path, not a directory path/i,
+        );
+      });
+      assert.strictEqual(bucketLookupWasCalled, false);
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(dir, "downloads")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool rejects invalid remote paths before B2 lookup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-remote-path-"));
+    let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        bucketLookupWasCalled = true;
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        for (const [remotePath, expectedError] of [
+          ["", /empty/i],
+          ["bad\0path", /NUL/i],
+          ["reports/", /folder path ending in slash/i],
+        ] as const) {
+          await assert.rejects(
+            () =>
+              downloadFileOperation.execute(
+                { bucket: "b", path: remotePath, localPath: "download.txt" },
+                { getClient: () => client },
+              ),
+            expectedError,
+          );
+        }
+      });
+      assert.strictEqual(bucketLookupWasCalled, false);
+      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(fs.existsSync(path.join(dir, "download.txt")), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool requires an open workspace for local writes", async () => {
+    let downloadWasCalled = false;
+    let bucketLookupWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        throw new Error("download should not start");
+      },
+    };
+    const client = {
+      async getBucket() {
+        bucketLookupWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -554,6 +670,7 @@ suite("B2 LM tool failure handling", () => {
       }
     });
 
+    assert.strictEqual(bucketLookupWasCalled, false);
     assert.strictEqual(downloadWasCalled, false);
   });
 
@@ -660,13 +777,20 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
-  test("download tool rejects workspace control directories before writing", async () => {
+  test("download tool sanitizes control-like localPath segments before writing", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-control-"));
     let downloadWasCalled = false;
     const bucket = {
       async download() {
         downloadWasCalled = true;
-        throw new Error("download should not start");
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
       },
     };
     const client = {
@@ -676,26 +800,32 @@ suite("B2 LM tool failure handling", () => {
     } as unknown as B2Client;
 
     try {
+      const resultPaths: string[] = [];
       await withWorkspaceFolder(workspaceDir, async () => {
         for (const localPath of [
           ".git/hooks/pre-commit",
           ".github/workflows/ci-helper.yml",
           ".github./workflows/ci-helper.yml",
         ]) {
-          await assert.rejects(
-            () =>
-              downloadFileOperation.execute(
-                { bucket: "b", path: "payload.txt", localPath },
-                { getClient: () => client },
-              ),
-            /control directory/i,
+          const result = await downloadFileOperation.execute(
+            { bucket: "b", path: "payload.txt", localPath },
+            { getClient: () => client },
           );
+          resultPaths.push(result.localPath);
         }
       });
 
-      assert.strictEqual(downloadWasCalled, false);
+      assert.strictEqual(downloadWasCalled, true);
       assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".git")), false);
       assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".github")), false);
+      assert.strictEqual(resultPaths.length, 3);
+      for (const resultPath of resultPaths) {
+        assert.strictEqual(
+          fs.readFileSync(path.join(workspaceDir, resultPath), "utf8"),
+          "downloaded",
+        );
+      }
+      assert.match(resultPaths[0], /^__b2_[^/\\]+[/\\]hooks[/\\]pre-commit$/);
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
@@ -775,6 +905,146 @@ suite("B2 LM tool failure handling", () => {
 
       assert.strictEqual(downloadWasCalled, true);
       assert.strictEqual(fs.readFileSync(destinationPath, "utf8"), "keep me");
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool rejects parent directories swapped to symlinks during transfer", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-race-link-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-race-outside-"));
+    const destinationDirectory = path.join(workspaceDir, "downloads");
+    const outsidePath = path.join(outsideDir, "authorized_keys");
+    fs.mkdirSync(destinationDirectory);
+    const probeLink = path.join(workspaceDir, "probe-link");
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    fs.rmSync(probeLink, { recursive: true, force: true });
+    let downloadWasCalled = false;
+    const bucket = {
+      async download() {
+        downloadWasCalled = true;
+        fs.rmSync(destinationDirectory, { recursive: true, force: true });
+        createDirectorySymlink(outsideDir, destinationDirectory);
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "b", path: "authorized_keys", localPath: "downloads/authorized_keys" },
+              { getClient: () => client },
+            ),
+          /outside the allowed root|symlink|real directory/i,
+        );
+      });
+
+      assert.strictEqual(downloadWasCalled, true);
+      assert.strictEqual(fs.existsSync(outsidePath), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool sanitizes unsafe default basenames before writing", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-name-"));
+    const unsafeNames = ["reports/invoice\u202Egnp.exe", "reports/aux"];
+    const downloadedPaths: string[] = [];
+    const bucket = {
+      async download() {
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        for (const remotePath of unsafeNames) {
+          const result = await downloadFileOperation.execute(
+            { bucket: "b", path: remotePath },
+            { getClient: () => client },
+          );
+          downloadedPaths.push(result.localPath);
+          assert.match(path.basename(result.localPath), /^__b2_/);
+          assert.notStrictEqual(path.basename(result.localPath), path.basename(remotePath));
+          assert.strictEqual(
+            fs.readFileSync(path.join(workspaceDir, result.localPath), "utf8"),
+            "downloaded",
+          );
+        }
+      });
+
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, "invoice\u202Egnp.exe")), false);
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, "aux")), false);
+      assert.strictEqual(new Set(downloadedPaths).size, unsafeNames.length);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("download tool preserves legitimate hidden default basenames", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-dotfile-"));
+    const bucket = {
+      async download() {
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        const result = await downloadFileOperation.execute(
+          { bucket: "b", path: "reports/.npmrc" },
+          { getClient: () => client },
+        );
+
+        assert.strictEqual(path.basename(result.localPath), ".npmrc");
+        assert.strictEqual(
+          fs.readFileSync(path.join(workspaceDir, result.localPath), "utf8"),
+          "downloaded",
+        );
+      });
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }

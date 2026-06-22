@@ -15,12 +15,13 @@ import { TEMP_DIR_NAME } from "../constants";
 import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
 import { log } from "../logger";
 import {
-  ensureContainedDirectoryPath,
-  ensureRealDirectorySync,
+  ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
-  resolveContainedRelativePath,
+  prepareSafeFileWritePath,
 } from "./pathSafety";
+import { buildTempFilePath } from "../utils/localPaths";
+import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
@@ -159,7 +160,7 @@ export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
 
-  constructor(tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME)) {
+  constructor(tempRoot = createPrivateTempRoot(TEMP_DIR_NAME)) {
     this.tempRoot = path.resolve(tempRoot);
     this.ensureManagedTempRoot();
     this.ensurePrivateTempRoot();
@@ -170,20 +171,8 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
-    ensureRealDirectorySync(this.tempRoot, "Temp file cache root", {
+    ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
       recursive: true,
-      mode: 0o700,
-    });
-
-    try {
-      fs.chmodSync(this.tempRoot, 0o700);
-    } catch {
-      // Best effort: existing directories may not allow chmod on every platform.
-    }
-  }
-
-  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
-    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
       mode: 0o700,
     });
   }
@@ -209,9 +198,8 @@ export class TempFileManager implements vscode.Disposable {
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
-    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
-    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
-    await this.ensureCacheDirectoryPath(path.dirname(localPath));
+    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    await prepareSafeFileWritePath(this.tempRoot, localPath);
 
     await downloadStreamToFile(stream, localPath, options);
 
@@ -225,6 +213,7 @@ export class TempFileManager implements vscode.Disposable {
    * Remove the entire temp directory.
    */
   cleanup(): void {
+    releasePrivateTempRoot(this.tempRoot);
     try {
       if (fs.existsSync(this.tempRoot)) {
         fs.rmSync(this.tempRoot, { recursive: true, force: true });

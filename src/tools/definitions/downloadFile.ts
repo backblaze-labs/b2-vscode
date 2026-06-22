@@ -21,7 +21,7 @@ export const downloadFileTool: B2ToolDefinition = {
   name: "b2_downloadFile",
   displayName: "B2: Download File",
   description:
-    "Downloads a file from a B2 bucket to the local workspace. Returns the local file path where the file was saved.",
+    "Downloads a file from a B2 bucket to the local workspace without overwriting existing files. Returns the local file path where the file was saved.",
   parameters: {
     type: "object",
     properties: {
@@ -36,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same file name. Existing files are not overwritten.",
+          "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same safe file name; unsafe names are encoded and existing files are not overwritten.",
       },
     },
     required: ["bucket", "path"],

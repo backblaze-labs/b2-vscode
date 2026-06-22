@@ -4,16 +4,16 @@
  * @module tools/definitions/uploadFile
  */
 
-import * as path from "path";
 import type { B2ToolDefinition } from "../types";
 import { inputText } from "./inputText";
+import { portablePathBasename } from "../../utils/localPaths";
 
 function remotePathFor(input: Record<string, unknown>): string {
   if (input.remotePath !== undefined && input.remotePath !== null) {
     return inputText(input.remotePath);
   }
   const localPath = inputText(input.localPath, "");
-  return path.basename(localPath) || "(file name)";
+  return portablePathBasename(localPath, "(file name)");
 }
 
 export const uploadFileTool: B2ToolDefinition = {

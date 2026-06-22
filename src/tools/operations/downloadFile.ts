@@ -4,17 +4,16 @@
  * @module tools/operations/downloadFile
  */
 
-import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { downloadStreamToFile, withTransferStallTimeout } from "../../services/fileTransfers";
 import {
-  b2KeyBasename,
-  ensureContainedDirectoryPath,
-  findWorkspaceControlDirectory,
-  resolveContainedRelativePath,
-} from "../../services/pathSafety";
+  downloadStreamToNewFileWithinRoot,
+  withTransferStallTimeout,
+} from "../../services/fileTransfers";
+import { findWorkspaceControlDirectory, prepareSafeFileWritePath } from "../../services/pathSafety";
+import { resolveDownloadSavePath } from "../../utils/localPaths";
 import {
   sanitizePathError,
   type PathMessageReplacement,
@@ -24,6 +23,7 @@ import {
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError } from "../../errors";
+import { normalizeB2ObjectNameInput } from "../b2ObjectName";
 
 interface DownloadFileParams {
   bucket: string;
@@ -62,7 +62,6 @@ function relativeDisplayPath(
 function sanitizeWorkspaceDownloadError(
   error: unknown,
   destination: WorkspaceDestination,
-  temporaryDirectory?: string,
 ): unknown {
   if (!(error instanceof Error)) {
     return error;
@@ -70,9 +69,7 @@ function sanitizeWorkspaceDownloadError(
 
   const destinationDirectory = path.dirname(destination.path);
   const relativeDirectory = path.dirname(destination.relativePath);
-  const relativeTemporaryDirectory = path.join(relativeDirectory, ".b2-vscode-transfers");
   const replacements: PathMessageReplacement[] = [
-    { search: temporaryDirectory, replacement: relativeTemporaryDirectory },
     { search: destination.path, replacement: destination.relativePath },
     {
       search: destinationDirectory,
@@ -99,30 +96,23 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
   throw new Error(`downloadFile refuses to overwrite existing workspace file: ${destinationPath}`);
 }
 
-async function ensureWorkspaceDestinationDirectory(
-  workspaceRoot: string,
-  destinationPath: string,
-): Promise<void> {
-  await ensureContainedDirectoryPath(
-    workspaceRoot,
-    path.dirname(path.resolve(destinationPath)),
-    "Workspace download directory",
-  );
-}
-
 interface WorkspaceDestination {
   readonly path: string;
   readonly relativePath: string;
   readonly workspaceRoot: string;
 }
 
-async function workspacePath(relativePath: string): Promise<WorkspaceDestination> {
+async function workspacePath(
+  remotePath: string,
+  localPath?: string,
+): Promise<WorkspaceDestination> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error(WORKSPACE_REQUIRED_MESSAGE);
   }
+
   const workspaceRoot = workspaceFolder.uri.fsPath;
-  const destinationPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
+  const destinationPath = await resolveDownloadSavePath(workspaceRoot, remotePath, localPath);
   const destination = {
     path: destinationPath,
     relativePath: path.relative(workspaceRoot, destinationPath),
@@ -131,7 +121,7 @@ async function workspacePath(relativePath: string): Promise<WorkspaceDestination
   try {
     assertNoControlDirectoryTarget(workspaceRoot, destinationPath);
     await assertDestinationDoesNotExist(destinationPath);
-    await ensureWorkspaceDestinationDirectory(workspaceRoot, destinationPath);
+    await prepareSafeFileWritePath(workspaceRoot, destinationPath, "downloadFile target");
     // Re-check after creating parent directories to avoid overwriting a target
     // that appeared while validation was in progress.
     await assertDestinationDoesNotExist(destinationPath);
@@ -152,33 +142,28 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
+    // Determine local save path before any remote request so invalid local
+    // paths fail without touching B2.
+    const remotePath = normalizeB2ObjectNameInput(params.path);
+    const destination = await workspacePath(remotePath, params.localPath);
+    const savePath = destination.path;
+
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
-    // Determine local save path
-    let destination: WorkspaceDestination;
-    if (params.localPath) {
-      destination = await workspacePath(params.localPath);
-    } else {
-      const fileName = b2KeyBasename(params.path);
-      destination = await workspacePath(fileName);
-    }
-    const savePath = destination.path;
-    const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
-
     let size: number;
     try {
       size = await withCancellableTransferProgress(
-        { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
+        { title: `Downloading b2://${params.bucket}/${remotePath}...`, token },
         async ({ progress, signal }) => {
           const reporter = createTransferProgressReporter(progress);
           const { body } = await withTransferStallTimeout(
-            `Download request for b2://${params.bucket}/${params.path}`,
+            `Download request for b2://${params.bucket}/${remotePath}`,
             { signal },
             (requestSignal, markActivity) =>
-              bucket.download(params.path, {
+              bucket.download(remotePath, {
                 signal: requestSignal,
                 onProgress: (event) => {
                   markActivity();
@@ -187,22 +172,19 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
               }),
           );
 
-          return downloadStreamToFile(body, savePath, {
+          return downloadStreamToNewFileWithinRoot(body, savePath, destination.workspaceRoot, {
             signal,
-            overwrite: false,
-            allowedRootDirectory: destination.workspaceRoot,
-            temporaryDirectory,
           });
         },
       );
     } catch (error) {
-      throw sanitizeWorkspaceDownloadError(error, destination, temporaryDirectory);
+      throw sanitizeWorkspaceDownloadError(error, destination);
     }
 
     return {
       localPath: destination.relativePath,
       size,
-      message: `Downloaded ${params.path} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
+      message: `Downloaded ${remotePath} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
     };
   },
 };
