@@ -183,10 +183,12 @@ export async function ensurePrivateDirectory(
   });
 
   let chmodFailed = false;
-  try {
-    await fs.promises.chmod(directory, options.mode ?? 0o700);
-  } catch {
-    chmodFailed = true;
+  if (process.platform !== "win32") {
+    try {
+      await fs.promises.chmod(directory, options.mode ?? 0o700);
+    } catch {
+      chmodFailed = true;
+    }
   }
 
   try {
@@ -210,10 +212,12 @@ export function ensurePrivateDirectorySync(
   });
 
   let chmodFailed = false;
-  try {
-    fs.chmodSync(directory, options.mode ?? 0o700);
-  } catch {
-    chmodFailed = true;
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(directory, options.mode ?? 0o700);
+    } catch {
+      chmodFailed = true;
+    }
   }
 
   try {

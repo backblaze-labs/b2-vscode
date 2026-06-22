@@ -158,6 +158,20 @@ async function captureConsoleErrors(run: () => Promise<void>): Promise<unknown[]
   }
 }
 
+async function withProcessPlatform<T>(
+  platform: NodeJS.Platform,
+  callback: () => Promise<T> | T,
+): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(descriptor);
+  Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+  try {
+    return await callback();
+  } finally {
+    Object.defineProperty(process, "platform", descriptor);
+  }
+}
+
 function stubB2ApiUrlInspection(inspection: B2ApiUrlInspection): () => void {
   const mutableWorkspace = vscode.workspace as unknown as {
     getConfiguration: typeof vscode.workspace.getConfiguration;
@@ -1692,7 +1706,7 @@ suite("B2 transfer helpers", () => {
     fs.utimesSync(previousDirectory, oldTime, oldTime);
 
     try {
-      await cleanupStaleTransferTempFiles({
+      await cleanupStaleManagedTransferTempFiles({
         maxAgeMs: 1_000,
         maxEntries: Number.MAX_SAFE_INTEGER,
         budgetMs: 5_000,
@@ -3583,6 +3597,53 @@ suite("B2 transfer helpers", () => {
       assert.throws(() => new TempFileManager(tempRoot), /group or other users|current user/i);
       assert.deepStrictEqual(fs.readdirSync(tempRoot), []);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips async chmod for new private directories on win32", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-private-win32-"));
+    const target = path.join(dir, "private");
+    const originalChmod = fs.promises.chmod;
+    let chmodCalls = 0;
+    fs.promises.chmod = (async () => {
+      chmodCalls += 1;
+      throw new Error("chmod should not run");
+    }) as typeof fs.promises.chmod;
+
+    try {
+      await withProcessPlatform("win32", () =>
+        ensurePrivateDirectory(target, "Test private directory", { mode: 0o700 }),
+      );
+
+      assert.strictEqual(chmodCalls, 0);
+      assert.strictEqual(fs.statSync(target).isDirectory(), true);
+    } finally {
+      fs.promises.chmod = originalChmod;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips sync chmod for new private directories on win32", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-private-sync-win32-"));
+    const target = path.join(dir, "private");
+    const mutableFs = require("fs") as typeof import("fs");
+    const originalChmodSync = mutableFs.chmodSync;
+    let chmodCalls = 0;
+    mutableFs.chmodSync = (() => {
+      chmodCalls += 1;
+      throw new Error("chmodSync should not run");
+    }) as typeof mutableFs.chmodSync;
+
+    try {
+      await withProcessPlatform("win32", () =>
+        ensurePrivateDirectorySync(target, "Test private directory", { mode: 0o700 }),
+      );
+
+      assert.strictEqual(chmodCalls, 0);
+      assert.strictEqual(fs.statSync(target).isDirectory(), true);
+    } finally {
+      mutableFs.chmodSync = originalChmodSync;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
