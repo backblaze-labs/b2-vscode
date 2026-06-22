@@ -213,8 +213,8 @@ export interface UploadSourceFile {
 
 function normalizedMaxBytes(maxBytes: number | undefined): number {
   const normalized = maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    throw new Error("Download maximum byte count must be a non-negative finite number.");
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new Error("Download maximum byte count must be a positive integer.");
   }
   return normalized;
 }

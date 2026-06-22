@@ -224,6 +224,7 @@ suite("B2 utility helpers", () => {
       false,
     );
   });
+
 });
 
 suite("B2 API URL configuration", () => {
