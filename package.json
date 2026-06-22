@@ -36,7 +36,7 @@
     "check:release-workflow": "node scripts/assert-release-workflow.js",
     "type-check": "tsc --noEmit",
     "audit:ci": "node scripts/run-npm-audit.js",
-    "audit:release": "node scripts/run-npm-audit.js",
+    "audit:release": "npm run audit:ci",
     "pretest": "npm run test:unit && npm run compile && npm run compile:bundled-smoke && npm run test:discovery-guard:unit && npm run lint",
     "test": "node scripts/test-discovery-guard.js && vscode-test",
     "pretest:unit": "npm run compile-tests",

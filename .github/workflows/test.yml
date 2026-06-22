@@ -99,6 +99,25 @@ jobs:
               }
             }
 
+            async function getBlobWithRetry(sha) {
+              let attempt = 0;
+              while (true) {
+                try {
+                  return await github.rest.git.getBlob({
+                    owner,
+                    repo,
+                    file_sha: sha,
+                  });
+                } catch (error) {
+                  attempt += 1;
+                  if (!retryableStatuses.has(error.status) || attempt >= 3) {
+                    throw error;
+                  }
+                  await sleep(attempt * 1000);
+                }
+              }
+            }
+
             async function rejectUnsupportedMetadataFile(file, message) {
               try {
                 await getContentWithRetry(file);
@@ -135,12 +154,19 @@ jobs:
             for (const file of files) {
               const response = await getContentWithRetry(file);
               const data = response.data;
-              if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+              if (Array.isArray(data) || data.type !== 'file' || !data.sha) {
                 throw new Error(`${file} is not a readable file in the PR head.`);
+              }
+              let content;
+              if (data.encoding === 'none' || !data.content) {
+                const blob = await getBlobWithRetry(data.sha);
+                content = Buffer.from(blob.data.content, blob.data.encoding || 'base64');
+              } else {
+                content = Buffer.from(data.content, data.encoding || 'base64');
               }
               const destination = path.join(process.env.GITHUB_WORKSPACE, 'source', file);
               await fs.mkdir(path.dirname(destination), { recursive: true });
-              await fs.writeFile(destination, Buffer.from(data.content, data.encoding || 'base64'));
+              await fs.writeFile(destination, content);
             }
 
       - name: Setup Node.js

@@ -412,6 +412,12 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
     `${workflowName} PR metadata download must retry transient GitHub API failures.`,
   );
   assert(
+    script.includes("getBlobWithRetry") &&
+      script.includes("github.rest.git.getBlob") &&
+      script.includes("data.encoding === 'none' || !data.content"),
+    `${workflowName} PR metadata download must fall back to git blobs for large metadata files.`,
+  );
+  assert(
     script.includes("'npm-shrinkwrap.json'") &&
       script.includes("npm-shrinkwrap.json is not supported"),
     `${workflowName} PR metadata download must reject npm-shrinkwrap.json.`,
@@ -890,6 +896,9 @@ function assertRawTestWorkflowText(text) {
     "path: trusted-source",
     "path: source",
     "getContentWithRetry",
+    "getBlobWithRetry",
+    "github.rest.git.getBlob",
+    "data.encoding === 'none' || !data.content",
     "'npm-shrinkwrap.json'",
     "npm-shrinkwrap.json is not supported by the audit gate",
     "'.npmrc'",
@@ -916,6 +925,13 @@ function assertDependencyGateDocs() {
   assert(
     security.includes("signature verification runs on release and unprivileged build workflows"),
     "SECURITY.md must document that privileged PR metadata audits do not run signature verification.",
+  );
+  assert(
+    security.includes("Branch protection must require the exact `Dependency Audit Gate`") &&
+      security.includes("Pull requests that were opened before this") &&
+      security.includes(".github/workflows/pr-tests.yml") &&
+      security.includes("must be rebased onto"),
+    "SECURITY.md must document required-check rollout and in-flight PR handling.",
   );
   assert(
     security.includes("npm-shrinkwrap.json") && security.includes("is not supported"),

@@ -7,6 +7,7 @@ const path = require("path");
 
 const AUDIT_POLICY_FILE = "audit-policy.jsonc";
 const AUDIT_COMMAND = "node scripts/run-npm-audit.js";
+const RELEASE_AUDIT_COMMAND = "npm run audit:ci";
 const AUDIT_POLICY_STRICT_JSON_NOTICE =
   "Strict JSON only: comments and trailing commas are not allowed despite the .jsonc extension.";
 const REQUIRED_AUDIT_LEVEL = "moderate";
@@ -156,7 +157,7 @@ function validateAuditPolicy(auditPolicy, packageJson, options = {}) {
   if (options.checkPackageScripts !== false) {
     assert(packageJson.scripts?.["audit:ci"] === AUDIT_COMMAND, "audit:ci script drifted.");
     assert(
-      packageJson.scripts?.["audit:release"] === AUDIT_COMMAND,
+      packageJson.scripts?.["audit:release"] === RELEASE_AUDIT_COMMAND,
       "audit:release script drifted.",
     );
     assert(

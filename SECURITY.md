@@ -16,6 +16,23 @@ lifecycle scripts cannot run during dependency installation. Install steps also
 pin npm to the public registry and ignore repo/user/global npm config so a pull
 request cannot redirect package resolution through `.npmrc`.
 
+## Required Check Rollout
+
+Branch protection must require the exact `Dependency Audit Gate` and
+`VS Code Extension Tests` contexts when this audit-gate rollout merges. The
+`Dependency Audit Gate` context is produced by `.github/workflows/test.yml` from
+the protected base branch, and `VS Code Extension Tests` is produced by
+`.github/workflows/pr-tests.yml` from unprivileged `pull_request` events.
+
+At merge time, maintainers must update branch protection in the same deployment
+window: add `Dependency Audit Gate`, keep `VS Code Extension Tests`, and remove
+any retired workflow-specific test context only after confirming both current
+contexts report on a fresh PR. Pull requests that were opened before this
+rollout and do not contain `.github/workflows/pr-tests.yml` must be rebased onto
+`main` after the rollout, or maintainers must temporarily allow the previous
+test context until those PRs are rebased. Do not pre-require
+`Dependency Audit Gate` before this workflow has landed on `main`.
+
 The advisory and signature gates pin npm operations to
 `https://registry.npmjs.org/` and ignore user/global npm config so a repository
 or user `.npmrc` cannot redirect audit results or signature metadata to another

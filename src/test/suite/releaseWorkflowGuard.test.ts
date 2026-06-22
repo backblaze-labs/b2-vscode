@@ -29,7 +29,7 @@ function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
 function validPublishSteps(extraStepsAfterPublisherInstall: unknown[] = []): unknown[] {
   return [
     {
-      name: "Install dependencies",
+      name: "Install dependencies without lifecycle scripts",
       run: "npm ci --ignore-scripts",
     },
     {
