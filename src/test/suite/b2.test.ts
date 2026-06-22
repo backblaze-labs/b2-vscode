@@ -991,15 +991,17 @@ suite("B2 transfer helpers", () => {
   });
 
   test("reports symlink upload sources clearly", async () => {
-    if (process.platform === "win32") {
-      return;
-    }
-
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-source-"));
     const target = path.join(dir, "target.bin");
     const linkPath = path.join(dir, "link.bin");
     fs.writeFileSync(target, Buffer.from([1, 2, 3]));
     const symlinkCreated = createFileSymlink(target, linkPath);
+    const originalOpen = fs.promises.open;
+    let openCalled = false;
+    fs.promises.open = ((...args: Parameters<typeof fs.promises.open>) => {
+      openCalled = true;
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
 
     try {
       if (!symlinkCreated) {
@@ -1010,7 +1012,9 @@ suite("B2 transfer helpers", () => {
         () => openUploadSourceFile(linkPath),
         /upload source must be a real file, not a symlink/i,
       );
+      assert.strictEqual(openCalled, false);
     } finally {
+      fs.promises.open = originalOpen;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

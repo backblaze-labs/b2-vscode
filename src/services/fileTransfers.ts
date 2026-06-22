@@ -800,7 +800,20 @@ function withActivityProgress(
   };
 }
 
+async function assertRealUploadSourcePath(localPath: string): Promise<fs.Stats> {
+  const pathStats = await fs.promises.lstat(localPath);
+  if (pathStats.isSymbolicLink()) {
+    throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+  }
+  if (!pathStats.isFile()) {
+    throw new Error(`Local path is not a file: ${localPath}`);
+  }
+  return pathStats;
+}
+
 export async function openUploadSourceFile(localPath: string): Promise<UploadSourceFile> {
+  await assertRealUploadSourcePath(localPath);
+
   let handle: fs.promises.FileHandle;
   try {
     handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
@@ -817,7 +830,7 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
       throw new Error(`Local path is not a file: ${localPath}`);
     }
 
-    const pathStats = await fs.promises.stat(localPath);
+    const pathStats = await assertRealUploadSourcePath(localPath);
     if (!sameFileIdentity(stats, pathStats)) {
       throw new Error(`Local path changed while opening upload source: ${localPath}`);
     }
