@@ -634,6 +634,77 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects parent symlink swaps before no-overwrite publish", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-bind-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpen = fs.promises.open;
+    const originalLstat = fs.promises.lstat;
+    const mutablePromises = fs.promises as unknown as {
+      open: typeof fs.promises.open;
+      lstat: typeof fs.promises.lstat;
+    };
+    let destinationTempOpened = false;
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      const handle = await originalOpen(...args);
+      if (path.basename(openedPath).startsWith(".b2-cross-device-payload.bin-")) {
+        destinationTempOpened = true;
+      }
+      return handle;
+    }) as typeof fs.promises.open;
+    mutablePromises.lstat = (async (...args: Parameters<typeof fs.promises.lstat>) => {
+      if (
+        destinationTempOpened &&
+        !swapped &&
+        path.resolve(String(args[0])) === path.resolve(destination)
+      ) {
+        swapped = true;
+        fs.renameSync(downloadDir, movedDownloadDir);
+        fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalLstat(...args);
+    }) as typeof fs.promises.lstat;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /outside the allowed root|real directory|symlink|ENOENT|no such file/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+    } finally {
+      mutablePromises.open = originalOpen;
+      mutablePromises.lstat = originalLstat;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("does not create workspace transfer temp dir after parent swap", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-race-"));
     const outsideDir = fs.mkdtempSync(
