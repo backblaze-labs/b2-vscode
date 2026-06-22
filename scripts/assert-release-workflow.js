@@ -230,6 +230,12 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = loadReleaseWorkflo
     !installRun.includes("@vscode/vsce@"),
     "isolated Marketplace publisher must not resolve @vscode/vsce dynamically in the workflow.",
   );
+  assert(
+    installRun.includes('VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"') &&
+      installRun.includes('test -x "$VSCE_BIN"') &&
+      installRun.includes('echo "bin=$VSCE_BIN" >> "$GITHUB_OUTPUT"'),
+    "isolated Marketplace publisher must export VSCE_BIN from $PUBLISHER_DIR.",
+  );
 
   const installDependenciesRun = normalizedCommand(
     stepRunInSteps(steps, "publish", "Install dependencies"),

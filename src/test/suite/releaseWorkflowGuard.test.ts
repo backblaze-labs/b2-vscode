@@ -54,9 +54,15 @@ function validPublishSteps(extraStepsAfterPublisherInstall: unknown[] = []): unk
       id: "publisher",
       run: [
         'PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"',
+        'rm -rf "$PUBLISHER_DIR"',
+        'mkdir -p "$PUBLISHER_DIR"',
         'cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"',
         'cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"',
+        'cd "$PUBLISHER_DIR"',
         "npm ci --ignore-scripts --no-audit --no-fund --omit=dev",
+        'VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"',
+        'test -x "$VSCE_BIN"',
+        'echo "bin=$VSCE_BIN" >> "$GITHUB_OUTPUT"',
       ].join("\n"),
     },
     ...extraStepsAfterPublisherInstall,
@@ -115,6 +121,28 @@ suite("Release workflow guard assertions", () => {
 
     guard.assertPublishUsesIsolatedPublisher(workflow);
     guard.assertMarketplacePublisherDependencyGate(workflow);
+  });
+
+  test("rejects isolated publisher output outside publisher directory", () => {
+    const guard = loadReleaseWorkflowGuard();
+    const workflow = validPublishWorkflow() as {
+      jobs: { publish: { steps: { name?: string; run?: string }[] } };
+    };
+    const publisherStep = workflow.jobs.publish.steps.find(
+      (step) => step.name === "Install isolated Marketplace publisher",
+    );
+    if (!publisherStep?.run) {
+      throw new Error("Synthetic workflow is missing the isolated publisher step.");
+    }
+    publisherStep.run = publisherStep.run.replace(
+      'VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"',
+      'VSCE_BIN="$GITHUB_WORKSPACE/node_modules/.bin/vsce"',
+    );
+
+    assert.throws(
+      () => guard.assertPublishUsesIsolatedPublisher(workflow),
+      /export VSCE_BIN from \$PUBLISHER_DIR/i,
+    );
   });
 
   test("accepts formatted publisher hash variable expressions", () => {
