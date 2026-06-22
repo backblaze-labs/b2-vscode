@@ -33,10 +33,10 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
-  cleanupStaleUnfinishedUploads,
   DEFAULT_DOWNLOAD_MAX_BYTES,
   DownloadSizeLimitError,
   downloadStreamToFile,
+  getUnfinishedUploadCleanupDiagnostics,
   openUploadSourceFile,
   STREAMING_UPLOAD_PART_SIZE,
   TransferStallTimeoutError,
@@ -45,7 +45,7 @@ import {
   type UploadBucketHandle,
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
-import { TempFileManager } from "../../services/tempFileManager";
+import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import { isPathInsideOrEqual } from "../../services/pathSafety";
 import { humanSize } from "../../utils/humanSize";
 import type { B2Credentials } from "../../services/authService";
@@ -497,7 +497,7 @@ suite("B2 transfer helpers", () => {
           }),
         (error) => {
           assert.ok(error instanceof DownloadSizeLimitError);
-          assert.match(error.message, /Download to limited\.bin exceeded the 8 byte limit/i);
+          assert.match(error.message, /Download to limited\.bin exceeded the 8 B limit/i);
           assert.strictEqual(error.message.includes(dir), false);
           return true;
         },
@@ -757,6 +757,45 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(size, 3);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(renameCalls, 3);
+      assert.strictEqual(
+        fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
+        false,
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses to replace existing directory destinations", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-overwrite-directory-"));
+    const destination = path.join(dir, "existing");
+    fs.mkdirSync(destination);
+    fs.writeFileSync(path.join(destination, "kept.txt"), "kept");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([6, 7, 8]));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    let destinationRenameAttempts = 0;
+    fs.promises.rename = async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      const newResolved = path.resolve(String(newPath));
+      if (newResolved === path.resolve(destination)) {
+        destinationRenameAttempts += 1;
+        throw Object.assign(new Error("destination exists"), { code: "EEXIST" });
+      }
+
+      await originalRename(oldPath, newPath);
+    };
+
+    try {
+      await assert.rejects(() => downloadStreamToFile(stream, destination), /regular file/i);
+
+      assert.strictEqual(destinationRenameAttempts, 1);
+      assert.strictEqual(fs.lstatSync(destination).isDirectory(), true);
+      assert.strictEqual(fs.readFileSync(path.join(destination, "kept.txt"), "utf8"), "kept");
       assert.strictEqual(
         fs.readdirSync(dir).some((name) => name.startsWith(".b2-replace-backup-")),
         false,
@@ -1094,9 +1133,7 @@ suite("B2 transfer helpers", () => {
     } satisfies UploadBucketHandle;
 
     try {
-      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
-        unfinishedCleanupMinAgeMs: 0,
-      });
+      const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
 
       assert.strictEqual(result.fileId, "uploaded-id");
       assert.deepStrictEqual(canceled, []);
@@ -1104,63 +1141,6 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  test("does not run age-based stale unfinished upload cleanup", async () => {
-    const canceled: unknown[] = [];
-    let listCalls = 0;
-
-    const bucket = {
-      async listUnfinishedLargeFiles(options) {
-        listCalls += 1;
-        assert.strictEqual(options?.namePrefix, undefined);
-        return {
-          files: [
-            {
-              fileId: largeFileId("stale-owned-a"),
-              fileName: "remote/a.bin",
-              fileInfo: {
-                "b2-vscode-upload-owner": "b2-vscode",
-                "b2-vscode-upload-started-ms": "1",
-              },
-            },
-            {
-              fileId: largeFileId("fresh-owned"),
-              fileName: "remote/b.bin",
-              fileInfo: {
-                "b2-vscode-upload-owner": "b2-vscode",
-                "b2-vscode-upload-started-ms": String(Date.now()),
-              },
-            },
-            {
-              fileId: largeFileId("foreign"),
-              fileName: "remote/c.bin",
-              fileInfo: {
-                "b2-vscode-upload-owner": "other-tool",
-                "b2-vscode-upload-started-ms": "1",
-              },
-            },
-          ],
-          nextFileId: null,
-        };
-      },
-      async cancelLargeFile(fileId) {
-        canceled.push(fileId);
-      },
-      file() {
-        assert.fail("Expected cleanup not to open an upload stream");
-      },
-      async upload() {
-        assert.fail("Expected cleanup not to upload a file");
-      },
-    } satisfies UploadBucketHandle;
-
-    await cleanupStaleUnfinishedUploads(bucket, {
-      unfinishedCleanupMinAgeMs: 60_000,
-    });
-
-    assert.strictEqual(listCalls, 0);
-    assert.deepStrictEqual(canceled, []);
   });
 
   test("does not cancel remote unfinished uploads before streaming", async () => {
@@ -1291,6 +1271,93 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(listCalls, 1);
       assert.deepStrictEqual(canceled, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("serializes owned unfinished-upload cleanup instead of skipping concurrent failures", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-owned-cleanup-"));
+    const firstPath = path.join(dir, "first.bin");
+    const secondPath = path.join(dir, "second.bin");
+    fs.writeFileSync(firstPath, Buffer.from([1]));
+    fs.writeFileSync(secondPath, Buffer.from([2]));
+
+    const diagnosticsBefore = getUnfinishedUploadCleanupDiagnostics();
+    const sessionsByRemotePath = new Map<string, string>();
+    const canceled: unknown[] = [];
+    let listCalls = 0;
+
+    const bucket = {
+      async listUnfinishedLargeFiles(options) {
+        listCalls += 1;
+        if (listCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+
+        const remotePath = options?.namePrefix ?? "";
+        const sessionId = sessionsByRemotePath.get(remotePath);
+        return {
+          files: sessionId
+            ? [
+                {
+                  fileId: largeFileId(`owned-cleanup-${listCalls}`),
+                  fileName: remotePath,
+                  fileInfo: {
+                    "b2-vscode-upload-session-id": sessionId,
+                  },
+                },
+              ]
+            : [],
+          nextFileId: null,
+        };
+      },
+      async cancelLargeFile(fileId) {
+        canceled.push(fileId);
+      },
+      file(fileName: string) {
+        return {
+          createWriteStream(options) {
+            const sessionId = options?.fileInfo?.["b2-vscode-upload-session-id"];
+            if (typeof sessionId !== "string") {
+              assert.fail("Expected upload session id to be recorded");
+            }
+            sessionsByRemotePath.set(fileName, sessionId);
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error(`simulated upload failure for ${fileName}`);
+                },
+              }),
+              done: Promise.reject(new Error(`simulated upload failure for ${fileName}`)),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      const results = await Promise.allSettled([
+        uploadFileFromDisk(bucket, firstPath, "remote/first.bin"),
+        uploadFileFromDisk(bucket, secondPath, "remote/second.bin"),
+      ]);
+
+      assert.deepStrictEqual(
+        results.map((result) => result.status),
+        ["rejected", "rejected"],
+      );
+      assert.strictEqual(listCalls, 2);
+      assert.deepStrictEqual(canceled, [
+        largeFileId("owned-cleanup-1"),
+        largeFileId("owned-cleanup-2"),
+      ]);
+      const diagnosticsAfter = getUnfinishedUploadCleanupDiagnostics();
+      assert.ok(
+        diagnosticsAfter.queuedOwnedCleanupCount > diagnosticsBefore.queuedOwnedCleanupCount,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1442,7 +1509,6 @@ suite("B2 transfer helpers", () => {
         () =>
           uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
             unfinishedCleanupTimeoutMs: 20,
-            unfinishedCleanupSuppressAfterTimeoutMs: 0,
           }),
         /simulated upload failure/i,
       );
@@ -1549,7 +1615,6 @@ suite("B2 transfer helpers", () => {
         () =>
           uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
             unfinishedCleanupTimeoutMs: 20,
-            unfinishedCleanupSuppressAfterTimeoutMs: 0,
           }),
         /simulated upload failure/i,
       );
@@ -1657,6 +1722,27 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(path.join(dir, "cache", "bucket", "oversized.bin")), false);
     } finally {
       manager.dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans stale temp-cache files left by earlier sessions", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-stale-"));
+    const tempRoot = path.join(dir, "cache");
+    const staleFile = path.join(tempRoot, "bucket", "stale.txt");
+    const freshFile = path.join(tempRoot, "bucket", "fresh.txt");
+    fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+    fs.writeFileSync(staleFile, "stale");
+    fs.writeFileSync(freshFile, "fresh");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(staleFile, oldTime, oldTime);
+
+    try {
+      await cleanupStaleTempFileCache({ tempRoot, maxAgeMs: 1_000 });
+
+      assert.strictEqual(fs.existsSync(staleFile), false);
+      assert.strictEqual(fs.readFileSync(freshFile, "utf8"), "fresh");
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -17,8 +17,74 @@ import {
   ensureContainedDirectoryPath,
   ensureRealDirectorySync,
   isPathInsideOrEqual,
+  pathExistsAsRealDirectory,
   resolveContainedRelativePath,
 } from "./pathSafety";
+
+const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function assertManagedTempRoot(tempRoot: string): void {
+  const systemTemp = path.resolve(os.tmpdir());
+  if (tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, tempRoot)) {
+    throw new Error(
+      `Temp file cache root must be a dedicated directory inside the system temp directory: ${tempRoot}`,
+    );
+  }
+}
+
+async function removeStaleCacheEntries(directory: string, cutoffMs: number): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.lstat(entryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      await removeStaleCacheEntries(entryPath, cutoffMs);
+      await fs.promises.rmdir(entryPath).catch((error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTEMPTY") {
+          throw error;
+        }
+      });
+      continue;
+    }
+
+    if (stats.mtimeMs <= cutoffMs) {
+      await fs.promises.rm(entryPath, { recursive: true, force: true });
+    }
+  }
+}
+
+export async function cleanupStaleTempFileCache(
+  options: { readonly tempRoot?: string; readonly maxAgeMs?: number } = {},
+): Promise<void> {
+  const tempRoot = path.resolve(options.tempRoot ?? path.join(os.tmpdir(), TEMP_DIR_NAME));
+  assertManagedTempRoot(tempRoot);
+  if (!(await pathExistsAsRealDirectory(tempRoot, "Temp file cache root"))) {
+    return;
+  }
+
+  const maxAgeMs = options.maxAgeMs ?? STALE_TEMP_CACHE_MAX_AGE_MS;
+  const cutoffMs = Date.now() - Math.max(0, maxAgeMs);
+  await removeStaleCacheEntries(tempRoot, cutoffMs);
+}
 
 /**
  * Manages a temp directory for caching B2 file downloads.
@@ -34,12 +100,7 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensureManagedTempRoot(): void {
-    const systemTemp = path.resolve(os.tmpdir());
-    if (this.tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, this.tempRoot)) {
-      throw new Error(
-        `Temp file cache root must be a dedicated directory inside the system temp directory: ${this.tempRoot}`,
-      );
-    }
+    assertManagedTempRoot(this.tempRoot);
   }
 
   private ensurePrivateTempRoot(): void {

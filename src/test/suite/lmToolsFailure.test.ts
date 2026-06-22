@@ -26,6 +26,7 @@ import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
+import { registerB2Tools } from "../../tools/registration";
 import { withWindowUiStubs } from "./windowStubs";
 
 const definitions = [
@@ -224,6 +225,69 @@ suite("B2 LM tool failure handling", () => {
     );
   });
 
+  test("registered tools resolve the live client after logout", async () => {
+    if (!vscode.lm || typeof vscode.lm.registerTool !== "function") {
+      return;
+    }
+
+    const registeredTools = new Map<string, vscode.LanguageModelTool<unknown>>();
+    const mutableLm = vscode.lm as unknown as {
+      registerTool: typeof vscode.lm.registerTool;
+    };
+    const originalRegisterTool = mutableLm.registerTool;
+    mutableLm.registerTool = ((name: string, tool: vscode.LanguageModelTool<unknown>) => {
+      registeredTools.set(name, tool);
+      return { dispose() {} };
+    }) as typeof vscode.lm.registerTool;
+
+    let liveClient: B2Client | null = new B2Client({
+      applicationKeyId: "key-id",
+      applicationKey: "app-key",
+    });
+    const context = { subscriptions: [] } as unknown as vscode.ExtensionContext;
+
+    try {
+      registerB2Tools(context, () => liveClient);
+      liveClient = null;
+
+      const presignTool = registeredTools.get("b2_presignUrl");
+      const deleteTool = registeredTools.get("b2_deleteFile");
+      assert.ok(presignTool, "Expected b2_presignUrl to be registered");
+      assert.ok(deleteTool, "Expected b2_deleteFile to be registered");
+
+      await withCancellationToken((token) =>
+        assert.rejects(
+          () =>
+            Promise.resolve(
+              presignTool.invoke(
+                {
+                  input: { bucket: "private-bucket", path: "secret.txt" },
+                } as unknown as vscode.LanguageModelToolInvocationOptions<unknown>,
+                token,
+              ),
+            ),
+          /Not authenticated.*B2: Authenticate/i,
+        ),
+      );
+      await withCancellationToken((token) =>
+        assert.rejects(
+          () =>
+            Promise.resolve(
+              deleteTool.invoke(
+                {
+                  input: { bucket: "private-bucket", path: "important.txt" },
+                } as unknown as vscode.LanguageModelToolInvocationOptions<unknown>,
+                token,
+              ),
+            ),
+          /Not authenticated.*B2: Authenticate/i,
+        ),
+      );
+    } finally {
+      mutableLm.registerTool = originalRegisterTool;
+    }
+  });
+
   test("tool adapters surface safe local file errors", async () => {
     const localError = new Error(
       "ENOENT: no such file or directory, open '/tmp/missing.txt'",
@@ -289,6 +353,23 @@ suite("B2 LM tool failure handling", () => {
         /Not authenticated/i,
       );
     }
+  });
+
+  test("presignUrl rejects durations above the documented maximum", async () => {
+    const client = {
+      async getBucket() {
+        assert.fail("Expected expiresIn validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: "b", path: "a.txt", expiresIn: 604_801 },
+          { getClient: () => client },
+        ),
+      /between 1 and 604800 seconds/i,
+    );
   });
 
   test("upload tool result reports workspace-relative source path", async () => {

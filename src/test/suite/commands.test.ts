@@ -35,6 +35,8 @@ type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
 type CreateBucketResult = Awaited<ReturnType<B2Client["createBucket"]>>;
 type UpdateBucketOptions = Parameters<Bucket["update"]>[0];
 type UpdateBucketResult = Awaited<ReturnType<Bucket["update"]>>;
+type AbortableCreateBucketOptions = CreateBucketOptions & { readonly signal?: AbortSignal };
+type AbortableUpdateBucketOptions = UpdateBucketOptions & { readonly signal?: AbortSignal };
 
 const PRIVATE_VISIBILITY_LABEL = "Private";
 const PUBLIC_VISIBILITY_LABEL = "Public";
@@ -70,11 +72,11 @@ function makeCommandServices<TClient>(
 }
 
 function makeCreateBucketClient(
-  implementation?: (options: CreateBucketOptions) => Promise<CreateBucketResult>,
-): { readonly client: BucketCreationClient; readonly calls: CreateBucketOptions[] } {
-  const calls: CreateBucketOptions[] = [];
+  implementation?: (options: AbortableCreateBucketOptions) => Promise<CreateBucketResult>,
+): { readonly client: BucketCreationClient; readonly calls: AbortableCreateBucketOptions[] } {
+  const calls: AbortableCreateBucketOptions[] = [];
   const client = {
-    async createBucket(options: CreateBucketOptions): Promise<CreateBucketResult> {
+    async createBucket(options: AbortableCreateBucketOptions): Promise<CreateBucketResult> {
       calls.push(options);
       if (implementation) {
         return implementation(options);
@@ -90,12 +92,12 @@ function makeCreateBucketClient(
 function makeBucketTreeItem(
   bucketName: string,
   bucketType: BucketType,
-  implementation?: (options: UpdateBucketOptions) => Promise<UpdateBucketResult>,
-): { readonly item: BucketVisibilityItem; readonly updates: UpdateBucketOptions[] } {
-  const updates: UpdateBucketOptions[] = [];
+  implementation?: (options: AbortableUpdateBucketOptions) => Promise<UpdateBucketResult>,
+): { readonly item: BucketVisibilityItem; readonly updates: AbortableUpdateBucketOptions[] } {
+  const updates: AbortableUpdateBucketOptions[] = [];
   const bucket = {
     info: { bucketType, revision: 7 },
-    async update(options: UpdateBucketOptions): Promise<UpdateBucketResult> {
+    async update(options: AbortableUpdateBucketOptions): Promise<UpdateBucketResult> {
       updates.push(options);
       if (implementation) {
         return implementation(options);
@@ -375,6 +377,7 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0]?.signal?.aborted, true);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 0);
     assert.strictEqual(ui.errors.length, 1);
@@ -947,6 +950,7 @@ suite("B2 public bucket command safety", () => {
     );
 
     assert.deepStrictEqual(updates, [{ bucketType: "allPrivate", ifRevisionIs: 7 }]);
+    assert.strictEqual(updates[0]?.signal?.aborted, true);
     assert.strictEqual(commandServices.refreshCount(), 1);
     assert.strictEqual(ui.warnings.length, 1);
     assert.match(ui.warnings[0]?.message ?? "", /to private completed/);

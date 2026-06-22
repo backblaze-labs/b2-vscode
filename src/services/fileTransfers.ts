@@ -18,6 +18,7 @@ import {
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
 import { logError } from "../logger";
+import { humanSize } from "../utils/humanSize";
 import {
   ensureContainedDirectoryPath,
   ensureRealDirectory,
@@ -40,15 +41,28 @@ const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS = 10;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
-const UNFINISHED_UPLOAD_CLEANUP_SUPPRESS_AFTER_TIMEOUT_MS = 5 * 60 * 1000;
 const UPLOAD_OWNER_INFO_KEY = "b2-vscode-upload-owner";
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 const UPLOAD_STARTED_MS_INFO_KEY = "b2-vscode-upload-started-ms";
 const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
 
 const lastCleanupByDirectory = new Map<string, number>();
-let unfinishedUploadCleanupInProgress = false;
-let unfinishedUploadCleanupSuppressedUntil = 0;
+let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
+let unfinishedUploadCleanupPendingCount = 0;
+
+export interface UnfinishedUploadCleanupDiagnostics {
+  readonly queuedOwnedCleanupCount: number;
+  readonly timedOutCleanupCount: number;
+}
+
+const unfinishedUploadCleanupDiagnostics = {
+  queuedOwnedCleanupCount: 0,
+  timedOutCleanupCount: 0,
+};
+
+export function getUnfinishedUploadCleanupDiagnostics(): UnfinishedUploadCleanupDiagnostics {
+  return { ...unfinishedUploadCleanupDiagnostics };
+}
 
 export class TransferStallTimeoutError extends Error {
   constructor(message: string) {
@@ -79,12 +93,10 @@ export interface DownloadStreamToFileOptions extends TransferTimeoutOptions {
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
   readonly onProgress?: ProgressListener;
   readonly partSize?: number;
-  readonly unfinishedCleanupMinAgeMs?: number;
   readonly unfinishedCleanupMaxPages?: number;
   readonly unfinishedCleanupMaxCancels?: number;
   readonly unfinishedCleanupTimeoutMs?: number;
   readonly unfinishedCleanupBudgetMs?: number;
-  readonly unfinishedCleanupSuppressAfterTimeoutMs?: number;
 }
 
 export interface UploadBucketHandle {
@@ -226,7 +238,7 @@ function createDownloadSizeLimitTransform(
       if (bytes > maxBytes) {
         callback(
           new DownloadSizeLimitError(
-            `Download to ${path.basename(destinationPath)} exceeded the ${maxBytes} byte limit.`,
+            `Download to ${path.basename(destinationPath)} exceeded the ${humanSize(maxBytes)} limit.`,
           ),
         );
         return;
@@ -510,6 +522,11 @@ async function replaceExistingDestination(
   sourcePath: string,
   destinationPath: string,
 ): Promise<void> {
+  const destinationStats = await fs.promises.lstat(destinationPath);
+  if (!destinationStats.isFile()) {
+    throw new Error(`Download destination must be a regular file: ${destinationPath}`);
+  }
+
   const backupPath = destinationReplaceBackupPath(destinationPath);
   try {
     await fs.promises.rename(destinationPath, backupPath);
@@ -782,13 +799,12 @@ async function withAbortableTimeout<T>(
   }
 }
 
-function suppressUnfinishedUploadCleanup(
-  description: string,
-  error: unknown,
-  suppressAfterTimeoutMs = UNFINISHED_UPLOAD_CLEANUP_SUPPRESS_AFTER_TIMEOUT_MS,
-): void {
-  unfinishedUploadCleanupSuppressedUntil = Date.now() + suppressAfterTimeoutMs;
-  logError(`${description} timed out; suppressing unfinished-upload cleanup briefly`, error);
+function recordUnfinishedUploadCleanupTimeout(description: string, error: unknown): void {
+  unfinishedUploadCleanupDiagnostics.timedOutCleanupCount += 1;
+  logError(
+    `${description} timed out; unfinished-upload cleanup will continue to be retried`,
+    error,
+  );
 }
 
 function remainingCleanupBudget(startedAt: number, budgetMs: number): number {
@@ -805,41 +821,42 @@ async function cleanupOwnedUnfinishedUpload(
     | "unfinishedCleanupMaxCancels"
     | "unfinishedCleanupTimeoutMs"
     | "unfinishedCleanupBudgetMs"
-    | "unfinishedCleanupSuppressAfterTimeoutMs"
   > = {},
 ): Promise<void> {
-  await cleanupMatchingUnfinishedUploads(
-    bucket,
-    remotePath,
-    options,
-    "Owned unfinished upload",
-    (file) => {
-      return (
-        file.fileName === remotePath &&
-        file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
-      );
-    },
+  await runSerializedUnfinishedUploadCleanup("Owned unfinished upload", () =>
+    cleanupMatchingUnfinishedUploads(
+      bucket,
+      remotePath,
+      options,
+      "Owned unfinished upload",
+      (file) => {
+        return (
+          file.fileName === remotePath &&
+          file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY] === uploadSessionId
+        );
+      },
+    ),
   );
 }
 
-export async function cleanupStaleUnfinishedUploads(
-  _bucket: UploadBucketHandle,
-  _options: Pick<
-    UploadFileFromDiskOptions,
-    | "unfinishedCleanupMaxPages"
-    | "unfinishedCleanupMinAgeMs"
-    | "unfinishedCleanupMaxCancels"
-    | "unfinishedCleanupTimeoutMs"
-    | "unfinishedCleanupBudgetMs"
-    | "unfinishedCleanupSuppressAfterTimeoutMs"
-  > & {
-    readonly remotePath?: string;
-  } = {},
+async function runSerializedUnfinishedUploadCleanup(
+  _description: string,
+  cleanup: () => Promise<void>,
 ): Promise<void> {
-  logError(
-    "Skipped stale unfinished-upload cleanup because extension-owned age metadata can belong to another live VS Code window or machine",
-    new Error("Use a B2 lifecycle rule or administrative cleanup for legacy unfinished uploads."),
-  );
+  if (unfinishedUploadCleanupPendingCount > 0) {
+    unfinishedUploadCleanupDiagnostics.queuedOwnedCleanupCount += 1;
+  }
+
+  unfinishedUploadCleanupPendingCount += 1;
+  const previous = unfinishedUploadCleanupChain.catch(() => undefined);
+  const current = previous.then(cleanup);
+  unfinishedUploadCleanupChain = current.catch(() => undefined);
+
+  try {
+    await current;
+  } finally {
+    unfinishedUploadCleanupPendingCount -= 1;
+  }
 }
 
 async function cleanupMatchingUnfinishedUploads(
@@ -851,7 +868,6 @@ async function cleanupMatchingUnfinishedUploads(
     | "unfinishedCleanupMaxCancels"
     | "unfinishedCleanupTimeoutMs"
     | "unfinishedCleanupBudgetMs"
-    | "unfinishedCleanupSuppressAfterTimeoutMs"
   > = {},
   description: string,
   shouldCancel: (file: UnfinishedLargeFile) => boolean,
@@ -860,23 +876,6 @@ async function cleanupMatchingUnfinishedUploads(
     return;
   }
 
-  if (Date.now() < unfinishedUploadCleanupSuppressedUntil) {
-    logError(
-      `Skipped ${description} cleanup because a previous unfinished-upload cleanup timed out`,
-      new Error("Unfinished-upload cleanup is temporarily suppressed."),
-    );
-    return;
-  }
-
-  if (unfinishedUploadCleanupInProgress) {
-    logError(
-      `Skipped ${description} cleanup because another unfinished-upload cleanup is in progress`,
-      new Error("Unfinished-upload cleanup is serialized."),
-    );
-    return;
-  }
-
-  unfinishedUploadCleanupInProgress = true;
   let startFileId: LargeFileId | undefined;
   let pagesScanned = 0;
   let cancelsAttempted = 0;
@@ -885,98 +884,86 @@ async function cleanupMatchingUnfinishedUploads(
   const maxCancels = options.unfinishedCleanupMaxCancels ?? UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS;
   const timeoutMs = options.unfinishedCleanupTimeoutMs ?? UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS;
   const budgetMs = options.unfinishedCleanupBudgetMs ?? UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS;
-  try {
-    do {
-      if (pagesScanned >= maxPages) {
-        const cleanupTarget = remotePath ?? "bucket";
+  do {
+    if (pagesScanned >= maxPages) {
+      const cleanupTarget = remotePath ?? "bucket";
+      logError(
+        `Unfinished upload cleanup for ${cleanupTarget} reached the ${maxPages} page limit`,
+        new Error(`Unfinished upload cleanup exceeded ${maxPages} page(s).`),
+      );
+      return;
+    }
+
+    const listBudgetMs = Math.min(timeoutMs, remainingCleanupBudget(startedAt, budgetMs));
+    if (listBudgetMs <= 0) {
+      logError(
+        `${description} cleanup stopped after reaching the ${budgetMs} ms wall-clock budget`,
+        new Error("Unfinished-upload cleanup budget exhausted."),
+      );
+      return;
+    }
+
+    let page: {
+      files: readonly UnfinishedLargeFile[];
+      nextFileId: LargeFileId | null;
+    };
+    try {
+      page = await withAbortableTimeout(
+        (signal) =>
+          bucket.listUnfinishedLargeFiles?.({
+            ...(remotePath !== undefined ? { namePrefix: remotePath } : {}),
+            pageSize: 100,
+            ...(startFileId !== undefined ? { startFileId } : {}),
+            signal,
+          }) ?? Promise.reject(new Error("Bucket cannot list unfinished uploads.")),
+        listBudgetMs,
+        `${description} list`,
+      );
+    } catch (error) {
+      if (error instanceof CleanupOperationTimeoutError) {
+        recordUnfinishedUploadCleanupTimeout(`${description} list`, error);
+      } else {
+        logError(`${description} list failed`, error);
+      }
+      return;
+    }
+    pagesScanned += 1;
+
+    for (const file of page.files) {
+      if (!shouldCancel(file)) {
+        continue;
+      }
+      if (cancelsAttempted >= maxCancels) {
         logError(
-          `Unfinished upload cleanup for ${cleanupTarget} reached the ${maxPages} page limit`,
-          new Error(`Unfinished upload cleanup exceeded ${maxPages} page(s).`),
+          `${description} cleanup reached the ${maxCancels} cancel limit`,
+          new Error("Unfinished-upload cleanup cancel limit exhausted."),
         );
         return;
       }
-
-      const listBudgetMs = Math.min(timeoutMs, remainingCleanupBudget(startedAt, budgetMs));
-      if (listBudgetMs <= 0) {
+      const cancelBudgetMs = Math.min(timeoutMs, remainingCleanupBudget(startedAt, budgetMs));
+      if (cancelBudgetMs <= 0) {
         logError(
           `${description} cleanup stopped after reaching the ${budgetMs} ms wall-clock budget`,
           new Error("Unfinished-upload cleanup budget exhausted."),
         );
         return;
       }
-
-      let page: {
-        files: readonly UnfinishedLargeFile[];
-        nextFileId: LargeFileId | null;
-      };
-      try {
-        page = await withAbortableTimeout(
-          (signal) =>
-            bucket.listUnfinishedLargeFiles?.({
-              ...(remotePath !== undefined ? { namePrefix: remotePath } : {}),
-              pageSize: 100,
-              ...(startFileId !== undefined ? { startFileId } : {}),
-              signal,
-            }) ?? Promise.reject(new Error("Bucket cannot list unfinished uploads.")),
-          listBudgetMs,
-          `${description} list`,
-        );
-      } catch (error) {
+      cancelsAttempted += 1;
+      await withAbortableTimeout(
+        (signal) => bucket.cancelLargeFile?.(file.fileId, { signal }) ?? Promise.resolve(),
+        cancelBudgetMs,
+        `${description} cancel`,
+      ).catch((error) => {
         if (error instanceof CleanupOperationTimeoutError) {
-          suppressUnfinishedUploadCleanup(
-            `${description} list`,
-            error,
-            options.unfinishedCleanupSuppressAfterTimeoutMs,
-          );
+          recordUnfinishedUploadCleanupTimeout(`${description} cancel`, error);
         } else {
-          logError(`${description} list failed`, error);
+          logError(`Could not cancel unfinished upload ${file.fileId}`, error);
         }
-        return;
-      }
-      pagesScanned += 1;
+      });
+    }
 
-      for (const file of page.files) {
-        if (!shouldCancel(file)) {
-          continue;
-        }
-        if (cancelsAttempted >= maxCancels) {
-          logError(
-            `${description} cleanup reached the ${maxCancels} cancel limit`,
-            new Error("Unfinished-upload cleanup cancel limit exhausted."),
-          );
-          return;
-        }
-        const cancelBudgetMs = Math.min(timeoutMs, remainingCleanupBudget(startedAt, budgetMs));
-        if (cancelBudgetMs <= 0) {
-          logError(
-            `${description} cleanup stopped after reaching the ${budgetMs} ms wall-clock budget`,
-            new Error("Unfinished-upload cleanup budget exhausted."),
-          );
-          return;
-        }
-        cancelsAttempted += 1;
-        await withAbortableTimeout(
-          (signal) => bucket.cancelLargeFile?.(file.fileId, { signal }) ?? Promise.resolve(),
-          cancelBudgetMs,
-          `${description} cancel`,
-        ).catch((error) => {
-          if (error instanceof CleanupOperationTimeoutError) {
-            suppressUnfinishedUploadCleanup(
-              `${description} cancel`,
-              error,
-              options.unfinishedCleanupSuppressAfterTimeoutMs,
-            );
-          } else {
-            logError(`Could not cancel unfinished upload ${file.fileId}`, error);
-          }
-        });
-      }
-
-      startFileId = page.nextFileId ?? undefined;
-    } while (startFileId !== undefined);
-  } finally {
-    unfinishedUploadCleanupInProgress = false;
-  }
+    startFileId = page.nextFileId ?? undefined;
+  } while (startFileId !== undefined);
 }
 
 /**

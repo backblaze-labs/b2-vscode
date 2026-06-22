@@ -19,7 +19,6 @@ import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
-import { registerB2Tools } from "../tools/registration";
 import { createConfiguredB2Client } from "../services/b2";
 import {
   createTransferProgressReporter,
@@ -57,9 +56,11 @@ type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
 type CreateBucketResult = ReturnType<B2Client["createBucket"]>;
 type BucketUpdateOptions = Parameters<Bucket["update"]>[0];
 type BucketUpdateResult = ReturnType<Bucket["update"]>;
+type AbortableCreateBucketOptions = CreateBucketOptions & { readonly signal?: AbortSignal };
+type AbortableBucketUpdateOptions = BucketUpdateOptions & { readonly signal?: AbortSignal };
 
 export interface BucketCreationClient {
-  createBucket(options: CreateBucketOptions): CreateBucketResult;
+  createBucket(options: AbortableCreateBucketOptions): CreateBucketResult;
 }
 
 export interface BucketVisibilityItem {
@@ -69,7 +70,7 @@ export interface BucketVisibilityItem {
     readonly info: {
       readonly revision?: number;
     };
-    update(options: BucketUpdateOptions): BucketUpdateResult;
+    update(options: AbortableBucketUpdateOptions): BucketUpdateResult;
   };
 }
 
@@ -128,21 +129,34 @@ function validateBucketName(bucketName: string): string | undefined {
   return undefined;
 }
 
+function withAbortSignal<T extends object>(
+  options: T,
+  signal: AbortSignal,
+): T & { readonly signal: AbortSignal } {
+  return Object.defineProperty({ ...options }, "signal", {
+    value: signal,
+    enumerable: false,
+  }) as T & { readonly signal: AbortSignal };
+}
+
 async function withBucketMutationTimeout<T>(
   description: string,
   timeoutMs: number,
   postTimeoutSettleMs: number,
-  operation: () => Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
+  const controller = new AbortController();
   if (timeoutMs <= 0) {
-    return operation();
+    return operation(controller.signal);
   }
 
-  const operationPromise = operation();
+  const operationPromise = operation(controller.signal);
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      reject(new B2MutationTimeoutError(`${description} timed out after ${timeoutMs} ms.`));
+      const error = new B2MutationTimeoutError(`${description} timed out after ${timeoutMs} ms.`);
+      controller.abort(error);
+      reject(error);
     }, timeoutMs);
     timer.unref?.();
   });
@@ -360,11 +374,10 @@ export async function createBucketCommand(services: CreateBucketCommandServices)
         cancellable: false,
       },
       () => {
-        const create = () =>
-          client.createBucket({
-            bucketName,
-            bucketType: visibility.value,
-          });
+        const create = (signal: AbortSignal) =>
+          client.createBucket(
+            withAbortSignal({ bucketName, bucketType: visibility.value }, signal),
+          );
         return withBucketMutationTimeout(
           `Creating ${visibility.value === "allPublic" ? "public" : "private"} B2 bucket "${bucketName}"`,
           services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
@@ -460,7 +473,10 @@ export async function changeBucketVisibilityCommand(
         cancellable: false,
       },
       () => {
-        const update = () => item.bucket.update({ bucketType: newType, ifRevisionIs: revision });
+        const update = (signal: AbortSignal) =>
+          item.bucket.update(
+            withAbortSignal({ bucketType: newType, ifRevisionIs: revision }, signal),
+          );
         return withBucketMutationTimeout(
           `Changing B2 bucket "${item.bucketName}" to ${newType === "allPublic" ? "public" : "private"}`,
           services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
@@ -531,9 +547,6 @@ export function registerCommands(services: CommandServices): void {
           apiUrl: client.accountInfo.getApiUrl(),
           downloadUrl: client.accountInfo.getDownloadUrl(),
         });
-
-        // Register Copilot tools now that we have a client
-        registerB2Tools(context, client);
 
         vscode.window.showInformationMessage(
           `B2: Authenticated as ${client.accountInfo.getAccountId()}`,

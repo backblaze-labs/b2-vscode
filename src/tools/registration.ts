@@ -51,7 +51,10 @@ const allTools: ToolPair[] = [
  *
  * Requires `vscode.lm.registerTool` which is available in VS Code 1.95+.
  */
-export function registerB2Tools(context: vscode.ExtensionContext, client: B2Client): void {
+export function registerB2Tools(
+  context: vscode.ExtensionContext,
+  getClient: () => B2Client | null,
+): void {
   // Check if the API is available (VS Code 1.95+)
   if (!vscode.lm || typeof vscode.lm.registerTool !== "function") {
     console.warn(
@@ -61,7 +64,7 @@ export function registerB2Tools(context: vscode.ExtensionContext, client: B2Clie
   }
 
   const extras: ToolExtras = {
-    getClient: () => client,
+    getClient,
   };
 
   for (const { definition, operation } of allTools) {

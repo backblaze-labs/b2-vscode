@@ -11,6 +11,7 @@ const path = require("path");
 const yaml = require("js-yaml");
 
 const repoRoot = path.join(__dirname, "..");
+const workflowsDirectory = path.join(repoRoot, ".github", "workflows");
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
 const codeQualityWorkflowPath = path.join(repoRoot, ".github", "workflows", "code-quality.yml");
 const publisherPackagePath = path.join(
@@ -49,6 +50,16 @@ function loadReleaseWorkflow() {
 
 function loadCodeQualityWorkflow() {
   return readYamlFile(codeQualityWorkflowPath);
+}
+
+function loadGithubWorkflows() {
+  return fs
+    .readdirSync(workflowsDirectory)
+    .filter((fileName) => /\.ya?ml$/u.test(fileName))
+    .map((fileName) => ({
+      name: fileName,
+      workflow: readYamlFile(path.join(workflowsDirectory, fileName)),
+    }));
 }
 
 function loadMarketplacePublisherPackage() {
@@ -471,6 +482,30 @@ function assertReleaseInstallsIgnoreLifecycleScripts(workflowToCheck = loadRelea
   }
 }
 
+function assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, workflowName = "workflow") {
+  for (const [jobName, job] of Object.entries(workflowToCheck.jobs ?? {})) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.run !== "string") {
+        continue;
+      }
+      for (const line of step.run.split(/\r?\n/u)) {
+        if (/\bnpm\s+(?:ci|install)\b/.test(line)) {
+          assert(
+            line.includes("--ignore-scripts"),
+            `${workflowName} ${jobName} step ${step.name ?? "<unnamed>"} must use npm ci --ignore-scripts or npm install --ignore-scripts.`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function assertGithubWorkflowInstallsIgnoreLifecycleScripts(workflows = loadGithubWorkflows()) {
+  for (const { name, workflow: workflowToCheck } of workflows) {
+    assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, name);
+  }
+}
+
 function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = loadReleaseWorkflow()) {
   const preflightJob = workflowToCheck.jobs?.["publish-preflight"];
   assert(preflightJob, "release workflow is missing job: publish-preflight");
@@ -557,6 +592,7 @@ function main() {
   assertReleaseInstallsIgnoreLifecycleScripts(workflow);
   assertPublishPreflightIgnoresLifecycleScripts(workflow);
   assertCodeQualityRunsReleaseGuard(codeQualityWorkflow);
+  assertGithubWorkflowInstallsIgnoreLifecycleScripts();
 }
 
 if (require.main === module) {
@@ -577,6 +613,8 @@ module.exports = {
   assertPublishUsesIsolatedPublisher,
   assertPublishPreflightIgnoresLifecycleScripts,
   assertReleaseInstallsIgnoreLifecycleScripts,
+  assertWorkflowInstallsIgnoreLifecycleScripts,
+  assertGithubWorkflowInstallsIgnoreLifecycleScripts,
   assertCodeQualityRunsReleaseGuard,
   loadReleaseWorkflow,
   main,

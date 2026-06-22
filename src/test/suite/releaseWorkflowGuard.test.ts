@@ -15,6 +15,8 @@ interface ReleaseWorkflowGuard {
   assertPublishUsesIsolatedPublisher(workflow: unknown): void;
   assertPublishPreflightIgnoresLifecycleScripts(workflow: unknown): void;
   assertReleaseInstallsIgnoreLifecycleScripts(workflow: unknown): void;
+  assertWorkflowInstallsIgnoreLifecycleScripts(workflow: unknown, workflowName?: string): void;
+  assertGithubWorkflowInstallsIgnoreLifecycleScripts(workflows: unknown): void;
   assertCodeQualityRunsReleaseGuard(workflow: unknown): void;
 }
 
@@ -298,6 +300,56 @@ suite("Release workflow guard assertions", () => {
           },
         }),
       /ignore-scripts/i,
+    );
+  });
+
+  test("rejects any workflow install that runs lifecycle scripts", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    assert.throws(
+      () =>
+        guard.assertWorkflowInstallsIgnoreLifecycleScripts(
+          {
+            jobs: {
+              test: {
+                steps: [
+                  {
+                    name: "Install dependencies",
+                    run: "npm install",
+                  },
+                ],
+              },
+            },
+          },
+          "test.yml",
+        ),
+      /ignore-scripts/i,
+    );
+  });
+
+  test("checks every loaded GitHub workflow install", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    assert.throws(
+      () =>
+        guard.assertGithubWorkflowInstallsIgnoreLifecycleScripts([
+          {
+            name: "build-extension.yml",
+            workflow: {
+              jobs: {
+                package: {
+                  steps: [
+                    {
+                      name: "Install dependencies",
+                      run: "npm ci",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ]),
+      /build-extension\.yml.*ignore-scripts/i,
     );
   });
 
