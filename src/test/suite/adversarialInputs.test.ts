@@ -28,6 +28,7 @@ import { deleteFileOperation } from "../../tools/operations/deleteFile";
 import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listFilesOperation } from "../../tools/operations/listFiles";
+import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 import {
   resolveWorkspaceRelativePath,
@@ -610,6 +611,27 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("absolute workspace misses reject oversized outside paths by scope first", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-probe-"));
+    const outsidePath = path.join(
+      os.tmpdir(),
+      "b2-vscode-outside-probe",
+      "x".repeat(300),
+      "secret.txt",
+    );
+
+    try {
+      await withWorkspaceFolder(workspaceRoot, async () => {
+        assert.throws(
+          () => resolveToolLocalPath(outsidePath, "workspace required"),
+          /localPath must stay within the current workspace or extension tools temporary directory/,
+        );
+      });
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("tool local path resolution treats Windows absolute paths as absolute", async () => {
     const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-ws-"));
 
@@ -819,6 +841,105 @@ suite("Adversarial untrusted input fuzzing", () => {
       assert.strictEqual(await fs.promises.readFile(targetPath, "utf8"), "old");
     } finally {
       await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("upload rejects out-of-allow-list absolute paths before lstat", async () => {
+    const workspaceRoot = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "b2-vscode-upload-probe-"),
+    );
+    const outsideRoot = path.join(os.tmpdir(), "b2-vscode-upload-outside-probe");
+    const outsidePath = path.join(outsideRoot, "secret.txt");
+    const originalLstat = fs.promises.lstat;
+    let probedOutside = false;
+    const client = {
+      async getBucket() {
+        assert.fail("Expected source validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    fs.promises.lstat = (async (target: fs.PathLike, ...args: unknown[]) => {
+      if (isPathInside(outsideRoot, path.resolve(String(target)))) {
+        probedOutside = true;
+        throw new Error("outside path was probed");
+      }
+      return (originalLstat as unknown as (...callArgs: unknown[]) => Promise<unknown>)(
+        target,
+        ...args,
+      );
+    }) as typeof fs.promises.lstat;
+
+    try {
+      await withWorkspaceFolder(workspaceRoot, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "bucket", localPath: outsidePath, remotePath: "remote/secret.txt" },
+              { getClient: () => client },
+            ),
+          /relative path inside the allowed directory/i,
+        );
+      });
+      assert.strictEqual(probedOutside, false);
+    } finally {
+      fs.promises.lstat = originalLstat;
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("upload operation rejects a symlink swap before streaming", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const workspaceRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-swap-"));
+    const outsideRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-secret-"));
+    const localPath = path.join(workspaceRoot, "payload.txt");
+    const secretPath = path.join(outsideRoot, "secret.txt");
+    let streamOpened = false;
+    const testBucket = {
+      file() {
+        streamOpened = true;
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>(),
+              done: Promise.resolve(file("remote/payload.txt")),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } as unknown as Bucket;
+    const client = {
+      async getBucket() {
+        await fs.promises.rm(localPath);
+        await fs.promises.symlink(secretPath, localPath);
+        return testBucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await fs.promises.writeFile(localPath, "safe");
+      await fs.promises.writeFile(secretPath, "secret");
+
+      await withWorkspaceFolder(workspaceRoot, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "bucket", localPath: "payload.txt", remotePath: "remote/payload.txt" },
+              { getClient: () => client },
+            ),
+          /symbolic link|ELOOP|changed before upload/i,
+        );
+      });
+
+      assert.strictEqual(streamOpened, false);
+    } finally {
+      await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.promises.rm(outsideRoot, { recursive: true, force: true });
     }
   });
 

@@ -84,6 +84,49 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
   }
 }
 
+function toolsTempRootCandidates(): string[] {
+  const roots = [EXTENSION_TEMP_ROOT];
+  try {
+    roots.push(path.join(fs.realpathSync.native(os.tmpdir()), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME));
+  } catch {
+    // If the system temp directory cannot be resolved, the lexical root check still applies.
+  }
+
+  return Array.from(new Set(roots.map((root) => path.resolve(root))));
+}
+
+function workspaceRootCandidates(workspaceRoot: string): string[] {
+  const roots = [workspaceRoot];
+  try {
+    const workspaceRealPath = fs.realpathSync.native(workspaceRoot);
+    roots.push(workspaceRealPath);
+    try {
+      const tempRealPath = fs.realpathSync.native(os.tmpdir());
+      if (isPathInside(tempRealPath, workspaceRealPath)) {
+        roots.push(
+          path.join(path.resolve(os.tmpdir()), path.relative(tempRealPath, workspaceRealPath)),
+        );
+      }
+    } catch {
+      // The direct workspace candidates still cover non-symlinked temp roots.
+    }
+  } catch {
+    // The later realpath containment check will surface workspace root errors.
+  }
+
+  return Array.from(new Set(roots.map((root) => path.resolve(root))));
+}
+
+function isPotentialToolsTempPath(resolvedAbsolutePath: string): boolean {
+  return toolsTempRootCandidates().some((root) => isPathInside(root, resolvedAbsolutePath));
+}
+
+function isPotentialWorkspacePath(workspaceRoot: string, resolvedAbsolutePath: string): boolean {
+  return workspaceRootCandidates(workspaceRoot).some((root) =>
+    isPathInside(root, resolvedAbsolutePath),
+  );
+}
+
 function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
   if (!path.isAbsolute(absolutePath)) {
     throw new B2ToolInputError(
@@ -101,10 +144,12 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
   const resolvedAbsolutePath = path.resolve(absolutePath);
   for (const allowedRoot of allowedRoots) {
     if (allowedRoot.root === EXTENSION_TEMP_ROOT) {
-      if (!isPathInside(EXTENSION_TEMP_ROOT, resolvedAbsolutePath)) {
+      if (!isPotentialToolsTempPath(resolvedAbsolutePath)) {
         continue;
       }
       ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
+    } else if (!isPotentialWorkspacePath(allowedRoot.root, resolvedAbsolutePath)) {
+      continue;
     }
 
     try {
