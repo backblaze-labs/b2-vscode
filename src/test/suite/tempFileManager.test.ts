@@ -157,7 +157,7 @@ suite("TempFileManager", () => {
 
       await assert.rejects(
         () => manager.saveStream("bucket", "folder", streamFromText("fresh")),
-        /cache path is a directory/i,
+        /cache path .*directory/i,
       );
 
       assert.strictEqual(fs.readFileSync(childPath, "utf8"), "keep");
@@ -271,6 +271,34 @@ suite("TempFileManager", () => {
         /Temp file cache .*symlink/i,
       );
       assert.strictEqual(fs.existsSync(escapePath), false);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("does not delete existing outside files through symlinked cache parents", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
+    const manager = new TempFileManager(tempRoot);
+    const bucketRoot = path.join(tempRoot, "bucket");
+    const symlinkPath = path.join(bucketRoot, "link");
+    const escapePath = path.join(outsideRoot, "escape.txt");
+
+    try {
+      fs.mkdirSync(bucketRoot, { recursive: true });
+      fs.writeFileSync(escapePath, "outside");
+      if (!createDirectorySymlink(outsideRoot, symlinkPath)) {
+        return;
+      }
+
+      await assert.rejects(
+        () =>
+          manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("fresh")),
+        /Temp file cache .*symlink/i,
+      );
+      assert.strictEqual(fs.readFileSync(escapePath, "utf8"), "outside");
     } finally {
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });

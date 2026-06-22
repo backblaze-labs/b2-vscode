@@ -275,6 +275,7 @@ export class TempFileManager implements vscode.Disposable {
     assertNoPathTraversalSegments(bucketName, "B2 bucket name");
     assertNoPathTraversalSegments(fileName, "B2 file name");
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
     await removeExistingCachePath(localPath);
     await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
 
