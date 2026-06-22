@@ -588,6 +588,68 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("does not create workspace transfer temp dir after parent swap", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-race-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-download-temp-race-outside-"),
+    );
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const tempDir = path.join(downloadDir, ".b2-vscode-transfers");
+    const outsideTempDir = path.join(outsideDir, ".b2-vscode-transfers");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalReaddir = fs.promises.readdir;
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not create temp outside"));
+        controller.close();
+      },
+    });
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      fs.promises.readdir = (async (...args: Parameters<typeof fs.promises.readdir>) => {
+        const directory = args[0];
+        if (!swapped && path.resolve(String(directory)) === path.resolve(downloadDir)) {
+          swapped = true;
+          fs.renameSync(downloadDir, movedDownloadDir);
+          fs.symlinkSync(
+            outsideDir,
+            downloadDir,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        }
+
+        return originalReaddir(...args);
+      }) as typeof fs.promises.readdir;
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            temporaryDirectory: tempDir,
+          }),
+        /Workspace transfer temp directory|real directory|symlink|outside the allowed root/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTempDir), false);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.promises.readdir = originalReaddir;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("stages no-overwrite downloads before publishing the destination", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-reserved-direct-"));
     const destination = path.join(dir, "file.bin");

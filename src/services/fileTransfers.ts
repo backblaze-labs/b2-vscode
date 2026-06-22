@@ -275,15 +275,36 @@ function transferTempDirectory(directory?: string): string {
   return directory ?? path.join(os.tmpdir(), TRANSFER_TEMP_DIR_NAME);
 }
 
+async function setPrivateDirectoryPermissions(directory: string): Promise<void> {
+  await fs.promises.chmod(directory, 0o700).catch((error) => {
+    logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
+  });
+}
+
 async function ensurePrivateDirectory(directory: string): Promise<void> {
   await ensureRealDirectory(directory, "Transfer temp directory", {
     recursive: true,
     mode: 0o700,
   });
 
-  await fs.promises.chmod(directory, 0o700).catch((error) => {
-    logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
-  });
+  await setPrivateDirectoryPermissions(directory);
+}
+
+async function ensureTransferTempDirectory(
+  directory: string,
+  allowedRootDirectory: string | undefined,
+): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    await ensureContainedDirectoryPath(
+      allowedRootDirectory,
+      directory,
+      "Workspace transfer temp directory",
+    );
+    await setPrivateDirectoryPermissions(directory);
+    return;
+  }
+
+  await ensurePrivateDirectory(directory);
 }
 
 function transferTempPath(directory: string): string {
@@ -629,7 +650,7 @@ export async function downloadStreamToFile(
     );
 
     await cleanupDestinationTempFilesForDownload(destinationDirectory);
-    await ensurePrivateDirectory(temporaryDirectory);
+    await ensureTransferTempDirectory(temporaryDirectory, options.allowedRootDirectory);
     await cleanupTransferTempFilesForDownload(temporaryDirectory);
 
     temporaryPath = transferTempPath(temporaryDirectory);
