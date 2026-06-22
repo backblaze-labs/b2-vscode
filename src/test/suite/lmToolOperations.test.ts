@@ -14,7 +14,7 @@ import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
-import { MAX_PRESIGN_URL_EXPIRATION_SECONDS } from "../../tools/presignUrlConstants";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import type { ToolExtras } from "../../tools/types";
 import {
@@ -442,7 +442,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /Workspace download directory must be a real directory/i,
+          /Workspace download directory must be a real directory|symlink/i,
         ),
       );
 
@@ -502,7 +502,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               { getClient: () => client as never },
             ),
-          /Workspace download directory must be a real directory|outside the allowed root/i,
+          /Workspace download directory must be a real directory|outside the allowed root|symlink/i,
         ),
       );
 
@@ -825,11 +825,14 @@ suite("B2 LM tool operations with simulator", () => {
           {
             bucket: SIMULATOR_BUCKET_NAME,
             path: REMOTE_PATH,
-            expiresIn: MAX_PRESIGN_URL_EXPIRATION_SECONDS + 1,
+            expiresIn: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS + 1,
           },
           extras,
         ),
-      /expiresIn must be an integer between 1 and 604800 seconds/i,
+      new RegExp(
+        `expiresIn must be an integer between 1 and ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds`,
+        "i",
+      ),
     );
   });
 

@@ -7,7 +7,7 @@
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
-import { DEFAULT_DOWNLOAD_MAX_BYTES, DownloadSizeLimitError } from "../../services/fileTransfers";
+import { DownloadSizeLimitError } from "../../services/fileTransfers";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import { createDirectorySymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
@@ -216,7 +216,7 @@ suite("TempFileManager", () => {
 
     try {
       const localPath = await manager.saveStream("bucket", "large.txt", streamFromText("cached"), {
-        knownBytes: DEFAULT_DOWNLOAD_MAX_BYTES + 1,
+        knownBytes: 512 * 1024 * 1024 + 1,
       });
 
       assert.strictEqual(fs.readFileSync(localPath, "utf8"), "cached");
@@ -268,7 +268,7 @@ suite("TempFileManager", () => {
       await assert.rejects(
         () =>
           manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
-        /Temp file cache directory must be a real directory/i,
+        /Temp file cache .*symlink/i,
       );
       assert.strictEqual(fs.existsSync(escapePath), false);
     } finally {

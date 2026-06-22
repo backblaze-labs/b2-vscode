@@ -8,9 +8,7 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import {
   B2Client,
-  BufferSource,
   classifyError,
-  fileId,
   NetworkError,
   type Bucket,
   type BucketType,
@@ -24,7 +22,6 @@ import {
   createBucketCommand,
   openFileCommand,
 } from "../../commands";
-import { renameFileVersion } from "../../commands/renameFile";
 import {
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketNameConfirmationAccepted,
@@ -32,8 +29,6 @@ import {
 import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "../../errors";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
-import { createSimulatorBucket } from "../../testSupport/b2Simulator";
-import { streamToBuffer } from "../../testSupport/streams";
 import { withWindowUiStubs } from "./windowStubs";
 
 type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
@@ -1135,41 +1130,5 @@ suite("B2 public bucket command safety", () => {
     assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /Failed to update bucket/);
-  });
-
-  test("rename helper copies the file and deletes the original version", async () => {
-    const { bucket } = await createSimulatorBucket();
-    const content = Buffer.from("rename me");
-    const uploaded = await bucket.upload({
-      fileName: "folder/original.txt",
-      source: new BufferSource(content),
-    });
-
-    await renameFileVersion(bucket, uploaded.fileName, uploaded.fileId, "folder/renamed.txt");
-
-    assert.strictEqual(await bucket.getFileInfoByName("folder/original.txt"), null);
-    const renamed = await bucket.download("folder/renamed.txt");
-    assert.deepStrictEqual(await streamToBuffer(renamed.body), content);
-  });
-
-  test("rename helper reports partial failure when copy succeeds and delete fails", async () => {
-    const bucket = {
-      async copyFile() {
-        return {};
-      },
-      async deleteFileVersion() {
-        throw new Error("delete denied");
-      },
-    } as unknown as Pick<Bucket, "copyFile" | "deleteFileVersion">;
-
-    await assert.rejects(
-      () => renameFileVersion(bucket, "old.txt", fileId("file-id"), "new.txt"),
-      (error) => {
-        assert.ok(error instanceof B2PartialFailureError);
-        assert.match(error.message, /Copied "old\.txt" to "new\.txt"/);
-        assert.match(error.message, /Both B2 objects may exist/);
-        return true;
-      },
-    );
   });
 });

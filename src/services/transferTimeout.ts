@@ -132,17 +132,46 @@ export async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   description: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
+  const parentSignal = options.signal;
   if (timeoutMs <= 0) {
-    return run(new AbortController().signal);
+    const controller = new AbortController();
+    const abortFromParent = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
+      }
+    };
+    if (parentSignal?.aborted) {
+      abortFromParent();
+    } else {
+      parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    }
+    try {
+      return await Promise.race([run(controller.signal), abortPromise(controller.signal)]);
+    } finally {
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    }
   }
 
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
+  const abortFromParent = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
+    }
+  };
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const timeoutError = new Error(`${description} timed out after ${timeoutMs} ms.`);
-      controller.abort(timeoutError);
+      if (!controller.signal.aborted) {
+        controller.abort(timeoutError);
+      }
       reject(timeoutError);
     }, timeoutMs);
     timer.unref?.();
@@ -156,5 +185,6 @@ export async function withTimeout<T>(
     if (timer) {
       clearTimeout(timer);
     }
+    parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }

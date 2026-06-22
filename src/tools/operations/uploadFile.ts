@@ -13,6 +13,7 @@ import {
   assertUploadSourcePathUnchanged,
   closeUploadSource,
   openUploadSourceFile,
+  sameFileIdentity,
   uploadFileFromDisk,
   type UploadSourceFile,
 } from "../../services/fileTransfers";
@@ -26,7 +27,6 @@ import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
-import { assertSameSourceFile, sourceIdentityFromStats } from "../../services/sourceFileIdentity";
 
 interface UploadFileParams {
   localPath: string;
@@ -84,10 +84,10 @@ async function workspaceUploadSource(relativePath: string): Promise<UploadSource
     }
     assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
     const localRealStats = await fs.promises.stat(localRealPath);
-    const expectedIdentity = sourceIdentityFromStats(localRealPath, localRealStats);
     source = await openUploadSourceFile(lexicalPath);
-    const openedRealPath = await fs.promises.realpath(lexicalPath);
-    assertSameSourceFile(expectedIdentity, sourceIdentityFromStats(openedRealPath, source.stats));
+    if (!sameFileIdentity(source.stats, localRealStats)) {
+      throw new Error(`localPath changed while opening upload source: ${relativePath}`);
+    }
 
     return source;
   } catch (error) {

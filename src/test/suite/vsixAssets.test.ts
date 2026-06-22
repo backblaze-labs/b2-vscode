@@ -6,6 +6,7 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { spawnSync } from "child_process";
 import { EventEmitter } from "events";
@@ -15,7 +16,6 @@ import {
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
 } from "../../sqlJsRuntimeAssets";
-import { tempDir } from "../../testSupport/tempDir";
 
 interface VsixAssetAssertions {
   assertDistAssets(
@@ -78,6 +78,10 @@ function loadSmokeInstallAssertions(): SmokeInstallAssertions {
   return require(
     path.join(process.cwd(), "scripts/smoke-install-vsix.js"),
   ) as SmokeInstallAssertions;
+}
+
+function tempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-vsix-assets-"));
 }
 
 async function createFixtureVsix(

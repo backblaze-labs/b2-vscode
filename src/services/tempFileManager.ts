@@ -12,23 +12,25 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
-import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
+import {
+  downloadStreamToFile,
+  TRANSFER_TEMP_DIR_NAME,
+  type DownloadStreamToFileOptions,
+} from "./fileTransfers";
 import { log } from "../logger";
 import {
-  ensureContainedDirectoryPath,
-  ensureRealDirectorySync,
+  ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
-  resolveContainedRelativePath,
+  prepareSafeFileWritePath,
+  UnsafePathError,
 } from "./pathSafety";
+import { buildTempFilePath } from "../utils/localPaths";
+import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_TEMP_CACHE_CLEANUP_BUDGET_MS = 2_000;
 const STALE_TEMP_CACHE_CLEANUP_MAX_ENTRIES = 2_000;
-
-function defaultTempRoot(): string {
-  return path.join(os.tmpdir(), TEMP_DIR_NAME);
-}
 
 interface StaleTempCacheCleanupOptions {
   readonly tempRoot?: string;
@@ -54,6 +56,12 @@ function assertManagedTempRoot(tempRoot: string): void {
     throw new Error(
       `Temp file cache root must be a dedicated directory inside the system temp directory: ${tempRoot}`,
     );
+  }
+}
+
+function assertNoPathTraversalSegments(value: string, label: string): void {
+  if (value.split(/[\\/]/).some((segment) => segment === "..")) {
+    throw new UnsafePathError(`${label} must not contain path traversal segments.`);
   }
 }
 
@@ -150,7 +158,7 @@ async function removeExistingCachePath(filePath: string): Promise<void> {
 export async function cleanupStaleTempFileCache(
   options: StaleTempCacheCleanupOptions = {},
 ): Promise<void> {
-  const tempRoot = path.resolve(options.tempRoot ?? defaultTempRoot());
+  const tempRoot = path.resolve(options.tempRoot ?? path.join(os.tmpdir(), TEMP_DIR_NAME));
   assertManagedTempRoot(tempRoot);
   if (!(await pathExistsAsRealDirectory(tempRoot, "Temp file cache root"))) {
     return;
@@ -186,7 +194,7 @@ export class TempFileManager implements vscode.Disposable {
   private readonly cache = new Map<string, string>();
   private readonly inFlight = new Map<string, InFlightCacheEntry>();
 
-  constructor(tempRoot = defaultTempRoot()) {
+  constructor(tempRoot = createPrivateTempRoot(TEMP_DIR_NAME)) {
     this.tempRoot = path.resolve(tempRoot);
     this.ensureManagedTempRoot();
     this.ensurePrivateTempRoot();
@@ -197,20 +205,8 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
-    ensureRealDirectorySync(this.tempRoot, "Temp file cache root", {
+    ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
       recursive: true,
-      mode: 0o700,
-    });
-
-    try {
-      fs.chmodSync(this.tempRoot, 0o700);
-    } catch {
-      // Best effort: existing directories may not allow chmod on every platform.
-    }
-  }
-
-  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
-    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
       mode: 0o700,
     });
   }
@@ -276,19 +272,20 @@ export class TempFileManager implements vscode.Disposable {
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions,
   ): Promise<string> {
-    const key = `${bucketName}/${fileName}`;
-    const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
-    const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
-    await this.ensureCacheDirectoryPath(path.dirname(localPath));
+    assertNoPathTraversalSegments(bucketName, "B2 bucket name");
+    assertNoPathTraversalSegments(fileName, "B2 file name");
+    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
     await removeExistingCachePath(localPath);
+    await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
 
     await downloadStreamToFile(stream, localPath, {
       ...options,
       overwrite: false,
       allowedRootDirectory: this.tempRoot,
-      temporaryDirectory: path.join(path.dirname(localPath), ".b2-vscode-transfers"),
+      temporaryDirectory: path.join(path.dirname(localPath), `.${TRANSFER_TEMP_DIR_NAME}`),
     });
 
+    const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
 
     return localPath;
@@ -298,6 +295,7 @@ export class TempFileManager implements vscode.Disposable {
    * Remove the entire temp directory.
    */
   cleanup(): void {
+    releasePrivateTempRoot(this.tempRoot);
     try {
       if (fs.existsSync(this.tempRoot)) {
         fs.rmSync(this.tempRoot, { recursive: true, force: true });

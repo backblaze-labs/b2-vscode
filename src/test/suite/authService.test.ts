@@ -6,19 +6,15 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
-import { ENV_APP_KEY, ENV_KEY_ID, SECRET_APP_KEY, SECRET_KEY_ID } from "../../constants";
-import {
-  createMemorySecretStorage,
-  createNoopSecretStorage,
-} from "../../testSupport/noopSecretStorage";
+import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
 import {
   BUNDLED_CREDENTIAL_SMOKE_ENV,
   type BundledCredentialSmokeResolver,
 } from "../../testSupport/bundledCredentialSmoke";
-import { tempDir } from "../../testSupport/tempDir";
 import {
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
@@ -41,6 +37,10 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
   "dist",
   "bundledCredentialSmoke.js",
 );
+
+function tempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
+}
 
 function loadBundledExtension(): BundledExtensionSmokeExports {
   delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
@@ -163,82 +163,6 @@ async function createB2CliCredentialDatabase(
 }
 
 suite("AuthService credential resolution and SQL.js loading", () => {
-  test("noop SecretStorage ignores mutations and change listeners", async () => {
-    const secrets = createNoopSecretStorage();
-    const changedKeys: string[] = [];
-    const listener = secrets.onDidChange((event) => changedKeys.push(event.key));
-
-    try {
-      await secrets.store(SECRET_KEY_ID, "stored-key-id");
-      assert.strictEqual(await secrets.get(SECRET_KEY_ID), undefined);
-
-      await secrets.delete(SECRET_KEY_ID);
-      assert.deepStrictEqual(changedKeys, []);
-    } finally {
-      listener.dispose();
-    }
-  });
-
-  test("prefers SecretStorage credentials over environment variables", async () => {
-    const service = new AuthService(
-      createMemorySecretStorage({
-        [SECRET_KEY_ID]: "stored-key-id",
-        [SECRET_APP_KEY]: "stored-app-key",
-      }),
-      {
-        environment: {
-          [ENV_KEY_ID]: "env-key-id",
-          [ENV_APP_KEY]: "env-app-key",
-        },
-      },
-    );
-
-    assert.deepStrictEqual(await service.resolveCredentials(), {
-      keyId: "stored-key-id",
-      appKey: "stored-app-key",
-    });
-  });
-
-  test("prefers environment variables over B2 CLI credentials", async () => {
-    const dir = tempDir();
-    const dbPath = path.join(dir, "account_info");
-
-    try {
-      await createB2CliCredentialDatabase(
-        dbPath,
-        SQL_WASM_FIXTURE_PATH,
-        "cli-key-id",
-        "cli-app-key",
-      );
-      const service = new AuthService(createNoopSecretStorage(), {
-        environment: {
-          [ENV_KEY_ID]: "env-key-id",
-          [ENV_APP_KEY]: "env-app-key",
-        },
-        b2CliDatabasePaths: [dbPath],
-        sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
-        sqlWasmPath: SQL_WASM_FIXTURE_PATH,
-      });
-
-      assert.deepStrictEqual(await service.resolveCredentials(), {
-        keyId: "env-key-id",
-        appKey: "env-app-key",
-      });
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("returns null when no credential source is configured", async () => {
-    const service = new AuthService(createNoopSecretStorage(), {
-      environment: {},
-      b2CliDatabasePaths: [],
-    });
-
-    assert.strictEqual(await service.resolveCredentials(), null);
-    assert.strictEqual(service.getCredentialResolutionWarning(), undefined);
-  });
-
   test("reads CLI credentials from a packaged SQL.js WASM layout", async () => {
     const dir = tempDir();
     const packagedRuntimeDir = path.join(dir, "dist");

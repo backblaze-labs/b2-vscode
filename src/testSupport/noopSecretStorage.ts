@@ -1,38 +1,13 @@
 import * as vscode from "vscode";
 
-export function createMemorySecretStorage(
-  initial: Record<string, string> = {},
-): vscode.SecretStorage {
-  const values = new Map(Object.entries(initial));
+export function createNoopSecretStorage(): vscode.SecretStorage {
   const emitter = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
-
   return {
     onDidChange: emitter.event,
-    async get(key: string) {
-      return values.get(key);
-    },
-    async store(key: string, value: string) {
-      values.set(key, value);
-      emitter.fire({ key });
-    },
-    async delete(key: string) {
-      values.delete(key);
-      emitter.fire({ key });
-    },
-  };
-}
-
-export function createNoopSecretStorage(): vscode.SecretStorage {
-  const onDidChange: vscode.Event<vscode.SecretStorageChangeEvent> = () => ({
-    dispose() {},
-  });
-
-  return {
-    onDidChange,
-    async get() {
+    async get(_key: string) {
       return undefined;
     },
-    async store() {},
-    async delete() {},
+    async store(_key: string, _value: string) {},
+    async delete(_key: string) {},
   };
 }

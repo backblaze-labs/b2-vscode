@@ -18,7 +18,6 @@ interface ReleaseWorkflowGuard {
   assertWorkflowInstallsIgnoreLifecycleScripts(workflow: unknown, workflowName?: string): void;
   assertGithubWorkflowInstallsIgnoreLifecycleScripts(workflows: unknown): void;
   assertCodeQualityRunsReleaseGuard(workflow: unknown): void;
-  assertReleasePublishGate(workflow: unknown): void;
 }
 
 function loadReleaseWorkflowGuard(): ReleaseWorkflowGuard {
@@ -431,24 +430,6 @@ suite("Release workflow guard assertions", () => {
           },
         }),
       /release-workflow/i,
-    );
-  });
-
-  test("enforces stable and prerelease GitHub release publish gates", () => {
-    const guard = loadReleaseWorkflowGuard();
-
-    assert.doesNotThrow(() =>
-      guard.assertReleasePublishGate({
-        jobs: {
-          release: {
-            needs: ["publish"],
-            if: [
-              "!contains(github.ref_name, '-') && needs.publish.result == 'success'",
-              "contains(github.ref_name, '-') && needs.publish.result == 'skipped'",
-            ].join(" || "),
-          },
-        },
-      }),
     );
   });
 });

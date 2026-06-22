@@ -10,7 +10,7 @@ import { inputText } from "./inputText";
 
 function localDestinationFor(input: Record<string, unknown>): string {
   if (typeof input.localPath !== "string" || input.localPath.length === 0) {
-    return "the first open workspace folder";
+    return "your local workspace";
   }
   return path.isAbsolute(input.localPath) || path.win32.isAbsolute(input.localPath)
     ? `absolute path ${input.localPath} (rejected by this tool)`

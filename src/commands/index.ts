@@ -48,7 +48,6 @@ import {
   type PublicPrivateBucketType,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
-import { renameFileVersion } from "./renameFile";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
@@ -773,9 +772,25 @@ export function registerCommands(services: CommandServices): void {
       const newPath = `${prefixWithSlash}${newName}`;
 
       try {
+        let copyCompleted = false;
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: `Renaming to "${newName}"...` },
-          () => renameFileVersion(item.bucket, oldPath, item.file.fileId, newPath),
+          async () => {
+            // Server-side copy then delete the original
+            try {
+              await item.bucket.copyFile({ sourceFileId: item.file.fileId, fileName: newPath });
+              copyCompleted = true;
+              await item.bucket.deleteFileVersion(oldPath, item.file.fileId);
+            } catch (error) {
+              if (copyCompleted) {
+                throw new B2PartialFailureError(
+                  `Rename incomplete. Copied "${oldPath}" to "${newPath}", but failed to delete the original. Both B2 objects may exist. ${formatB2UserMessage(error)}`,
+                  error,
+                );
+              }
+              throw error;
+            }
+          },
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Renamed to "${newName}".`);
