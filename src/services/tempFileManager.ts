@@ -44,6 +44,10 @@ interface StaleTempCacheCleanupStats {
   maxEntriesHit: boolean;
 }
 
+interface InFlightCacheEntry {
+  readonly promise: Promise<string>;
+}
+
 function assertManagedTempRoot(tempRoot: string): void {
   const systemTemp = path.resolve(os.tmpdir());
   if (tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, tempRoot)) {
@@ -180,7 +184,7 @@ export async function cleanupStaleTempFileCache(
 export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
-  private readonly inFlight = new Map<string, Promise<string>>();
+  private readonly inFlight = new Map<string, InFlightCacheEntry>();
 
   constructor(tempRoot = defaultTempRoot()) {
     this.tempRoot = path.resolve(tempRoot);
@@ -250,15 +254,17 @@ export class TempFileManager implements vscode.Disposable {
     const inFlight = this.inFlight.get(key);
     if (inFlight) {
       await stream.cancel().catch(() => undefined);
-      return inFlight;
+      return inFlight.promise;
     }
 
-    const populate = this.populateCache(bucketName, fileName, stream, options);
-    this.inFlight.set(key, populate);
+    const entry: InFlightCacheEntry = {
+      promise: this.populateCache(bucketName, fileName, stream, options),
+    };
+    this.inFlight.set(key, entry);
     try {
-      return await populate;
+      return await entry.promise;
     } finally {
-      if (this.inFlight.get(key) === populate) {
+      if (this.inFlight.get(key) === entry) {
         this.inFlight.delete(key);
       }
     }
