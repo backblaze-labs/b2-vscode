@@ -492,7 +492,12 @@ function assertTestWorkflow(testWorkflow) {
     "scripts/run-npm-audit.js",
     "scripts/retry.sh",
     "scripts/npm-command.js",
+    ".github/workflows/build-extension.yml",
+    ".github/workflows/code-quality.yml",
+    ".github/workflows/docs.yml",
     ".github/workflows/pr-tests.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/test.yml",
   ]) {
     assertPathFilterCovers(testWorkflow, "push", targetPath);
   }
