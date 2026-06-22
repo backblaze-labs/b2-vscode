@@ -12,6 +12,13 @@ GitHub Actions workflow.
 - The `marketplace` GitHub environment must have required reviewer protection on
   the final publish job. The release workflow blocks the publish job unless that
   environment has required reviewers configured.
+- The `marketplace` environment must define
+  `MARKETPLACE_PUBLISHER_PACKAGE_SHA256` and
+  `MARKETPLACE_PUBLISHER_LOCK_SHA256` variables matching
+  `.github/marketplace-publisher/package.json` and
+  `.github/marketplace-publisher/package-lock.json`. Updating the publisher
+  dependency tree requires reviewing the full package and lockfile diff, then
+  updating those protected environment variables with the new audited hashes.
 
 ## Secrets
 

@@ -1,11 +1,16 @@
 /**
  * Command registrations for the B2 extension.
  *
+ * Most command handlers stay inline in registerCommands. Handlers that need
+ * command-path tests can be extracted behind narrow service interfaces; public
+ * bucket visibility changes are one example because they can expose bucket
+ * contents.
+ *
  * @module commands
  */
 
 import * as vscode from "vscode";
-import type { B2Client } from "@backblaze-labs/b2-sdk";
+import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
@@ -14,22 +19,60 @@ import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
-import { registerB2Tools } from "../tools/registration";
 import { createConfiguredB2Client } from "../services/b2";
 import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../services/transferProgress";
 import { withTransferStallTimeout } from "../services/fileTransfers";
-import { B2PartialFailureError, formatB2UserMessage } from "../errors";
-import { logError } from "../logger";
 import {
+  B2MutationTimeoutError,
+  B2PartialFailureError,
+  formatB2UserMessage,
+  isBucketRevisionConflict,
+  isPostRequestB2MutationStateAmbiguous,
+} from "../errors";
+import { log, logError } from "../logger";
+import {
+  bucketTypeLabel,
+  buildPublicBucketUnknownStateWarningMessage,
+  buildPublicBucketTypedConfirmationValidationMessage,
   buildPublicBucketWarningMessage,
+  buildPublicBucketTypedConfirmationPrompt,
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
+  isPublicBucketNameConfirmationAccepted,
+  isPublicPrivateBucketType,
+  PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
   shouldConfirmPublicBucketVisibility,
+  type PublicPrivateBucketType,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
+
+const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
+const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
+
+type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
+type CreateBucketResult = ReturnType<B2Client["createBucket"]>;
+type BucketUpdateOptions = Parameters<Bucket["update"]>[0];
+type BucketUpdateResult = ReturnType<Bucket["update"]>;
+type AbortableCreateBucketOptions = CreateBucketOptions & { readonly signal?: AbortSignal };
+type AbortableBucketUpdateOptions = BucketUpdateOptions & { readonly signal?: AbortSignal };
+
+export interface BucketCreationClient {
+  createBucket(options: AbortableCreateBucketOptions): CreateBucketResult;
+}
+
+export interface BucketVisibilityItem {
+  readonly bucketName: string;
+  readonly bucketType: BucketType;
+  readonly bucket: {
+    readonly info: {
+      readonly revision?: number;
+    };
+    update(options: AbortableBucketUpdateOptions): BucketUpdateResult;
+  };
+}
 
 export function buildCommandErrorMessage(prefix: string, error: unknown): string {
   return `${prefix}. ${formatB2UserMessage(error)}`;
@@ -50,13 +93,140 @@ async function confirmPublicBucketVisibility(
     CONFIRM_PUBLIC_BUCKET_LABEL,
   );
 
-  return isPublicBucketConfirmationAccepted(answer);
+  if (!isPublicBucketConfirmationAccepted(answer)) {
+    return false;
+  }
+
+  const typedBucketName = await vscode.window.showInputBox({
+    title: "Confirm Public Bucket",
+    prompt: buildPublicBucketTypedConfirmationPrompt(bucketName),
+    placeHolder: PUBLIC_BUCKET_TYPED_CONFIRMATION_PLACEHOLDER,
+    ignoreFocusOut: true,
+    validateInput: (value) =>
+      isPublicBucketNameConfirmationAccepted(bucketName, value)
+        ? undefined
+        : buildPublicBucketTypedConfirmationValidationMessage(bucketName),
+  });
+
+  // Keep this guard authoritative: tests and extension-host edge cases can
+  // bypass validateInput by returning undefined or a stale value.
+  return isPublicBucketNameConfirmationAccepted(bucketName, typedBucketName);
+}
+
+function validateBucketName(bucketName: string): string | undefined {
+  if (!bucketName) {
+    return "Bucket name is required";
+  }
+  if (bucketName.length < 6) {
+    return "Bucket name must be at least 6 characters";
+  }
+  if (bucketName.length > 50) {
+    return "Bucket name must be at most 50 characters";
+  }
+  if (!/^[a-zA-Z0-9-]+$/.test(bucketName)) {
+    return "Bucket name can only contain letters, digits, and hyphens";
+  }
+  return undefined;
+}
+
+function withAbortSignal<T extends object>(
+  options: T,
+  signal: AbortSignal,
+): T & { readonly signal: AbortSignal } {
+  return { ...options, signal };
+}
+
+async function withBucketMutationTimeout<T>(
+  description: string,
+  timeoutMs: number,
+  postTimeoutSettleMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  if (timeoutMs <= 0) {
+    return operation(controller.signal);
+  }
+
+  const operationPromise = operation(controller.signal);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new B2MutationTimeoutError(`${description} timed out after ${timeoutMs} ms.`);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([operationPromise, timeout]);
+  } catch (error) {
+    const observeLateSettlement = () => {
+      void operationPromise.then(
+        () => {
+          log(`${description} completed after the client-side timeout`);
+        },
+        (lateError) => {
+          logError(`${description} failed after the client-side timeout`, lateError);
+        },
+      );
+    };
+
+    if (!(error instanceof B2MutationTimeoutError)) {
+      throw error;
+    }
+
+    if (postTimeoutSettleMs <= 0) {
+      observeLateSettlement();
+      throw error;
+    }
+
+    let settleTimer: NodeJS.Timeout | undefined;
+    let settleTimedOut = false;
+    const settleTimeout = new Promise<never>((_resolve, reject) => {
+      settleTimer = setTimeout(() => {
+        settleTimedOut = true;
+        reject(error);
+      }, postTimeoutSettleMs);
+      settleTimer.unref?.();
+    });
+
+    try {
+      return await Promise.race([operationPromise, settleTimeout]);
+    } catch (settleError) {
+      if (settleTimedOut) {
+        observeLateSettlement();
+      } else {
+        logError(`${description} failed while settling after the client-side timeout`, settleError);
+      }
+      throw error;
+    } finally {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+      }
+    }
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 /**
  * Services required by commands.
  */
-export interface CommandServices {
+export interface BucketCommandServices {
+  treeProvider: Pick<B2TreeProvider, "refresh">;
+  isAuthenticated: () => boolean;
+  bucketMutationTimeoutMs?: number;
+  bucketMutationPostTimeoutSettleMs?: number;
+}
+
+export interface CreateBucketCommandServices extends BucketCommandServices {
+  getClient: () => BucketCreationClient | null;
+}
+
+export interface CommandServices extends CreateBucketCommandServices {
   authService: AuthService;
   treeProvider: B2TreeProvider;
   tempFileManager: TempFileManager;
@@ -121,6 +291,215 @@ export async function openFileCommand(
   }
 }
 
+async function warnUnknownPublicBucketState(
+  services: BucketCommandServices,
+  action: PublicBucketVisibilityAction,
+  bucketName: string,
+  targetType: PublicPrivateBucketType,
+  error: unknown,
+): Promise<void> {
+  services.treeProvider.refresh();
+  logError(
+    `B2: Unconfirmed public bucket state after ${action} of "${bucketName}" to ${targetType}; bucket may be public and a tree refresh was requested`,
+    error,
+  );
+  await vscode.window.showWarningMessage(
+    buildPublicBucketUnknownStateWarningMessage(action, bucketName, targetType),
+    { modal: true },
+  );
+}
+
+export async function createBucketCommand(services: CreateBucketCommandServices): Promise<void> {
+  const { treeProvider, getClient } = services;
+  const client = getClient();
+  if (!client) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+
+  const bucketName = await vscode.window.showInputBox({
+    title: "Create B2 Bucket",
+    prompt: "Enter a name for the new bucket",
+    placeHolder: "my-new-bucket",
+    ignoreFocusOut: true,
+    validateInput: validateBucketName,
+  });
+  if (!bucketName) {
+    return;
+  }
+  // Defensive re-check: tests and extension-host edge cases can bypass
+  // validateInput by returning undefined or a stale value.
+  const bucketNameValidation = validateBucketName(bucketName);
+  if (bucketNameValidation) {
+    vscode.window.showErrorMessage(`B2: ${bucketNameValidation}`);
+    return;
+  }
+
+  const visibility = await vscode.window.showQuickPick(
+    [
+      {
+        label: bucketTypeLabel("allPrivate"),
+        description: "Files require authorization to access",
+        value: "allPrivate" as const,
+      },
+      {
+        label: bucketTypeLabel("allPublic"),
+        description: "Files can be accessed without authorization",
+        value: "allPublic" as const,
+      },
+    ],
+    {
+      title: "Bucket Visibility",
+      placeHolder: "Select bucket visibility",
+      ignoreFocusOut: true,
+    },
+  );
+  if (!visibility) {
+    return;
+  }
+
+  if (
+    shouldConfirmPublicBucketVisibility(undefined, visibility.value) &&
+    !(await confirmPublicBucketVisibility("create", bucketName))
+  ) {
+    return;
+  }
+
+  try {
+    const bucket = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Creating B2 bucket "${bucketName}"...`,
+        cancellable: false,
+      },
+      () => {
+        const create = (signal: AbortSignal) =>
+          client.createBucket(
+            withAbortSignal({ bucketName, bucketType: visibility.value }, signal),
+          );
+        return withBucketMutationTimeout(
+          `Creating ${visibility.value === "allPublic" ? "public" : "private"} B2 bucket "${bucketName}"`,
+          services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
+          services.bucketMutationPostTimeoutSettleMs ?? BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          create,
+        );
+      },
+    );
+    treeProvider.refresh();
+    log(`Bucket "${bucket.name}" created with type ${visibility.value}.`);
+    vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
+  } catch (error) {
+    if (visibility.value === "allPublic" && isPostRequestB2MutationStateAmbiguous(error)) {
+      await warnUnknownPublicBucketState(services, "create", bucketName, visibility.value, error);
+      showCommandError("B2: Could not confirm public bucket creation", error);
+      return;
+    }
+    if (isPostRequestB2MutationStateAmbiguous(error)) {
+      treeProvider.refresh();
+    }
+    showCommandError("B2: Failed to create bucket", error);
+  }
+}
+
+export async function changeBucketVisibilityCommand(
+  services: BucketCommandServices,
+  item?: BucketVisibilityItem,
+): Promise<void> {
+  const { treeProvider, isAuthenticated } = services;
+  if (!isAuthenticated()) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showErrorMessage("B2: Select a bucket first.");
+    return;
+  }
+
+  // The tree item is the state the user saw and confirmed. Its revision is sent
+  // with the update so an out-of-band bucket change fails instead of being overwritten.
+  const currentType = item.bucketType;
+  if (!isPublicPrivateBucketType(currentType)) {
+    vscode.window.showErrorMessage(
+      `B2: Bucket type "${currentType}" cannot be changed with the public/private visibility command.`,
+    );
+    return;
+  }
+  const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
+  const newLabel = bucketTypeLabel(newType);
+  const currentLabel = bucketTypeLabel(currentType);
+  const publicStateCouldRemainUnknown = currentType === "allPublic" || newType === "allPublic";
+  const revision = item.bucket.info.revision;
+  if (typeof revision !== "number") {
+    treeProvider.refresh();
+    vscode.window.showErrorMessage(
+      "B2: Bucket metadata is missing a revision. Refresh the bucket tree and retry.",
+    );
+    return;
+  }
+
+  const confirm = await vscode.window.showQuickPick(
+    [
+      {
+        label: `Change to ${newLabel}`,
+        description: `Currently: ${currentLabel}`,
+        value: true,
+      },
+      { label: "Cancel", value: false },
+    ],
+    {
+      title: `Change Visibility: ${item.bucketName}`,
+      placeHolder: `Bucket is currently ${currentLabel}`,
+      ignoreFocusOut: true,
+    },
+  );
+
+  if (!confirm?.value) {
+    return;
+  }
+
+  if (
+    shouldConfirmPublicBucketVisibility(currentType, newType) &&
+    !(await confirmPublicBucketVisibility("change", item.bucketName))
+  ) {
+    return;
+  }
+
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Changing "${item.bucketName}" to ${newLabel}...`,
+        cancellable: false,
+      },
+      () => {
+        const update = (signal: AbortSignal) =>
+          item.bucket.update(
+            withAbortSignal({ bucketType: newType, ifRevisionIs: revision }, signal),
+          );
+        return withBucketMutationTimeout(
+          `Changing B2 bucket "${item.bucketName}" to ${newType === "allPublic" ? "public" : "private"}`,
+          services.bucketMutationTimeoutMs ?? BUCKET_MUTATION_TIMEOUT_MS,
+          services.bucketMutationPostTimeoutSettleMs ?? BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          update,
+        );
+      },
+    );
+    treeProvider.refresh();
+    log(`Bucket "${item.bucketName}" changed to ${newType}.`);
+    vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
+  } catch (error) {
+    if (publicStateCouldRemainUnknown && isPostRequestB2MutationStateAmbiguous(error)) {
+      await warnUnknownPublicBucketState(services, "change", item.bucketName, newType, error);
+      showCommandError("B2: Could not confirm public bucket visibility change", error);
+      return;
+    }
+    if (isBucketRevisionConflict(error) || isPostRequestB2MutationStateAmbiguous(error)) {
+      treeProvider.refresh();
+    }
+    showCommandError("B2: Failed to update bucket", error);
+  }
+}
+
 /**
  * Register all B2 commands.
  */
@@ -168,9 +547,6 @@ export function registerCommands(services: CommandServices): void {
           downloadUrl: client.accountInfo.getDownloadUrl(),
         });
 
-        // Register Copilot tools now that we have a client
-        registerB2Tools(context, client);
-
         vscode.window.showInformationMessage(
           `B2: Authenticated as ${client.accountInfo.getAccountId()}`,
         );
@@ -186,133 +562,14 @@ export function registerCommands(services: CommandServices): void {
 
   // ── Create Bucket ─────────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.createBucket", async () => {
-      const client = getClient();
-      if (!client) {
-        vscode.window.showErrorMessage("B2: Not authenticated.");
-        return;
-      }
-
-      const bucketName = await vscode.window.showInputBox({
-        title: "Create B2 Bucket",
-        prompt: "Enter a name for the new bucket",
-        placeHolder: "my-new-bucket",
-        ignoreFocusOut: true,
-        validateInput: (value) => {
-          if (!value) {
-            return "Bucket name is required";
-          }
-          if (value.length < 6) {
-            return "Bucket name must be at least 6 characters";
-          }
-          if (value.length > 50) {
-            return "Bucket name must be at most 50 characters";
-          }
-          if (!/^[a-zA-Z0-9-]+$/.test(value)) {
-            return "Bucket name can only contain letters, digits, and hyphens";
-          }
-          return undefined;
-        },
-      });
-      if (!bucketName) {
-        return;
-      }
-
-      const visibility = await vscode.window.showQuickPick(
-        [
-          {
-            label: "Private",
-            description: "Files require authorization to access",
-            value: "allPrivate" as const,
-          },
-          {
-            label: "Public",
-            description: "Files can be accessed without authorization",
-            value: "allPublic" as const,
-          },
-        ],
-        {
-          title: "Bucket Visibility",
-          placeHolder: "Select bucket visibility",
-          ignoreFocusOut: true,
-        },
-      );
-      if (!visibility) {
-        return;
-      }
-
-      if (
-        shouldConfirmPublicBucketVisibility(undefined, visibility.value) &&
-        !(await confirmPublicBucketVisibility("create", bucketName))
-      ) {
-        return;
-      }
-
-      try {
-        const bucket = await client.createBucket({
-          bucketName,
-          bucketType: visibility.value,
-        });
-        treeProvider.refresh();
-        vscode.window.showInformationMessage(`B2: Bucket "${bucket.name}" created.`);
-      } catch (error) {
-        showCommandError("B2: Failed to create bucket", error);
-      }
-    }),
+    vscode.commands.registerCommand("b2.createBucket", () => createBucketCommand(services)),
   );
 
   // ── Change Bucket Visibility ─────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.changeBucketVisibility", async (item?: BucketTreeItem) => {
-      if (!getClient()) {
-        vscode.window.showErrorMessage("B2: Not authenticated.");
-        return;
-      }
-      if (!item) {
-        vscode.window.showErrorMessage("B2: Select a bucket first.");
-        return;
-      }
-
-      const currentType = item.bucketType;
-      const newType = currentType === "allPublic" ? "allPrivate" : "allPublic";
-      const newLabel = newType === "allPublic" ? "Public" : "Private";
-      const currentLabel = currentType === "allPublic" ? "Public" : "Private";
-
-      const confirm = await vscode.window.showQuickPick(
-        [
-          {
-            label: `Change to ${newLabel}`,
-            description: `Currently: ${currentLabel}`,
-            value: true,
-          },
-          { label: "Cancel", value: false },
-        ],
-        {
-          title: `Change Visibility: ${item.bucketName}`,
-          placeHolder: `Bucket is currently ${currentLabel}`,
-          ignoreFocusOut: true,
-        },
-      );
-
-      if (!confirm?.value) {
-        return;
-      }
-
-      if (
-        shouldConfirmPublicBucketVisibility(currentType, newType) &&
-        !(await confirmPublicBucketVisibility("change", item.bucketName))
-      ) {
-        return;
-      }
-
-      try {
-        await item.bucket.update({ bucketType: newType });
-        treeProvider.refresh();
-        vscode.window.showInformationMessage(`B2: "${item.bucketName}" is now ${newLabel}.`);
-      } catch (error) {
-        showCommandError("B2: Failed to update bucket", error);
-      }
-    }),
+    vscode.commands.registerCommand("b2.changeBucketVisibility", (item?: BucketTreeItem) =>
+      changeBucketVisibilityCommand(services, item),
+    ),
   );
 
   // ── Create Folder ─────────────────────────────────────────────────────

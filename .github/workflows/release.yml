@@ -66,7 +66,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run quality checks
         run: npm run check
@@ -91,7 +91,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run VS Code tests
         run: xvfb-run -a npm test
@@ -116,7 +116,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run npm audit
         run: npm run audit:release
@@ -148,7 +148,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build extension for analysis
         run: npm run compile
@@ -179,7 +179,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Package VSIX
         run: npm run vsix
@@ -223,7 +223,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -259,7 +259,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -357,7 +357,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -385,25 +385,55 @@ jobs:
             sleep $((attempt * 10))
           done
 
+      - name: Verify Marketplace publisher dependency tree
+        env:
+          EXPECTED_PUBLISHER_PACKAGE_SHA256: ${{ vars.MARKETPLACE_PUBLISHER_PACKAGE_SHA256 }}
+          EXPECTED_PUBLISHER_LOCK_SHA256: ${{ vars.MARKETPLACE_PUBLISHER_LOCK_SHA256 }}
+        run: |
+          if [ -z "$EXPECTED_PUBLISHER_PACKAGE_SHA256" ] || [ -z "$EXPECTED_PUBLISHER_LOCK_SHA256" ]; then
+            echo "Marketplace publisher dependency hashes must be configured as protected marketplace environment variables."
+            exit 1
+          fi
+          printf '%s  %s\n' "$EXPECTED_PUBLISHER_PACKAGE_SHA256" ".github/marketplace-publisher/package.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PUBLISHER_LOCK_SHA256" ".github/marketplace-publisher/package-lock.json" | sha256sum --check --strict
+
+      - name: Install isolated Marketplace publisher
+        id: publisher
+        run: |
+          PUBLISHER_DIR="$RUNNER_TEMP/vsce-publisher"
+          rm -rf "$PUBLISHER_DIR"
+          mkdir -p "$PUBLISHER_DIR"
+          cp .github/marketplace-publisher/package.json "$PUBLISHER_DIR/package.json"
+          cp .github/marketplace-publisher/package-lock.json "$PUBLISHER_DIR/package-lock.json"
+          cd "$PUBLISHER_DIR"
+          npm ci --ignore-scripts --no-audit --no-fund --omit=dev
+          VSCE_BIN="$PUBLISHER_DIR/node_modules/.bin/vsce"
+          test -x "$VSCE_BIN"
+          echo "bin=$VSCE_BIN" >> "$GITHUB_OUTPUT"
+
       - name: Verify Marketplace publisher token
         env:
+          VSCE_BIN: ${{ steps.publisher.outputs.bin }}
           VSCE_PAT: ${{ secrets.VSCE_KEY }}
         run: |
           if [ -z "$VSCE_PAT" ]; then
             echo "VSCE_KEY is not available in the marketplace environment."
             exit 1
           fi
-          npm exec --no-install -- vsce verify-pat backblaze
+          cd "$RUNNER_TEMP"
+          env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" verify-pat backblaze
 
       - name: Publish to VS Code Marketplace
         env:
+          VSCE_BIN: ${{ steps.publisher.outputs.bin }}
           VSCE_PAT: ${{ secrets.VSCE_KEY }}
           VSIX_FILE: ${{ steps.vsix.outputs.path }}
         # VS Code Marketplace does not support OIDC trusted publishing, so vsce requires VSCE_PAT.
         run: | # zizmor: ignore[use-trusted-publishing] Marketplace publishing requires VSCE_PAT.
+          cd "$RUNNER_TEMP"
           for attempt in 1 2 3; do
             echo "Publishing: $VSIX_FILE (attempt ${attempt})"
-            if npm exec --no-install -- vsce publish --skip-duplicate --packagePath "$VSIX_FILE"; then
+            if env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" publish --skip-duplicate --packagePath "$VSIX_FILE"; then
               exit 0
             fi
             status=$?

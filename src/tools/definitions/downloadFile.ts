@@ -36,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same file name.",
+          "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same file name. Existing files are not overwritten.",
       },
     },
     required: ["bucket", "path"],

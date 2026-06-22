@@ -136,13 +136,16 @@ suite("LM Tool Safety", () => {
     assert.match(text, /my-bucket\/r\/q4\.pdf/);
   });
 
-  test("write uploadFile names the upload effect", async () => {
+  test("uploadFile warns that local file contents leave the workspace", async () => {
     const text = await confirmText(uploadFileTool, {
       localPath: "out.csv",
       bucket: "my-bucket",
       remotePath: "data/out.csv",
     });
     assert.match(text, /upload/i);
+    assert.match(text, /local file contents/i);
+    assert.match(text, /outside VS Code/i);
+    assert.match(text, /no Backblaze login required/i);
     assert.match(text, /my-bucket\/data\/out\.csv/);
   });
 

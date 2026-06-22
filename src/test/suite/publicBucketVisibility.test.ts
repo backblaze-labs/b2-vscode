@@ -6,9 +6,14 @@
 
 import * as assert from "assert";
 import {
+  bucketTypeLabel,
+  buildPublicBucketTypedConfirmationValidationMessage,
+  buildPublicBucketTypedConfirmationPrompt,
+  buildPublicBucketUnknownStateWarningMessage,
   buildPublicBucketWarningMessage,
   CONFIRM_PUBLIC_BUCKET_LABEL,
   isPublicBucketConfirmationAccepted,
+  isPublicBucketNameConfirmationAccepted,
   shouldConfirmPublicBucketVisibility,
 } from "../../commands/publicBucketVisibility";
 
@@ -25,6 +30,11 @@ suite("Public bucket visibility warnings", () => {
     assert.strictEqual(shouldConfirmPublicBucketVisibility("allPrivate", "allPublic"), true);
   });
 
+  test("labels B2 bucket visibility consistently", () => {
+    assert.strictEqual(bucketTypeLabel("allPrivate"), "Private");
+    assert.strictEqual(bucketTypeLabel("allPublic"), "Public");
+  });
+
   test("does not require confirmation when changing a public bucket to private", () => {
     assert.strictEqual(shouldConfirmPublicBucketVisibility("allPublic", "allPrivate"), false);
   });
@@ -35,10 +45,73 @@ suite("Public bucket visibility warnings", () => {
     assert.strictEqual(isPublicBucketConfirmationAccepted(CONFIRM_PUBLIC_BUCKET_LABEL), true);
   });
 
+  test("requires the exact bucket name for typed confirmation", () => {
+    assert.strictEqual(isPublicBucketNameConfirmationAccepted("public-assets", undefined), false);
+    assert.strictEqual(isPublicBucketNameConfirmationAccepted("public-assets", ""), false);
+    assert.strictEqual(
+      isPublicBucketNameConfirmationAccepted("public-assets", "PUBLIC-ASSETS"),
+      false,
+    );
+    assert.strictEqual(
+      isPublicBucketNameConfirmationAccepted("public-assets", "public-assets"),
+      true,
+    );
+  });
+
   test("explains that public files may be accessible without authorization", () => {
     const message = buildPublicBucketWarningMessage("change", "public-assets");
 
     assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("typed confirmation prompt repeats the bucket name and public exposure risk", () => {
+    const prompt = buildPublicBucketTypedConfirmationPrompt("public-assets");
+
+    assert.ok(prompt.includes('"public-assets"'));
+    assert.ok(prompt.includes("accessible without authorization"));
+  });
+
+  test("typed confirmation validation repeats the bucket name", () => {
+    const message = buildPublicBucketTypedConfirmationValidationMessage("public-assets");
+
+    assert.ok(message.includes('"public-assets"'));
+    assert.ok(message.includes("public access"));
+  });
+
+  test("create unknown-state warning tells users the bucket may have been created", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage("create", "public-assets");
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("may have been created as public"));
+    assert.ok(message.includes("may not have been created at all"));
+    assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("private-to-public unknown-state warning names the public target", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage(
+      "change",
+      "public-assets",
+      "allPublic",
+    );
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("to public completed"));
+    assert.ok(message.includes("may already be public"));
+    assert.ok(message.includes("accessible without authorization"));
+  });
+
+  test("public-to-private unknown-state warning names the private target", () => {
+    const message = buildPublicBucketUnknownStateWarningMessage(
+      "change",
+      "public-assets",
+      "allPrivate",
+    );
+
+    assert.ok(message.includes("public-assets"));
+    assert.ok(message.includes("to private completed"));
+    assert.ok(message.includes("may remain public"));
+    assert.ok(!message.includes("to public completed"));
     assert.ok(message.includes("accessible without authorization"));
   });
 });

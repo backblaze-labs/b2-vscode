@@ -38,7 +38,9 @@ Custom values must be HTTPS URLs without embedded credentials, query strings, or
 
 ### Public Bucket Visibility
 
-Creating a public bucket or changing a private bucket to public requires a modal confirmation. Public B2 buckets can make files accessible without authorization, so use public visibility only when object-level public access is intentional.
+Creating a public bucket or changing a private bucket to public requires a modal confirmation and typed bucket-name confirmation. Public B2 buckets can make current and future files accessible without authorization, so use public visibility only when object-level public access is intentional.
+
+If a public bucket create or visibility-change request fails in a way that leaves the final B2 state uncertain, the extension refreshes the bucket tree and shows a modal warning that the bucket may already be public.
 
 ## Commands
 
@@ -62,8 +64,8 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `listBuckets` — list all accessible buckets
 - `listFiles` — list files in a bucket/folder
 - `getFileInfo` — get metadata for a specific file
-- `downloadFile` — download a file to the workspace by default, or to `localPath`
-- `uploadFile` — upload a file to a bucket
+- `downloadFile` — download a file to the workspace by default, or to a workspace-relative `localPath`; existing files are not overwritten
+- `uploadFile` — upload a workspace-relative file to a bucket
 - `deleteFile` — delete a file by name
 - `presignUrl` — generate a time-limited download URL
 
@@ -72,6 +74,10 @@ When GitHub Copilot is available, the extension registers language model tools:
 Several tools change state or expose data: `uploadFile` and `downloadFile` write to B2 or your workspace, `deleteFile` permanently deletes a file, and `presignUrl` mints a shareable download link. Before any of these runs, the extension shows a confirmation that names the exact effect (for example, "permanently delete b2://bucket/key"), and the destructive and link-sharing tools are flagged as irreversible or exfiltration-capable.
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
+
+Downloads are capped at 1 GiB by default for both workspace downloads and the open-file temp cache. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
+
+Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. The extension does not run age-based stale cleanup because it cannot prove another process is not actively writing an old unfinished upload. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
 
 ## Development
 

@@ -6,6 +6,8 @@
 
 import * as assert from "assert";
 import * as vscode from "vscode";
+import { downloadFileTool } from "../../tools/definitions/downloadFile";
+import { uploadFileTool } from "../../tools/definitions/uploadFile";
 
 interface MenuContribution {
   command: string;
@@ -89,5 +91,20 @@ suite("B2 Extension Test Suite", () => {
     assert.strictEqual(limit.type, "integer");
     assert.strictEqual(limit.minimum, 1);
     assert.strictEqual(limit.maximum, 1000);
+  });
+
+  test("package LM tool schemas match source definitions", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const tools = extension.packageJSON.contributes
+      .languageModelTools as LanguageModelToolContribution[];
+    const uploadFile = tools.find((tool) => tool.name === uploadFileTool.name);
+    const downloadFile = tools.find((tool) => tool.name === downloadFileTool.name);
+
+    assert.ok(uploadFile, "b2_uploadFile contribution should exist");
+    assert.ok(downloadFile, "b2_downloadFile contribution should exist");
+    assert.deepStrictEqual(uploadFile.inputSchema, uploadFileTool.parameters);
+    assert.deepStrictEqual(downloadFile.inputSchema, downloadFileTool.parameters);
   });
 });

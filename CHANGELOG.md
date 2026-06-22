@@ -34,6 +34,25 @@
   `presignUrl` tools warn that the action cannot be undone or exposes data, so an
   agent cannot run them without a clear prompt. Documented the prompt-injection
   caution for agent mode in the README.
+- Creating public buckets and changing private buckets to public now require a
+  modal warning plus exact bucket-name confirmation. Ambiguous failures after a
+  public-affecting visibility request refresh the bucket tree and warn that the
+  bucket may already be public.
+- Automatic global cleanup of stale unfinished multipart uploads has been
+  removed because B2 file info is caller-controlled. Failed uploads cancel
+  unfinished uploads that match the active upload session only. The extension
+  does not run age-based stale cleanup because another live VS Code window or
+  machine could still be writing an old unfinished upload. Operators should
+  configure a B2 lifecycle rule or use B2 tools to clean legacy unfinished
+  multipart uploads so older extension versions, crashes, or power-loss orphans
+  cannot accumulate storage cost.
+- Workspace downloads and open-file cache downloads now enforce a 1 GiB default
+  size cap, abort oversized streams, and remove partial local files.
+- Interactive open-file downloads now stream with the same 5-minute stall
+  timeout as other local transfer paths.
+- LM `downloadFile` writes only to workspace-relative paths and refuses to
+  overwrite existing workspace files. LM `uploadFile` reads only
+  workspace-relative files.
 
 ## [0.0.1] — 2026-03-25
 

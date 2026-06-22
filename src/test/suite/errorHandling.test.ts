@@ -20,6 +20,7 @@ import {
   formatB2UserMessage,
   redactSensitiveText,
 } from "../../errors";
+import { DownloadSizeLimitError } from "../../services/fileTransfers";
 
 function b2Error(status: number, code: string, message: string, retryAfter?: number): Error {
   return classifyError(
@@ -30,7 +31,7 @@ function b2Error(status: number, code: string, message: string, retryAfter?: num
 
 suite("B2 error handling", () => {
   test("defines user messages for common B2 failure modes", () => {
-    const cases: Array<{ error: Error; expected: RegExp }> = [
+    const cases: Array<{ error: unknown; expected: RegExp }> = [
       {
         error: b2Error(401, "bad_auth_token", "bad key"),
         expected: /application key ID or application key/i,
@@ -61,6 +62,10 @@ suite("B2 error handling", () => {
       },
       {
         error: new NetworkError("fetch failed"),
+        expected: /network connection to B2 failed/i,
+      },
+      {
+        error: { code: "ECONNRESET", message: "socket hang up" },
         expected: /network connection to B2 failed/i,
       },
       {
@@ -159,6 +164,13 @@ suite("B2 error handling", () => {
     const message = formatB2UserMessage(new B2ResourceNotFoundError('Bucket "b" not found.'));
 
     assert.equal(message, 'Bucket "b" not found.');
+  });
+
+  test("surfaces download size limit failures to users and tools", () => {
+    const error = new DownloadSizeLimitError("Download to file.bin exceeded the 1024 byte limit.");
+
+    assert.match(formatB2UserMessage(error), /exceeded the 1024 byte limit/i);
+    assert.match(formatB2ToolUserMessage(error), /exceeded the 1024 byte limit/i);
   });
 
   test("tool messages preserve safe local file errors", () => {

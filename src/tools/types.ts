@@ -13,7 +13,7 @@ import type { CancellationToken } from "vscode";
  * - `readOnly`: reads B2 metadata/objects; makes no changes.
  * - `write`: writes to B2 or the local workspace.
  * - `destructive`: irreversibly deletes data.
- * - `exfiltration`: exposes data outside B2 (e.g. a shareable download URL).
+ * - `exfiltration`: exposes data outside the local workspace or B2 account.
  */
 export type ToolRisk = "readOnly" | "write" | "destructive" | "exfiltration";
 

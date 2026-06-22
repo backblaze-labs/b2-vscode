@@ -26,7 +26,8 @@ export const uploadFileTool: B2ToolDefinition = {
     properties: {
       localPath: {
         type: "string",
-        description: "Workspace-relative path to the local file to upload.",
+        description:
+          "Workspace-relative path to the local file to upload. Absolute paths are rejected.",
       },
       bucket: {
         type: "string",
@@ -41,7 +42,7 @@ export const uploadFileTool: B2ToolDefinition = {
     required: ["localPath", "bucket"],
   },
   tags: ["b2", "file", "upload"],
-  risk: "write",
+  risk: "exfiltration",
   describeEffect: (input) =>
-    `upload ${inputText(input.localPath)} to b2://${inputText(input.bucket)}/${remotePathFor(input)}`,
+    `upload local file contents from ${inputText(input.localPath)} to b2://${inputText(input.bucket)}/${remotePathFor(input)}`,
 };

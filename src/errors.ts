@@ -78,6 +78,17 @@ const SAFE_LOCAL_ERROR_CODES = new Set([
   "EROFS",
 ]);
 
+const NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
+
 /**
  * Error used when a multi-step operation made progress but could not complete.
  */
@@ -145,13 +156,29 @@ function isSafeExtensionMessage(message: string): boolean {
   return SAFE_EXTENSION_MESSAGE_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
+function getRawErrorCode(error: unknown): string | undefined {
+  return stringProperty(asRecord(error), "code");
+}
+
 function isSafeLocalError(error: unknown): boolean {
-  const code = stringProperty(asRecord(error), "code");
+  const code = getRawErrorCode(error);
   return code === undefined ? false : SAFE_LOCAL_ERROR_CODES.has(code);
 }
 
+function isNetworkErrorCode(code: string | undefined): boolean {
+  return code !== undefined && (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"));
+}
+
 function getB2Code(error: unknown): string | undefined {
-  return stringProperty(asRecord(error), "code");
+  const code = getRawErrorCode(error);
+  if (code === undefined) {
+    return undefined;
+  }
+
+  // Treat B2 codes as authoritative only when they are attached to an SDK
+  // B2Error or a response status. Bare no-status `code` values can be produced
+  // by local dependencies and remain ambiguous for post-request public mutations.
+  return error instanceof B2Error || getB2Status(error) !== undefined ? code : undefined;
 }
 
 function getB2Status(error: unknown): number | undefined {
@@ -250,11 +277,19 @@ function isB2SsrfFailure(error: unknown): boolean {
 }
 
 function isNetworkFailure(error: unknown): boolean {
-  if (error instanceof NetworkError || matchesErrorName(error, "NetworkError")) {
+  if (isNetworkErrorCode(getRawErrorCode(error))) {
     return true;
   }
 
-  if (getB2Status(error) !== undefined) {
+  if (
+    error instanceof NetworkError ||
+    matchesErrorName(error, "NetworkError") ||
+    matchesErrorName(error, "AbortError")
+  ) {
+    return true;
+  }
+
+  if (getB2Status(error) !== undefined || getB2Code(error) !== undefined) {
     return false;
   }
 
@@ -269,14 +304,22 @@ function isNetworkFailure(error: unknown): boolean {
 }
 
 function isMalformedResponse(error: unknown): boolean {
-  const code = getB2Code(error);
+  if (getB2Status(error) !== undefined || getB2Code(error) !== undefined) {
+    // B2's `bad_json` code is a definitive classified B2 response, so public
+    // mutation ambiguity keeps it out of this transport/malformed-response path.
+    return false;
+  }
+
   const message = getErrorMessage(error).toLowerCase();
   return (
-    code === "bad_json" ||
     error instanceof SyntaxError ||
     matchesErrorName(error, "SyntaxError") ||
-    message.includes("malformed") ||
+    message.includes("malformed json") ||
+    message.includes("malformed response") ||
     message.includes("invalid json") ||
+    message.includes("truncated json") ||
+    message.includes("truncated response") ||
+    message.includes("response truncated") ||
     message.includes("unexpected token") ||
     message.includes("unexpected end of json") ||
     message.includes("could not parse")
@@ -294,6 +337,55 @@ function isTransientServiceFailure(error: unknown): boolean {
     code === "service_unavailable" ||
     code === "internal_error"
   );
+}
+
+export function isBucketRevisionConflict(error: unknown): boolean {
+  return getB2Status(error) === 409 || getB2Code(error) === "conflict";
+}
+
+/** Error used when the client cannot confirm a mutation's final state in time. */
+export class B2MutationTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "B2MutationTimeoutError";
+  }
+}
+
+function isMutationTimeout(error: unknown): boolean {
+  return (
+    error instanceof B2MutationTimeoutError || matchesErrorName(error, "B2MutationTimeoutError")
+  );
+}
+
+/**
+ * Classifies public bucket mutations after a create/update request has been
+ * attempted. Transport/timeout/transient-service checks intentionally run
+ * before definitive status handling because those outcomes can be uncertain
+ * even when an HTTP status is present, such as 408 or 5xx. After known
+ * definitive local and B2 failures are excluded, unclassified errors with no B2
+ * status or code default to ambiguous as a public-exposure fail-safe.
+ */
+export function isPostRequestB2MutationStateAmbiguous(error: unknown): boolean {
+  if (
+    isMutationTimeout(error) ||
+    isNetworkFailure(error) ||
+    isTransientServiceFailure(error) ||
+    isMalformedResponse(error)
+  ) {
+    return true;
+  }
+
+  if (
+    isB2SsrfFailure(error) ||
+    isInvalidCredentials(error) ||
+    isMissingCapability(error) ||
+    isCapExceeded(error) ||
+    isSafeLocalError(error)
+  ) {
+    return false;
+  }
+
+  return getB2Status(error) === undefined && getB2Code(error) === undefined;
 }
 
 function retryAfterText(error: unknown): string {
@@ -349,6 +441,14 @@ export function formatB2UserMessage(error: unknown): string {
     return redactSensitiveText(getErrorMessage(error));
   }
 
+  if (isMutationTimeout(error)) {
+    return "The B2 request timed out before the extension could confirm the final state. Refresh the bucket tree and verify the bucket in Backblaze before retrying.";
+  }
+
+  if (matchesErrorName(error, "DownloadSizeLimitError")) {
+    return redactSensitiveText(getErrorMessage(error));
+  }
+
   if (isExpiredAuth(error)) {
     return "B2 authorization expired. Retry the operation; the SDK refreshes auth automatically when possible. If this keeps happening, run B2: Authenticate again.";
   }
@@ -373,7 +473,7 @@ export function formatB2UserMessage(error: unknown): string {
     return `B2 rate limit reached. The SDK retries retryable failures with backoff before surfacing this error.${retryAfterText(error)}`;
   }
 
-  if (isMalformedResponse(error)) {
+  if (getB2Code(error) === "bad_json" || isMalformedResponse(error)) {
     return "B2 returned a response the extension could not parse. Retry the operation and check the Backblaze B2 output log if it persists.";
   }
 

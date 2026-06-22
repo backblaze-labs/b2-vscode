@@ -71,10 +71,10 @@ export class B2ToolAdapter<TParams, TResult> implements vscode.LanguageModelTool
       case "exfiltration":
         title = `Confirm: ${this.definition.displayName}`;
         parts.push(
-          `Warning: this will ${formatInlineCode(effect ?? "create a shareable download link")}.`,
+          `Warning: this will ${formatInlineCode(effect ?? "expose data outside the local workspace or B2 account")}.`,
         );
         parts.push(
-          "Anyone who obtains the link can download the file until it expires, with no Backblaze login required.",
+          "This can make data available outside VS Code. If the target bucket is public or a link is shared, others may be able to download it with no Backblaze login required.",
         );
         break;
       case "write":

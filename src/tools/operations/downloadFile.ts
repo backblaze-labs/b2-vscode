@@ -16,6 +16,10 @@ import {
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
 import {
+  sanitizePathError,
+  type PathMessageReplacement,
+} from "../../services/pathErrorSanitization";
+import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
@@ -43,6 +47,45 @@ function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: 
   }
 }
 
+function relativeDisplayPath(
+  workspaceRoot: string,
+  absolutePath: string,
+  fallback: string,
+): string {
+  const relativePath = path.relative(workspaceRoot, absolutePath);
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return fallback;
+  }
+  return relativePath;
+}
+
+function sanitizeWorkspaceDownloadError(
+  error: unknown,
+  destination: WorkspaceDestination,
+  temporaryDirectory?: string,
+): unknown {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+
+  const destinationDirectory = path.dirname(destination.path);
+  const relativeDirectory = path.dirname(destination.relativePath);
+  const relativeTemporaryDirectory = path.join(relativeDirectory, ".b2-vscode-transfers");
+  const replacements: PathMessageReplacement[] = [
+    { search: temporaryDirectory, replacement: relativeTemporaryDirectory },
+    { search: destination.path, replacement: destination.relativePath },
+    {
+      search: destinationDirectory,
+      replacement: relativeDirectory === "." ? "." : relativeDirectory,
+    },
+    { search: destination.workspaceRoot, replacement: "." },
+  ];
+
+  return sanitizePathError(error, replacements, (pathValue) =>
+    relativeDisplayPath(destination.workspaceRoot, pathValue, destination.relativePath),
+  );
+}
+
 async function assertDestinationDoesNotExist(destinationPath: string): Promise<void> {
   try {
     await fs.promises.lstat(destinationPath);
@@ -67,23 +110,35 @@ async function ensureWorkspaceDestinationDirectory(
   );
 }
 
-async function workspacePath(relativePath: string): Promise<string> {
+interface WorkspaceDestination {
+  readonly path: string;
+  readonly relativePath: string;
+  readonly workspaceRoot: string;
+}
+
+async function workspacePath(relativePath: string): Promise<WorkspaceDestination> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     throw new Error(WORKSPACE_REQUIRED_MESSAGE);
   }
-  const destinationPath = resolveContainedRelativePath(
-    workspaceFolder.uri.fsPath,
-    relativePath,
-    "localPath",
-  );
-  assertNoControlDirectoryTarget(workspaceFolder.uri.fsPath, destinationPath);
-  await assertDestinationDoesNotExist(destinationPath);
-  await ensureWorkspaceDestinationDirectory(workspaceFolder.uri.fsPath, destinationPath);
-  // Re-check after creating parent directories to avoid overwriting a target
-  // that appeared while validation was in progress.
-  await assertDestinationDoesNotExist(destinationPath);
-  return destinationPath;
+  const workspaceRoot = workspaceFolder.uri.fsPath;
+  const destinationPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
+  const destination = {
+    path: destinationPath,
+    relativePath: path.relative(workspaceRoot, destinationPath),
+    workspaceRoot,
+  };
+  try {
+    assertNoControlDirectoryTarget(workspaceRoot, destinationPath);
+    await assertDestinationDoesNotExist(destinationPath);
+    await ensureWorkspaceDestinationDirectory(workspaceRoot, destinationPath);
+    // Re-check after creating parent directories to avoid overwriting a target
+    // that appeared while validation was in progress.
+    await assertDestinationDoesNotExist(destinationPath);
+    return destination;
+  } catch (error) {
+    throw sanitizeWorkspaceDownloadError(error, destination);
+  }
 }
 
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
@@ -103,42 +158,51 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     }
 
     // Determine local save path
-    let savePath: string;
+    let destination: WorkspaceDestination;
     if (params.localPath) {
-      savePath = await workspacePath(params.localPath);
+      destination = await workspacePath(params.localPath);
     } else {
       const fileName = b2KeyBasename(params.path);
-      savePath = await workspacePath(fileName);
+      destination = await workspacePath(fileName);
+    }
+    const savePath = destination.path;
+    const temporaryDirectory = path.join(path.dirname(savePath), ".b2-vscode-transfers");
+
+    let size: number;
+    try {
+      size = await withCancellableTransferProgress(
+        { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
+        async ({ progress, signal }) => {
+          const reporter = createTransferProgressReporter(progress);
+          const { body } = await withTransferStallTimeout(
+            `Download request for b2://${params.bucket}/${params.path}`,
+            { signal },
+            (requestSignal, markActivity) =>
+              bucket.download(params.path, {
+                signal: requestSignal,
+                onProgress: (event) => {
+                  markActivity();
+                  reporter(event);
+                },
+              }),
+          );
+
+          return downloadStreamToFile(body, savePath, {
+            signal,
+            overwrite: false,
+            allowedRootDirectory: destination.workspaceRoot,
+            temporaryDirectory,
+          });
+        },
+      );
+    } catch (error) {
+      throw sanitizeWorkspaceDownloadError(error, destination, temporaryDirectory);
     }
 
-    const size = await withCancellableTransferProgress(
-      { title: `Downloading b2://${params.bucket}/${params.path}...`, token },
-      async ({ progress, signal }) => {
-        const reporter = createTransferProgressReporter(progress);
-        const { body } = await withTransferStallTimeout(
-          `Download request for b2://${params.bucket}/${params.path}`,
-          { signal },
-          (requestSignal, markActivity) =>
-            bucket.download(params.path, {
-              signal: requestSignal,
-              onProgress: (event) => {
-                markActivity();
-                reporter(event);
-              },
-            }),
-        );
-
-        return downloadStreamToFile(body, savePath, {
-          signal,
-          overwrite: false,
-        });
-      },
-    );
-
     return {
-      localPath: savePath,
+      localPath: destination.relativePath,
       size,
-      message: `Downloaded ${params.path} from ${params.bucket} to ${savePath} (${size} bytes)`,
+      message: `Downloaded ${params.path} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
     };
   },
 };
