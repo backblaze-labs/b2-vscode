@@ -81,6 +81,7 @@ const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS = 10;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
+const UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT = 16;
 const UNFINISHED_UPLOAD_STALE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
 const STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -95,6 +96,7 @@ const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOF
 const lastCleanupByDirectory = new Map<string, number>();
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
 let unfinishedUploadCleanupPendingCount = 0;
+let unfinishedUploadCleanupInFlightCount = 0;
 
 export interface UnfinishedUploadCleanupDiagnostics {
   readonly queuedOwnedCleanupCount: number;
@@ -1231,11 +1233,54 @@ async function withAbortableTimeout<T>(
   timeoutMs: number,
   description: string,
 ): Promise<T> {
-  return withTimeout(operation, timeoutMs, description, {
-    createTimeoutError: (timeoutDescription, timeoutMsValue) =>
-      new CleanupOperationTimeoutError(
-        `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
-      ),
+  if (timeoutMs <= 0) {
+    return withTimeout(operation, timeoutMs, description, {
+      createTimeoutError: (timeoutDescription, timeoutMsValue) =>
+        new CleanupOperationTimeoutError(
+          `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+        ),
+    });
+  }
+
+  if (unfinishedUploadCleanupInFlightCount >= UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT) {
+    throw new CleanupOperationTimeoutError(
+      `${description} skipped because unfinished-upload cleanup already has ${unfinishedUploadCleanupInFlightCount} in-flight operation(s).`,
+    );
+  }
+
+  unfinishedUploadCleanupInFlightCount += 1;
+  let timedOut = false;
+  let inFlightReleased = false;
+  const releaseInFlight = () => {
+    if (!inFlightReleased) {
+      unfinishedUploadCleanupInFlightCount -= 1;
+      inFlightReleased = true;
+    }
+  };
+
+  return withTimeout(
+    async (signal) => {
+      try {
+        return await operation(signal);
+      } finally {
+        releaseInFlight();
+      }
+    },
+    timeoutMs,
+    description,
+    {
+      createTimeoutError: (timeoutDescription, timeoutMsValue) => {
+        timedOut = true;
+        releaseInFlight();
+        return new CleanupOperationTimeoutError(
+          `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+        );
+      },
+    },
+  ).finally(() => {
+    if (!timedOut) {
+      releaseInFlight();
+    }
   });
 }
 

@@ -1218,6 +1218,81 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("upload tool rejects direct symlink localPath explicitly before bucket lookup", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-link-"));
+    const targetFile = path.join(workspaceDir, "payload.txt");
+    const linkPath = path.join(workspaceDir, "payload-link.txt");
+    fs.writeFileSync(targetFile, "payload");
+    const symlinkCreated = createFileSymlink(targetFile, linkPath);
+    const client = {
+      async getBucket() {
+        assert.fail("Expected symlink validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: "payload-link.txt" },
+              { getClient: () => client },
+            ),
+          (error: unknown) => {
+            assert.match((error as Error).message, /symbolic link/i);
+            assert.match((error as Error).message, /payload-link\.txt/);
+            assert.strictEqual((error as Error).message.includes(workspaceDir), false);
+            assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+            return true;
+          },
+        );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool treats Windows absolute localPath as absolute before lstat", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-winabs-"));
+    const targetFile = path.join(workspaceDir, "target.txt");
+    const requestedPath = String.raw`C:\temp\payload.txt`;
+    const workspaceProbePath = path.join(workspaceDir, requestedPath);
+    fs.writeFileSync(targetFile, "payload");
+    const symlinkCreated = createFileSymlink(targetFile, workspaceProbePath);
+    const client = {
+      async getBucket() {
+        assert.fail("Expected localPath validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              { bucket: "b", localPath: requestedPath },
+              { getClient: () => client },
+            ),
+          /relative path inside the allowed directory/i,
+        );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects symlinks into workspace control directories", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-control-link-"));
     const controlFile = path.join(workspaceDir, ".git", "config");

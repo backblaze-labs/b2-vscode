@@ -2839,6 +2839,48 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("releases stalled unfinished-upload cleanup slots after timeout", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-list-slot-timeout-"));
+    const localPath = path.join(dir, "file.bin");
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let listCalls = 0;
+
+    const bucket = {
+      listUnfinishedLargeFiles() {
+        listCalls += 1;
+        return new Promise<never>(() => undefined);
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected stalled listing to prevent cancellation attempts");
+      },
+      file(remotePath: string) {
+        return {
+          createWriteStream() {
+            return {
+              writable: new WritableStream<Uint8Array>(),
+              done: Promise.resolve(fakeFileVersion(remotePath, 3, `uploaded-${listCalls}`)),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      for (let index = 0; index < 17; index += 1) {
+        await uploadFileFromDisk(bucket, localPath, `remote/${index}.bin`, {
+          unfinishedCleanupTimeoutMs: 1,
+        });
+      }
+
+      assert.strictEqual(listCalls, 17);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("surfaces upload done rejection when pipeTo also fails", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-reject-"));
     const localPath = path.join(dir, "file.bin");
