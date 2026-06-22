@@ -47,6 +47,7 @@ import {
   normalizeTransferError,
   withTransferStallTimeout,
   withTimeout,
+  type ActivityAbortSignal,
   type TransferTimeoutOptions,
 } from "./transferTimeout";
 
@@ -98,6 +99,7 @@ const UPLOAD_SESSION_MARKER_DIR_NAME = "b2-vscode-upload-sessions";
 const UPLOAD_SESSION_MARKER_PREFIX = "session-";
 const UPLOAD_SESSION_MARKER_SUFFIX = ".json";
 const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
+const DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 const lastCleanupByDirectory = new Map<string, number>();
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
@@ -108,11 +110,13 @@ const preUploadCleanupInFlightByBucket = new WeakMap<UploadBucketHandle, Set<str
 export interface UnfinishedUploadCleanupDiagnostics {
   readonly queuedOwnedCleanupCount: number;
   readonly timedOutCleanupCount: number;
+  readonly indeterminateUploadCount: number;
 }
 
 const unfinishedUploadCleanupDiagnostics = {
   queuedOwnedCleanupCount: 0,
   timedOutCleanupCount: 0,
+  indeterminateUploadCount: 0,
 };
 
 export function getUnfinishedUploadCleanupDiagnostics(): UnfinishedUploadCleanupDiagnostics {
@@ -156,6 +160,7 @@ export interface DownloadStreamToNewFileWithinRootOptions extends TransferTimeou
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
   readonly onProgress?: ProgressListener;
   readonly partSize?: number;
+  readonly finalizationTimeoutMs?: number;
   readonly unfinishedCleanupMaxPages?: number;
   readonly unfinishedCleanupMaxCancels?: number;
   readonly unfinishedCleanupTimeoutMs?: number;
@@ -1880,6 +1885,69 @@ function uploadIndeterminateError(
   );
 }
 
+function recordIndeterminateUpload(remotePath: string, uploadSessionId: string): void {
+  unfinishedUploadCleanupDiagnostics.indeterminateUploadCount += 1;
+  log(
+    `Upload finalization outcome indeterminate for ${remotePath} (session ${uploadSessionId}); verify B2 state before retrying and rely on bucket lifecycle cleanup for abandoned multipart parts.`,
+  );
+}
+
+function startFinalizationHeartbeat(stallTimeoutMs: number, markActivity: () => void): () => void {
+  if (stallTimeoutMs <= 0) {
+    return () => undefined;
+  }
+
+  markActivity();
+  const heartbeatMs = Math.max(1, Math.min(30_000, Math.floor(stallTimeoutMs / 2)));
+  const timer = setInterval(markActivity, heartbeatMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+function startFinalizationTimeout(
+  activity: ActivityAbortSignal,
+  remotePath: string,
+  uploadSessionId: string,
+  timeoutMs: number,
+): () => void {
+  if (timeoutMs <= 0) {
+    return () => undefined;
+  }
+
+  const timer = setTimeout(() => {
+    activity.abort(uploadIndeterminateError(remotePath, uploadSessionId));
+  }, timeoutMs);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
+
+function createFinalizationTrackingWritable(
+  writable: WritableStream<Uint8Array>,
+  beginFinalization: () => void,
+): WritableStream<Uint8Array> {
+  const writer = writable.getWriter();
+  let released = false;
+  const release = () => {
+    if (!released) {
+      writer.releaseLock();
+      released = true;
+    }
+  };
+
+  return new WritableStream<Uint8Array>({
+    write(chunk) {
+      return writer.write(chunk);
+    },
+    close() {
+      beginFinalization();
+      return writer.close().finally(release);
+    },
+    abort(reason) {
+      return writer.abort(reason).finally(release);
+    },
+  });
+}
+
 /**
  * Upload a local file path or a pre-opened source file. Passing an
  * UploadSourceFile transfers ownership of its handle to this function; the
@@ -1909,6 +1977,9 @@ export async function uploadFileFromDisk(
   let uploadDone: Promise<FileVersion> | undefined;
   let uploadStreamWasCreated = false;
   let finalizationStarted = false;
+  let finalizationOutcomeIndeterminate = false;
+  let stopFinalizationHeartbeat: () => void = () => undefined;
+  let stopFinalizationTimeout: () => void = () => undefined;
 
   try {
     if (stats.size === 0) {
@@ -1943,26 +2014,58 @@ export async function uploadFileFromDisk(
     uploadStreamWasCreated = true;
     void done.catch((error) => {
       uploadDoneError = error;
+      if (
+        finalizationStarted &&
+        (finalizationOutcomeIndeterminate ||
+          isActivityTimeout(error, activity) ||
+          error instanceof UploadIndeterminateError)
+      ) {
+        return;
+      }
       logError(`B2 upload stream failed for ${remotePath}`, error);
     });
 
     const readableStream = source.handle.createReadStream({ autoClose: false, start: 0 });
     readableStream.on("data", activity.markActivity);
     const readable = Readable.toWeb(readableStream) as ReadableStream<Uint8Array>;
+    const finalizationWritable = createFinalizationTrackingWritable(writable, () => {
+      if (finalizationStarted) {
+        return;
+      }
+      finalizationStarted = true;
+      stopFinalizationHeartbeat = startFinalizationHeartbeat(
+        options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+        activity.markActivity,
+      );
+      stopFinalizationTimeout = startFinalizationTimeout(
+        activity,
+        remotePath,
+        uploadSessionId,
+        options.finalizationTimeoutMs ?? DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS,
+      );
+    });
 
     await Promise.race([
-      readable.pipeTo(writable, { signal: activity.signal }),
+      readable.pipeTo(finalizationWritable, { signal: activity.signal }),
       abortPromise(activity.signal),
     ]);
-    finalizationStarted = true;
     const result = await Promise.race([done, abortPromise(activity.signal)]);
     if (uploadSessionMarkerWritten) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
     return result;
   } catch (error) {
-    if (finalizationStarted && isActivityTimeout(error, activity)) {
-      throw uploadIndeterminateError(remotePath, uploadSessionId);
+    if (finalizationStarted) {
+      if (error instanceof UploadIndeterminateError) {
+        finalizationOutcomeIndeterminate = true;
+        recordIndeterminateUpload(remotePath, uploadSessionId);
+        throw error;
+      }
+      if (isActivityTimeout(error, activity)) {
+        finalizationOutcomeIndeterminate = true;
+        recordIndeterminateUpload(remotePath, uploadSessionId);
+        throw uploadIndeterminateError(remotePath, uploadSessionId);
+      }
     }
 
     let canceledCount = 0;
@@ -1987,6 +2090,8 @@ export async function uploadFileFromDisk(
     }
     normalizeTransferError(transferError, activity);
   } finally {
+    stopFinalizationTimeout();
+    stopFinalizationHeartbeat();
     activity.dispose();
     await closeUploadSource(source);
   }

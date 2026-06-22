@@ -8,7 +8,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { logError } from "../logger";
+import { log, logError } from "../logger";
 import {
   ensureContainedDirectoryPath,
   ensurePrivateDirectory as ensurePrivateDirectoryPath,
@@ -22,6 +22,8 @@ const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const STALE_CLEANUP_BUDGET_MS = 2_000;
+const STALE_CLEANUP_MAX_ENTRIES = 2_000;
 const MAX_CLEANUP_THROTTLE_ENTRIES = 256;
 
 const lastCleanupByDirectory = new Map<string, number>();
@@ -133,8 +135,65 @@ function shouldRunThrottledCleanup(key: string): boolean {
   return true;
 }
 
+interface BoundedCleanupOptions {
+  readonly maxEntries?: number;
+  readonly budgetMs?: number;
+}
+
+interface BoundedCleanupStats {
+  readonly scannedEntries: number;
+  readonly budgetHit: boolean;
+  readonly maxEntriesHit: boolean;
+}
+
+async function scanBoundedDirectoryEntries(
+  directory: string,
+  label: string,
+  options: BoundedCleanupOptions,
+  onEntry: (entry: string) => Promise<void>,
+): Promise<BoundedCleanupStats> {
+  const deadlineMs = Date.now() + Math.max(0, options.budgetMs ?? STALE_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? STALE_CLEANUP_MAX_ENTRIES);
+  let scannedEntries = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+
+  let dir: fs.Dir | undefined;
+  try {
+    dir = await fs.promises.opendir(directory);
+    for await (const entry of dir) {
+      if (Date.now() >= deadlineMs) {
+        budgetHit = true;
+        break;
+      }
+      if (scannedEntries >= maxEntries) {
+        maxEntriesHit = true;
+        break;
+      }
+
+      scannedEntries += 1;
+      await onEntry(entry.name);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      logError(`Could not inspect ${label}: ${directory}`, error);
+    }
+  }
+
+  return { scannedEntries, budgetHit, maxEntriesHit };
+}
+
+function logBoundedCleanup(label: string, stats: BoundedCleanupStats): void {
+  if (stats.budgetHit || stats.maxEntriesHit) {
+    log(
+      `${label} cleanup scanned ${stats.scannedEntries} entr${stats.scannedEntries === 1 ? "y" : "ies"}, budgetHit=${stats.budgetHit}, maxEntriesHit=${stats.maxEntriesHit}.`,
+    );
+  }
+}
+
 export async function cleanupStaleTransferTempFiles(
-  options: { directory?: string; maxAgeMs?: number } = {},
+  options: { directory?: string; maxAgeMs?: number } & BoundedCleanupOptions = {},
 ): Promise<void> {
   const directory = transferTempDirectory(options.directory);
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
@@ -148,40 +207,37 @@ export async function cleanupStaleTransferTempFiles(
     return;
   }
 
-  let entries: string[];
-  try {
-    entries = await fs.promises.readdir(directory);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      logError(`Could not inspect transfer temp directory: ${directory}`, error);
-    }
-    return;
-  }
-
   const cutoff = Date.now() - maxAgeMs;
-  for (const entry of entries) {
-    if (!isTransferTempFile(entry)) {
-      continue;
-    }
-
-    const filePath = path.join(directory, entry);
-    try {
-      const stats = await fs.promises.lstat(filePath);
-      if (stats.mtimeMs <= cutoff) {
-        await fs.promises.rm(filePath, { force: true });
+  const stats = await scanBoundedDirectoryEntries(
+    directory,
+    "transfer temp directory",
+    options,
+    async (entry) => {
+      if (!isTransferTempFile(entry)) {
+        return;
       }
-    } catch (error) {
-      logError(`Could not remove stale transfer temp file: ${filePath}`, error);
-    }
-  }
+
+      const filePath = path.join(directory, entry);
+      try {
+        const stats = await fs.promises.lstat(filePath);
+        if (stats.mtimeMs <= cutoff) {
+          await fs.promises.rm(filePath, { force: true });
+        }
+      } catch (error) {
+        logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+      }
+    },
+  );
+  logBoundedCleanup("Transfer temp", stats);
 }
 
-export async function cleanupStaleDestinationTempFiles(options: {
-  directory: string;
-  maxAgeMs?: number;
-  preservePath?: string;
-}): Promise<void> {
+export async function cleanupStaleDestinationTempFiles(
+  options: {
+    directory: string;
+    maxAgeMs?: number;
+    preservePath?: string;
+  } & BoundedCleanupOptions,
+): Promise<void> {
   const directory = options.directory;
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
   const preservedPath =
@@ -196,39 +252,34 @@ export async function cleanupStaleDestinationTempFiles(options: {
     return;
   }
 
-  let entries: string[];
-  try {
-    entries = await fs.promises.readdir(directory);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      logError(`Could not inspect destination directory: ${directory}`, error);
-    }
-    return;
-  }
-
   const cutoff = Date.now() - maxAgeMs;
-  for (const entry of entries) {
-    if (!isDestinationTempFile(entry)) {
-      continue;
-    }
-
-    const filePath = path.join(directory, entry);
-    if (preservedPath !== undefined && path.resolve(filePath) === preservedPath) {
-      continue;
-    }
-
-    try {
-      const stats = await fs.promises.lstat(filePath);
-      if (stats.mtimeMs > cutoff) {
-        continue;
+  const stats = await scanBoundedDirectoryEntries(
+    directory,
+    "destination directory",
+    options,
+    async (entry) => {
+      if (!isDestinationTempFile(entry)) {
+        return;
       }
 
-      await fs.promises.rm(filePath, { force: true });
-    } catch (error) {
-      logError(`Could not clean stale destination temp file: ${filePath}`, error);
-    }
-  }
+      const filePath = path.join(directory, entry);
+      if (preservedPath !== undefined && path.resolve(filePath) === preservedPath) {
+        return;
+      }
+
+      try {
+        const stats = await fs.promises.lstat(filePath);
+        if (stats.mtimeMs > cutoff) {
+          return;
+        }
+
+        await fs.promises.rm(filePath, { force: true });
+      } catch (error) {
+        logError(`Could not clean stale destination temp file: ${filePath}`, error);
+      }
+    },
+  );
+  logBoundedCleanup("Destination temp", stats);
 }
 
 export async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {

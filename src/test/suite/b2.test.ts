@@ -1596,7 +1596,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("rejects public transfer temp directories", async () => {
+  test("repairs public transfer temp directories", async () => {
     if (process.platform === "win32") {
       return;
     }
@@ -1614,13 +1614,11 @@ suite("B2 transfer helpers", () => {
     });
 
     try {
-      await assert.rejects(
-        () => downloadStreamToFile(stream, destination, { temporaryDirectory }),
-        /group or other users|current user/i,
-      );
+      await downloadStreamToFile(stream, destination, { temporaryDirectory });
 
       assert.deepStrictEqual(fs.readdirSync(temporaryDirectory), []);
-      assert.strictEqual(fs.existsSync(destination), false);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+      assert.strictEqual(fs.statSync(temporaryDirectory).mode & 0o777, 0o700);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -3019,11 +3017,13 @@ suite("B2 transfer helpers", () => {
     );
   });
 
-  test("reports indeterminate stalled streaming upload finalization", async () => {
+  test("reports indeterminate timeout while SDK close finalization is pending", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-finalize-stall-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
-    let listCalls = 0;
+    const diagnosticsBefore = getUnfinishedUploadCleanupDiagnostics();
+    let uploadStarted = false;
+    let cleanupListCalls = 0;
     let cancelCalls = 0;
 
     const bucket = {
@@ -3031,17 +3031,24 @@ suite("B2 transfer helpers", () => {
         assert.fail("Expected non-empty files to use the streaming upload path");
       },
       async listUnfinishedLargeFiles() {
-        listCalls += 1;
+        if (uploadStarted) {
+          cleanupListCalls += 1;
+        }
         return { files: [], nextFileId: null };
       },
       async cancelLargeFile() {
         cancelCalls += 1;
       },
       file() {
+        uploadStarted = true;
         return {
           createWriteStream() {
             return {
-              writable: new WritableStream<Uint8Array>(),
+              writable: new WritableStream<Uint8Array>({
+                close() {
+                  return new Promise<void>(() => undefined);
+                },
+              }),
               done: new Promise<FileVersion>(() => undefined),
             };
           },
@@ -3053,13 +3060,19 @@ suite("B2 transfer helpers", () => {
       await assert.rejects(
         () =>
           uploadFileFromDisk(bucket, localPath, "remote/file.bin", {
-            stallTimeoutMs: 20,
+            stallTimeoutMs: 5,
+            finalizationTimeoutMs: 20,
           }),
         UploadIndeterminateError,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
-      assert.strictEqual(listCalls, 0);
+      assert.strictEqual(cleanupListCalls, 0);
       assert.strictEqual(cancelCalls, 0);
+      const diagnosticsAfter = getUnfinishedUploadCleanupDiagnostics();
+      assert.strictEqual(
+        diagnosticsAfter.indeterminateUploadCount,
+        diagnosticsBefore.indeterminateUploadCount + 1,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
