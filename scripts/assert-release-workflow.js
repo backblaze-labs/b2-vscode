@@ -381,7 +381,7 @@ function assertMarketplaceSecretStepsUseIsolatedPublisher(workflowToCheck = load
     const stepName = step.name ?? "<unnamed>";
     const run = normalizedCommand(String(step.run ?? ""));
     assert(
-      step.env?.VSCE_BIN === "${{ steps.publisher.outputs.bin }}",
+      normalizedGithubExpression(step.env?.VSCE_BIN) === "${{ steps.publisher.outputs.bin }}",
       `${stepName} must invoke the isolated publisher binary when VSCE_PAT is in scope.`,
     );
     assert(

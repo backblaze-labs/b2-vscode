@@ -163,6 +163,30 @@ suite("Release workflow guard assertions", () => {
     guard.assertMarketplacePublisherDependencyGate(workflow);
   });
 
+  test("accepts formatted publisher binary output expressions", () => {
+    const guard = loadReleaseWorkflowGuard();
+
+    guard.assertMarketplaceSecretStepsUseIsolatedPublisher({
+      jobs: {
+        publish: {
+          steps: [
+            {
+              name: "Publish to VS Code Marketplace",
+              env: {
+                VSCE_PAT: "${{ secrets.VSCE_KEY }}",
+                VSCE_BIN: "${{steps.publisher.outputs.bin}}",
+              },
+              run: [
+                'cd "$RUNNER_TEMP"',
+                'env -u NODE_OPTIONS -u NODE_PATH "$VSCE_BIN" publish --packagePath extension.vsix',
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    });
+  });
+
   test("rejects bracket-syntax marketplace secrets outside publish", () => {
     const guard = loadReleaseWorkflowGuard();
 
