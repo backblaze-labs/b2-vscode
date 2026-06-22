@@ -697,7 +697,10 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP") {
-      logError(`Could not resolve workspace transfer temp root: ${options.workspaceRoot}`, error);
+      logError(
+        `Could not resolve workspace destination cleanup root: ${options.workspaceRoot}`,
+        error,
+      );
     }
     return;
   }
