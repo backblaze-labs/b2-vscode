@@ -16,6 +16,10 @@ import {
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
 import {
+  sanitizePathError,
+  type PathMessageReplacement,
+} from "../../services/pathErrorSanitization";
+import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
@@ -43,10 +47,6 @@ function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: 
   }
 }
 
-function replaceAllLiteral(value: string, search: string, replacement: string): string {
-  return search ? value.split(search).join(replacement) : value;
-}
-
 function relativeDisplayPath(
   workspaceRoot: string,
   absolutePath: string,
@@ -68,50 +68,22 @@ function sanitizeWorkspaceDownloadError(
     return error;
   }
 
-  const errnoError = error as NodeJS.ErrnoException;
   const destinationDirectory = path.dirname(destination.path);
   const relativeDirectory = path.dirname(destination.relativePath);
   const relativeTemporaryDirectory = path.join(relativeDirectory, ".b2-vscode-transfers");
-  const replacements: Array<readonly [string | undefined, string]> = [
-    [temporaryDirectory, relativeTemporaryDirectory],
-    [destination.path, destination.relativePath],
-    [destinationDirectory, relativeDirectory === "." ? "." : relativeDirectory],
-    [destination.workspaceRoot, "."],
+  const replacements: PathMessageReplacement[] = [
+    { search: temporaryDirectory, replacement: relativeTemporaryDirectory },
+    { search: destination.path, replacement: destination.relativePath },
+    {
+      search: destinationDirectory,
+      replacement: relativeDirectory === "." ? "." : relativeDirectory,
+    },
+    { search: destination.workspaceRoot, replacement: "." },
   ];
-  if (typeof errnoError.path === "string") {
-    replacements.unshift([
-      errnoError.path,
-      relativeDisplayPath(destination.workspaceRoot, errnoError.path, destination.relativePath),
-    ]);
-  }
 
-  let message = error.message;
-  for (const [search, replacement] of replacements) {
-    message = replaceAllLiteral(message, search ?? "", replacement);
-  }
-  if (message === error.message) {
-    return error;
-  }
-
-  const sanitized = new Error(message);
-  sanitized.name = error.name;
-  if (typeof errnoError.code === "string") {
-    (sanitized as NodeJS.ErrnoException).code = errnoError.code;
-  }
-  if (typeof errnoError.errno === "number") {
-    (sanitized as NodeJS.ErrnoException).errno = errnoError.errno;
-  }
-  if (typeof errnoError.syscall === "string") {
-    (sanitized as NodeJS.ErrnoException).syscall = errnoError.syscall;
-  }
-  if (typeof errnoError.path === "string") {
-    (sanitized as NodeJS.ErrnoException).path = relativeDisplayPath(
-      destination.workspaceRoot,
-      errnoError.path,
-      destination.relativePath,
-    );
-  }
-  return sanitized;
+  return sanitizePathError(error, replacements, (pathValue) =>
+    relativeDisplayPath(destination.workspaceRoot, pathValue, destination.relativePath),
+  );
 }
 
 async function assertDestinationDoesNotExist(destinationPath: string): Promise<void> {

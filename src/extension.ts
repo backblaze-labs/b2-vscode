@@ -10,7 +10,10 @@
 import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
-import { cleanupStaleTransferTempFiles } from "./services/fileTransfers";
+import {
+  cleanupStaleTransferTempFiles,
+  cleanupWorkspaceTransferTempFiles,
+} from "./services/fileTransfers";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
@@ -24,6 +27,27 @@ import { formatB2UserMessage } from "./errors";
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
 
+function scheduleTempCleanups(context: vscode.ExtensionContext): void {
+  void cleanupStaleTransferTempFiles().catch((error) => {
+    logError("Could not clean stale transfer temp files during activation", error);
+  });
+  void cleanupStaleTempFileCache().catch((error) => {
+    logError("Could not clean stale temp file cache during activation", error);
+  });
+
+  const cleanupWorkspace = (folder: vscode.WorkspaceFolder): void => {
+    void cleanupWorkspaceTransferTempFiles({ workspaceRoot: folder.uri.fsPath }).catch((error) => {
+      logError(`Could not clean workspace transfer temp files: ${folder.uri.fsPath}`, error);
+    });
+  };
+  vscode.workspace.workspaceFolders?.forEach(cleanupWorkspace);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+      event.added.forEach(cleanupWorkspace);
+    }),
+  );
+}
+
 /**
  * Activate the B2 extension.
  */
@@ -32,14 +56,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Activating Backblaze B2 extension...");
-  void cleanupStaleTransferTempFiles().catch((error) => {
-    logError("Could not clean stale transfer temp files during activation", error);
-  });
-  try {
-    await cleanupStaleTempFileCache();
-  } catch (error) {
-    logError("Could not clean stale temp file cache during activation", error);
-  }
 
   // 1. Services
   const authService = new AuthService(context.secrets);
@@ -73,6 +89,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 6. Track disposables
   context.subscriptions.push(treeView, statusBar, authService, tempFileManager);
+  scheduleTempCleanups(context);
 
   // 7. Auto-auth: try to resolve stored/env credentials
   try {

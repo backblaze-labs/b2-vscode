@@ -401,7 +401,7 @@ suite("B2 LM tool failure handling", () => {
         let result: Awaited<ReturnType<typeof uploadFileOperation.execute>> | undefined;
         await withWindowUiStubs({}, async () => {
           result = await uploadFileOperation.execute(
-            { bucket: "b", localPath: "payload.txt", remotePath: "remote/payload.txt" },
+            { bucket: "b", localPath: "./payload.txt", remotePath: "remote/payload.txt" },
             { getClient: () => client },
           );
         });
@@ -409,7 +409,7 @@ suite("B2 LM tool failure handling", () => {
         if (!result) {
           throw new Error("uploadFileOperation did not return a result.");
         }
-        assert.match(result.message, /Uploaded payload\.txt to b2:\/\/b\/remote\/payload\.txt/);
+        assert.match(result.message, /Uploaded \.\/payload\.txt to b2:\/\/b\/remote\/payload\.txt/);
         assert.strictEqual(result.message.includes(workspaceDir), false);
       });
     } finally {
@@ -443,7 +443,7 @@ suite("B2 LM tool failure handling", () => {
         let result: Awaited<ReturnType<typeof downloadFileOperation.execute>> | undefined;
         await withWindowUiStubs({}, async () => {
           result = await downloadFileOperation.execute(
-            { bucket: "b", path: "remote/payload.txt", localPath: "downloads/payload.txt" },
+            { bucket: "b", path: "remote/payload.txt", localPath: "./downloads/payload.txt" },
             { getClient: () => client },
           );
         });
@@ -677,18 +677,25 @@ suite("B2 LM tool failure handling", () => {
 
     try {
       await withWorkspaceFolder(workspaceDir, async () => {
-        await assert.rejects(
-          () =>
-            downloadFileOperation.execute(
-              { bucket: "b", path: "payload.txt", localPath: ".git/hooks/pre-commit" },
-              { getClient: () => client },
-            ),
-          /control directory/i,
-        );
+        for (const localPath of [
+          ".git/hooks/pre-commit",
+          ".github/workflows/ci-helper.yml",
+          ".github./workflows/ci-helper.yml",
+        ]) {
+          await assert.rejects(
+            () =>
+              downloadFileOperation.execute(
+                { bucket: "b", path: "payload.txt", localPath },
+                { getClient: () => client },
+              ),
+            /control directory/i,
+          );
+        }
       });
 
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".git")), false);
+      assert.strictEqual(fs.existsSync(path.join(workspaceDir, ".github")), false);
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }

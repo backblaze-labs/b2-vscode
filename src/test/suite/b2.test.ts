@@ -33,6 +33,7 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
+  cleanupWorkspaceTransferTempFiles,
   DEFAULT_DOWNLOAD_MAX_BYTES,
   DownloadSizeLimitError,
   downloadStreamToFile,
@@ -1014,7 +1015,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("starts uploads without scanning unrelated unfinished uploads", async () => {
+  test("pre-upload cleanup scans only same-key unfinished uploads", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-no-pre-clean-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
@@ -1023,8 +1024,9 @@ suite("B2 transfer helpers", () => {
     let cancelCalls = 0;
 
     const bucket = {
-      async listUnfinishedLargeFiles() {
+      async listUnfinishedLargeFiles(options) {
         listCalls += 1;
+        assert.strictEqual(options?.namePrefix, "remote/file.bin");
         return {
           files: [
             {
@@ -1071,7 +1073,7 @@ suite("B2 transfer helpers", () => {
       });
 
       assert.strictEqual(result.fileId, "uploaded-id");
-      assert.strictEqual(listCalls, 0);
+      assert.strictEqual(listCalls, 1);
       assert.strictEqual(cancelCalls, 0);
       assert.deepStrictEqual(uploaded, [1, 2, 3]);
     } finally {
@@ -1079,12 +1081,13 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("does not cancel age-stamped unfinished uploads before streaming", async () => {
+  test("cancels stale extension-owned same-key uploads before streaming", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-pre-clean-"));
     const localPath = path.join(dir, "file.bin");
     fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
     const canceled: unknown[] = [];
     const uploaded: number[] = [];
+    let streamCreated = false;
 
     const bucket = {
       async listUnfinishedLargeFiles() {
@@ -1103,6 +1106,7 @@ suite("B2 transfer helpers", () => {
         };
       },
       async cancelLargeFile(fileId) {
+        assert.strictEqual(streamCreated, false);
         canceled.push(fileId);
       },
       file(fileName: string) {
@@ -1113,6 +1117,7 @@ suite("B2 transfer helpers", () => {
 
         return {
           createWriteStream() {
+            streamCreated = true;
             return {
               writable: new WritableStream<Uint8Array>({
                 write(chunk) {
@@ -1136,7 +1141,7 @@ suite("B2 transfer helpers", () => {
       const result = await uploadFileFromDisk(bucket, localPath, "remote/file.bin");
 
       assert.strictEqual(result.fileId, "uploaded-id");
-      assert.deepStrictEqual(canceled, []);
+      assert.deepStrictEqual(canceled, [largeFileId("stale-owned")]);
       assert.deepStrictEqual(uploaded, [1, 2, 3]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1157,7 +1162,18 @@ suite("B2 transfer helpers", () => {
             {
               fileId: largeFileId("fresh-upload"),
               fileName: "remote/file.bin",
-              fileInfo: { "b2-vscode-upload-started-ms": String(Date.now()) },
+              fileInfo: {
+                "b2-vscode-upload-owner": "b2-vscode",
+                "b2-vscode-upload-started-ms": String(Date.now()),
+              },
+            },
+            {
+              fileId: largeFileId("remote-upload"),
+              fileName: "remote/file.bin",
+              fileInfo: {
+                "b2-vscode-upload-owner": "other-client",
+                "b2-vscode-upload-started-ms": "1",
+              },
             },
           ],
           nextFileId: null,
@@ -1269,7 +1285,7 @@ suite("B2 transfer helpers", () => {
         /simulated upload failure/i,
       );
 
-      assert.strictEqual(listCalls, 1);
+      assert.strictEqual(listCalls, 2);
       assert.deepStrictEqual(canceled, []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1291,7 +1307,7 @@ suite("B2 transfer helpers", () => {
     const bucket = {
       async listUnfinishedLargeFiles(options) {
         listCalls += 1;
-        if (listCalls === 1) {
+        if (listCalls === 3) {
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
 
@@ -1349,10 +1365,10 @@ suite("B2 transfer helpers", () => {
         results.map((result) => result.status),
         ["rejected", "rejected"],
       );
-      assert.strictEqual(listCalls, 2);
+      assert.strictEqual(listCalls, 4);
       assert.deepStrictEqual(canceled, [
-        largeFileId("owned-cleanup-1"),
-        largeFileId("owned-cleanup-2"),
+        largeFileId("owned-cleanup-3"),
+        largeFileId("owned-cleanup-4"),
       ]);
       const diagnosticsAfter = getUnfinishedUploadCleanupDiagnostics();
       assert.ok(
@@ -1585,6 +1601,12 @@ suite("B2 transfer helpers", () => {
     const bucket = {
       listUnfinishedLargeFiles() {
         listCalls += 1;
+        if (listCalls === 1) {
+          return Promise.resolve({
+            files: [],
+            nextFileId: null,
+          });
+        }
         return new Promise<never>(() => undefined);
       },
       async cancelLargeFile() {
@@ -1620,7 +1642,7 @@ suite("B2 transfer helpers", () => {
       );
 
       assert.strictEqual(streamCreated, true);
-      assert.strictEqual(listCalls, 1);
+      assert.strictEqual(listCalls, 2);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1747,6 +1769,28 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("bounds stale temp-cache cleanup work", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-budget-"));
+    const tempRoot = path.join(dir, "cache");
+    const first = path.join(tempRoot, "bucket", "first.txt");
+    const second = path.join(tempRoot, "bucket", "second.txt");
+    fs.mkdirSync(path.dirname(first), { recursive: true });
+    fs.writeFileSync(first, "first");
+    fs.writeFileSync(second, "second");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(first, oldTime, oldTime);
+    fs.utimesSync(second, oldTime, oldTime);
+
+    try {
+      await cleanupStaleTempFileCache({ tempRoot, maxAgeMs: 1_000, maxEntries: 2 });
+
+      const remaining = [first, second].filter((filePath) => fs.existsSync(filePath));
+      assert.strictEqual(remaining.length, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects symlinked temp cache roots", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-cache-symlink-"));
     const target = path.join(dir, "target");
@@ -1860,6 +1904,32 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(complete), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans stale workspace transfer temp files", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
+    const transferDir = path.join(workspaceRoot, "downloads", ".b2-vscode-transfers");
+    const stale = path.join(transferDir, "b2-transfer-1-stale.tmp");
+    const fresh = path.join(transferDir, "b2-transfer-1-fresh.tmp");
+    fs.mkdirSync(transferDir, { recursive: true });
+    fs.writeFileSync(stale, "stale");
+    fs.writeFileSync(fresh, "fresh");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(stale, oldTime, oldTime);
+
+    try {
+      await cleanupWorkspaceTransferTempFiles({
+        workspaceRoot,
+        maxAgeMs: 1_000,
+        maxEntries: 20,
+        budgetMs: 1_000,
+      });
+
+      assert.strictEqual(fs.existsSync(stale), false);
+      assert.strictEqual(fs.readFileSync(fresh, "utf8"), "fresh");
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }
   });
 

@@ -22,6 +22,7 @@ import {
   isPathInsideOrEqual,
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
+import { sanitizePathError } from "../../services/pathErrorSanitization";
 import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
@@ -47,48 +48,17 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
   }
 }
 
-function replaceAllLiteral(value: string, search: string, replacement: string): string {
-  return search ? value.split(search).join(replacement) : value;
-}
-
 function sanitizeWorkspaceLocalError(
   error: unknown,
   relativePath: string,
   absolutePaths: ReadonlyArray<string | undefined>,
 ): unknown {
-  if (!(error instanceof Error)) {
-    return error;
-  }
-
   const displayPath = relativePath || ".";
-  const errnoError = error as NodeJS.ErrnoException;
-  let message = error.message;
-  const pathsToReplace = [
-    ...absolutePaths,
-    typeof errnoError.path === "string" ? errnoError.path : undefined,
-  ];
-  for (const absolutePath of pathsToReplace) {
-    message = replaceAllLiteral(message, absolutePath ?? "", displayPath);
-  }
-  if (message === error.message) {
-    return error;
-  }
-
-  const sanitized = new Error(message);
-  sanitized.name = error.name;
-  if (typeof errnoError.code === "string") {
-    (sanitized as NodeJS.ErrnoException).code = errnoError.code;
-  }
-  if (typeof errnoError.errno === "number") {
-    (sanitized as NodeJS.ErrnoException).errno = errnoError.errno;
-  }
-  if (typeof errnoError.syscall === "string") {
-    (sanitized as NodeJS.ErrnoException).syscall = errnoError.syscall;
-  }
-  if (typeof errnoError.path === "string") {
-    (sanitized as NodeJS.ErrnoException).path = displayPath;
-  }
-  return sanitized;
+  return sanitizePathError(
+    error,
+    absolutePaths.map((absolutePath) => ({ search: absolutePath, replacement: displayPath })),
+    () => displayPath,
+  );
 }
 
 async function workspaceUploadSource(relativePath: string): Promise<UploadSourceFile> {

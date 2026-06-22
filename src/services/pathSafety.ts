@@ -30,18 +30,32 @@ function portableSegments(relativePath: string, label: string): string[] {
     throw new UnsafePathError(`${label} must be a relative path inside the allowed directory.`);
   }
 
-  const segments = relativePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  const segments = relativePath
+    .split(/[\\/]+/)
+    .filter((segment) => segment.length > 0 && segment !== ".");
   if (segments.length === 0) {
     throw new UnsafePathError(`${label} must not be empty.`);
   }
-  if (segments.some((segment) => segment === "." || segment === "..")) {
+  if (segments.some((segment) => segment === "..")) {
     throw new UnsafePathError(`${label} must not contain path traversal segments.`);
   }
 
   return segments;
 }
 
-const WORKSPACE_CONTROL_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
+const WORKSPACE_CONTROL_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".vscode",
+  ".idea",
+  ".github",
+  ".devcontainer",
+  ".husky",
+  ".circleci",
+  ".gitlab",
+  ".gitea",
+]);
 
 export interface EnsureRealDirectoryOptions {
   readonly mode?: number;
@@ -153,7 +167,9 @@ export function findWorkspaceControlDirectory(
   return relative
     .split(path.sep)
     .filter((segment) => segment.length > 0)
-    .find((segment) => WORKSPACE_CONTROL_DIRECTORIES.has(segment.toLowerCase()));
+    .find((segment) =>
+      WORKSPACE_CONTROL_DIRECTORIES.has(segment.toLowerCase().replace(/[. ]+$/u, "")),
+    );
 }
 
 export function resolveContainedRelativePath(

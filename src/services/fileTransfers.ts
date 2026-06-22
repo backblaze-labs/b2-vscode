@@ -17,7 +17,7 @@ import {
   type ProgressListener,
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
-import { logError } from "../logger";
+import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
 import {
   ensureContainedDirectoryPath,
@@ -35,12 +35,15 @@ const TRANSFER_TEMP_SUFFIX = ".tmp";
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const WORKSPACE_TRANSFER_TEMP_CLEANUP_BUDGET_MS = 2_000;
+const WORKSPACE_TRANSFER_TEMP_CLEANUP_MAX_ENTRIES = 2_000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const STALE_CLEANUP_THROTTLE_MAX_ENTRIES = 256;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS = 10;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
+const UNFINISHED_UPLOAD_STALE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const UPLOAD_OWNER_INFO_KEY = "b2-vscode-upload-owner";
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 const UPLOAD_STARTED_MS_INFO_KEY = "b2-vscode-upload-started-ms";
@@ -97,6 +100,7 @@ export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
   readonly unfinishedCleanupMaxCancels?: number;
   readonly unfinishedCleanupTimeoutMs?: number;
   readonly unfinishedCleanupBudgetMs?: number;
+  readonly unfinishedCleanupMinAgeMs?: number;
 }
 
 export interface UploadBucketHandle {
@@ -436,6 +440,88 @@ export async function cleanupStaleTransferTempFiles(
     } catch (error) {
       logError(`Could not remove stale transfer temp file: ${filePath}`, error);
     }
+  }
+}
+
+export async function cleanupWorkspaceTransferTempFiles(options: {
+  readonly workspaceRoot: string;
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
+}): Promise<void> {
+  const workspaceRoot = path.resolve(options.workspaceRoot);
+  try {
+    if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
+      return;
+    }
+  } catch (error) {
+    logError(`Could not inspect workspace root for transfer temp cleanup: ${workspaceRoot}`, error);
+    return;
+  }
+
+  const deadlineMs =
+    Date.now() + Math.max(0, options.budgetMs ?? WORKSPACE_TRANSFER_TEMP_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? WORKSPACE_TRANSFER_TEMP_CLEANUP_MAX_ENTRIES);
+  const stack = [workspaceRoot];
+  let scannedEntries = 0;
+  let cleanedDirectories = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+
+  while (stack.length > 0) {
+    if (Date.now() >= deadlineMs) {
+      budgetHit = true;
+      break;
+    }
+    if (scannedEntries >= maxEntries) {
+      maxEntriesHit = true;
+      break;
+    }
+
+    const directory = stack.pop() as string;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
+        logError(`Could not inspect workspace directory for transfer cleanup: ${directory}`, error);
+      }
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (Date.now() >= deadlineMs) {
+        budgetHit = true;
+        break;
+      }
+      if (scannedEntries >= maxEntries) {
+        maxEntriesHit = true;
+        break;
+      }
+
+      scannedEntries += 1;
+      if (!entry.isDirectory() || entry.isSymbolicLink()) {
+        continue;
+      }
+
+      const entryPath = path.join(directory, entry.name);
+      if (entry.name === `.${TRANSFER_TEMP_DIR_NAME}`) {
+        await cleanupStaleTransferTempFiles({
+          directory: entryPath,
+          maxAgeMs: options.maxAgeMs,
+        });
+        cleanedDirectories += 1;
+        continue;
+      }
+      stack.push(entryPath);
+    }
+  }
+
+  if (scannedEntries > 0 || cleanedDirectories > 0 || budgetHit || maxEntriesHit) {
+    log(
+      `Workspace transfer temp cleanup scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedDirectories} director${cleanedDirectories === 1 ? "y" : "ies"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+    );
   }
 }
 
@@ -840,6 +926,37 @@ async function cleanupOwnedUnfinishedUpload(
   );
 }
 
+async function cleanupStaleSameKeyUnfinishedUploads(
+  bucket: UploadBucketHandle,
+  remotePath: string,
+  options: Pick<
+    UploadFileFromDiskOptions,
+    | "unfinishedCleanupMaxPages"
+    | "unfinishedCleanupMaxCancels"
+    | "unfinishedCleanupTimeoutMs"
+    | "unfinishedCleanupBudgetMs"
+    | "unfinishedCleanupMinAgeMs"
+  > = {},
+): Promise<void> {
+  const minAgeMs = options.unfinishedCleanupMinAgeMs ?? UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
+  const cutoffMs = Date.now() - Math.max(0, minAgeMs);
+  await cleanupMatchingUnfinishedUploads(
+    bucket,
+    remotePath,
+    options,
+    "Stale same-key unfinished upload",
+    (file) => {
+      const startedMs = Number(file.fileInfo?.[UPLOAD_STARTED_MS_INFO_KEY]);
+      return (
+        file.fileName === remotePath &&
+        file.fileInfo?.[UPLOAD_OWNER_INFO_KEY] === "b2-vscode" &&
+        Number.isFinite(startedMs) &&
+        startedMs <= cutoffMs
+      );
+    },
+  );
+}
+
 async function runSerializedUnfinishedUploadCleanup(
   _description: string,
   cleanup: () => Promise<void>,
@@ -1007,6 +1124,10 @@ export async function uploadFileFromDisk(
     }
 
     uploadSessionId = crypto.randomUUID();
+    await cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, options).catch((error) => {
+      logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
+    });
+
     const { writable, done } = bucket.file(remotePath).createWriteStream({
       partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
       fileInfo: {
