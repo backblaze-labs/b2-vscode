@@ -685,6 +685,7 @@ export async function resolveWorkspaceFilePath(
     workspaceRoot,
     path.dirname(resolvedPath),
     "Workspace localPath directory",
+    { recursive: true },
   );
   await assertSafeFileWritePath(workspaceRoot, resolvedPath);
   await assertFileDoesNotExist(resolvedPath);

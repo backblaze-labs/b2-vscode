@@ -61,6 +61,7 @@ import {
   ensurePrivateDirectory,
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
+  resolveWorkspaceFilePath,
 } from "../../services/pathSafety";
 import {
   cleanupStaleTransferTempFiles as cleanupStaleManagedTransferTempFiles,
@@ -266,6 +267,48 @@ suite("B2 utility helpers", () => {
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("uses recursive workspace parent creation to tolerate races", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-race-"));
+    const parentDirectory = path.join(workspaceDir, "nested");
+    const destinationPath = path.join(parentDirectory, "file.txt");
+    const mutableFs = require("fs") as typeof import("fs");
+    const originalMkdir = mutableFs.promises.mkdir;
+    let observedParentMkdir = false;
+    mutableFs.promises.mkdir = (async (
+      directoryPath: Parameters<typeof fs.promises.mkdir>[0],
+      options?: Parameters<typeof fs.promises.mkdir>[1],
+    ) => {
+      if (path.resolve(directoryPath as string) === parentDirectory) {
+        observedParentMkdir = true;
+        await originalMkdir(directoryPath, { recursive: true });
+        const recursive =
+          typeof options === "object" &&
+          options !== null &&
+          "recursive" in options &&
+          options.recursive === true;
+        if (!recursive) {
+          const error = new Error("Directory exists") as NodeJS.ErrnoException;
+          error.code = "EEXIST";
+          throw error;
+        }
+      }
+
+      return originalMkdir(directoryPath, options);
+    }) as typeof mutableFs.promises.mkdir;
+
+    try {
+      const resolvedPath = await resolveWorkspaceFilePath(workspaceDir, "nested/file.txt", {
+        access: "write-new",
+      });
+
+      assert.strictEqual(resolvedPath, destinationPath);
+      assert.strictEqual(observedParentMkdir, true);
+    } finally {
+      mutableFs.promises.mkdir = originalMkdir;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
   });
 });
