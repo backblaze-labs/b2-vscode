@@ -10,8 +10,8 @@ import { buildB2DownloadUrl } from "../../utils/urlEncoding";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-  MIN_PRESIGN_URL_PREFIX_LENGTH,
 } from "../presignUrlLimits";
+import { normalizeB2ObjectNameInput } from "../b2ObjectName";
 
 interface PresignUrlParams {
   bucket: string;
@@ -43,26 +43,59 @@ export function normalizePresignUrlExpiration(expiresIn: number | undefined): nu
   return expiresIn;
 }
 
-export function normalizePresignUrlPath(filePath: string): string {
-  if (!filePath) {
-    throw new Error("path must be a non-empty B2 object-name prefix.");
+interface PresignableBucket {
+  listFileNames(options: { prefix: string; pageSize: number }): Promise<{
+    files: readonly { fileName: string; action?: string }[];
+    nextFileName?: string | null;
+  }>;
+  getDownloadAuthorization(
+    filePath: string,
+    expiresIn: number,
+  ): Promise<{ authorizationToken: string }>;
+}
+
+function isCurrentDownloadableFile(file: { action?: string }): boolean {
+  return file.action !== "folder" && file.action !== "hide";
+}
+
+function isMissingListFilesCapabilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
   }
 
-  if (filePath.includes("\0")) {
-    throw new Error("path must not contain NUL bytes.");
+  const details = error as Error & { code?: string };
+  return String(details.code ?? "").toLowerCase() === "missing_capability";
+}
+
+async function assertExactCurrentObjectWithoutAdjacentPrefix(
+  bucket: PresignableBucket,
+  filePath: string,
+): Promise<void> {
+  let page: Awaited<ReturnType<PresignableBucket["listFileNames"]>>;
+  try {
+    page = await bucket.listFileNames({ prefix: filePath, pageSize: 2 });
+  } catch (error) {
+    if (isMissingListFilesCapabilityError(error)) {
+      throw new Error(
+        "presignUrl requires listFiles capability to verify the object before issuing B2's prefix-scoped download authorization.",
+      );
+    }
+    throw error;
   }
 
-  if (filePath.endsWith("/")) {
-    throw new Error("path must not end with a slash because folder prefixes are rejected.");
-  }
-
-  if (filePath.length < MIN_PRESIGN_URL_PREFIX_LENGTH) {
+  const currentMatches = page.files.filter(isCurrentDownloadableFile);
+  const exactMatches = currentMatches.filter((file) => file.fileName === filePath);
+  if (exactMatches.length !== 1) {
     throw new Error(
-      `path must be at least ${MIN_PRESIGN_URL_PREFIX_LENGTH} characters to avoid broad prefix authorization.`,
+      "path must exactly match one current downloadable B2 object before a presigned URL can be created.",
     );
   }
 
-  return filePath;
+  if (currentMatches.some((file) => file.fileName !== filePath) || page.nextFileName) {
+    throw new Error(
+      `path is ambiguous for B2 prefix authorization: a URL for ${filePath} would authorize ALL object names beginning with that value, not just this file.`,
+    );
+  }
 }
 
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {
@@ -72,13 +105,14 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const filePath = normalizePresignUrlPath(params.path);
+    const filePath = normalizeB2ObjectNameInput(params.path);
     const expiresIn = normalizePresignUrlExpiration(params.expiresIn);
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
 
+    await assertExactCurrentObjectWithoutAdjacentPrefix(bucket, filePath);
     const { authorizationToken } = await bucket.getDownloadAuthorization(filePath, expiresIn);
     const downloadUrl = client.accountInfo.getDownloadUrl();
     const url = buildB2DownloadUrl(downloadUrl, params.bucket, filePath, authorizationToken);
@@ -87,7 +121,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
       url,
       expiresIn,
       authorizedPrefix: filePath,
-      message: `Pre-signed URL authorizes B2 object names starting with ${filePath} for ${expiresIn}s.`,
+      message: `Pre-signed URL authorizes ALL B2 object names beginning with ${filePath}, not just this file, for ${expiresIn}s. Current bucket contents were checked and no adjacent same-prefix object was found. Use the dedicated url field for the token-bearing link.`,
     };
   },
 };

@@ -2,9 +2,10 @@
  * Filesystem-backed B2 transfer helpers.
  *
  * This module intentionally keeps transfer timeout, local staging, placement,
- * upload-session markers, and multipart cleanup orchestration together because
- * their ordering is part of the transfer contract. Keep the exported surface
- * narrow if these helpers are split into focused modules later.
+ * upload-session markers, and multipart cleanup orchestration together while
+ * the transfer contract depends on their ordering. Split the marker/cleanup
+ * cluster once it can own a stable bucket abstraction and its own diagnostics
+ * without exposing staging internals back to callers.
  *
  * @module services/fileTransfers
  */
@@ -26,12 +27,14 @@ import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
 import {
   ensureContainedDirectoryPath,
+  assertPrivateDirectory,
   ensurePrivateDirectory,
   ensureRealDirectory,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
-  writeFileNoFollow,
-  writeFileNoFollowWithinRoot,
+  replaceFileNoFollow,
+  writeNewFileNoFollow,
+  writeNewFileNoFollowWithinRoot,
 } from "./pathSafety";
 
 export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -142,6 +145,11 @@ export interface StaleUnfinishedUploadCleanupOptions extends Pick<
 > {
   readonly remotePath?: string;
   readonly unfinishedCleanupMaxAgeMs?: number;
+}
+
+export interface StaleUnfinishedUploadCleanupResult {
+  readonly reclaimedOwnedStaleUploadCount: number;
+  readonly ignoredUnownedStaleUploadCount: number;
 }
 
 interface UnfinishedLargeFile {
@@ -470,16 +478,22 @@ export async function cleanupStaleTransferTempFiles(
       continue;
     }
 
-    const filePath = path.join(directory, entry);
-    try {
-      const stats = await fs.promises.lstat(filePath);
-      if (stats.mtimeMs <= cutoff) {
-        await fs.promises.rm(filePath, { force: true });
-      }
-    } catch (error) {
-      logError(`Could not remove stale transfer temp file: ${filePath}`, error);
-    }
+    await cleanupStaleTransferTempFile(path.join(directory, entry), cutoff);
   }
+}
+
+async function cleanupStaleTransferTempFile(filePath: string, cutoff: number): Promise<boolean> {
+  try {
+    const stats = await fs.promises.lstat(filePath);
+    if (stats.mtimeMs <= cutoff) {
+      await fs.promises.rm(filePath, { force: true });
+      return true;
+    }
+  } catch (error) {
+    logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+  }
+
+  return false;
 }
 
 export async function cleanupWorkspaceTransferTempFiles(options: {
@@ -504,8 +518,10 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
   const stack = [workspaceRoot];
   let scannedEntries = 0;
   let cleanedDirectories = 0;
+  let cleanedFiles = 0;
   let budgetHit = false;
   let maxEntriesHit = false;
+  const cutoff = Date.now() - (options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS);
 
   while (stack.length > 0) {
     if (Date.now() >= deadlineMs) {
@@ -540,11 +556,18 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
       }
 
       scannedEntries += 1;
+      const entryPath = path.join(directory, entry.name);
+      if (!entry.isDirectory() && isTransferTempFile(entry.name)) {
+        if (await cleanupStaleTransferTempFile(entryPath, cutoff)) {
+          cleanedFiles += 1;
+        }
+        continue;
+      }
+
       if (!entry.isDirectory() || entry.isSymbolicLink()) {
         continue;
       }
 
-      const entryPath = path.join(directory, entry.name);
       if (entry.name === `.${TRANSFER_TEMP_DIR_NAME}`) {
         await cleanupStaleTransferTempFiles({
           directory: entryPath,
@@ -557,9 +580,15 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
     }
   }
 
-  if (scannedEntries > 0 || cleanedDirectories > 0 || budgetHit || maxEntriesHit) {
+  if (
+    scannedEntries > 0 ||
+    cleanedDirectories > 0 ||
+    cleanedFiles > 0 ||
+    budgetHit ||
+    maxEntriesHit
+  ) {
     log(
-      `Workspace transfer temp cleanup scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedDirectories} director${cleanedDirectories === 1 ? "y" : "ies"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+      `Workspace transfer temp cleanup scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedDirectories} director${cleanedDirectories === 1 ? "y" : "ies"} and ${cleanedFiles} loose temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
     );
   }
 }
@@ -651,17 +680,23 @@ async function copyIntoPlaceNoFollow(
   allowedRootDirectory?: string,
 ): Promise<void> {
   if (allowedRootDirectory !== undefined) {
-    await writeFileNoFollowWithinRoot(
+    if (options.overwrite !== false) {
+      throw new Error("Root-bound downloads must be written without overwrite.");
+    }
+    await writeNewFileNoFollowWithinRoot(
       allowedRootDirectory,
       destinationPath,
       fs.createReadStream(sourcePath),
       {
-        ...options,
         label: "download target",
       },
     );
   } else {
-    await writeFileNoFollow(destinationPath, fs.createReadStream(sourcePath), options);
+    if (options.overwrite === false) {
+      await writeNewFileNoFollow(destinationPath, fs.createReadStream(sourcePath));
+    } else {
+      await replaceFileNoFollow(destinationPath, fs.createReadStream(sourcePath));
+    }
   }
   await removeTempFile(sourcePath);
 }
@@ -1108,7 +1143,7 @@ function uploadSessionMarkerPath(remotePath: string, uploadSessionId: string): s
   );
 }
 
-async function cleanupStaleUploadSessionMarkers(
+export async function cleanupStaleUploadSessionMarkers(
   maxAgeMs = STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS,
 ): Promise<void> {
   const directory = uploadSessionMarkerDirectory();
@@ -1116,6 +1151,7 @@ async function cleanupStaleUploadSessionMarkers(
     if (!(await pathExistsAsRealDirectory(directory, "Upload session marker directory"))) {
       return;
     }
+    await assertPrivateDirectory(directory, "Upload session marker directory");
   } catch (error) {
     logError(`Could not inspect upload session marker directory: ${directory}`, error);
     return;
@@ -1160,12 +1196,9 @@ async function writeUploadSessionMarker(marker: UploadSessionMarker): Promise<vo
     recursive: true,
     mode: 0o700,
   });
-  await writeFileNoFollow(
+  await writeNewFileNoFollow(
     uploadSessionMarkerPath(marker.remotePath, marker.uploadSessionId),
     JSON.stringify(marker),
-    {
-      overwrite: false,
-    },
   );
 }
 
@@ -1190,6 +1223,7 @@ async function hasMatchingUploadSessionMarker(
   }
 
   try {
+    await assertPrivateDirectory(uploadSessionMarkerDirectory(), "Upload session marker directory");
     const marker = JSON.parse(
       await fs.promises.readFile(uploadSessionMarkerPath(remotePath, uploadSessionId), "utf8"),
     ) as Partial<UploadSessionMarker>;
@@ -1238,7 +1272,7 @@ async function cancelLargeFileSafely(
 export async function cleanupStaleUnfinishedUploads(
   bucket: UploadBucketHandle,
   options: StaleUnfinishedUploadCleanupOptions = {},
-): Promise<void> {
+): Promise<StaleUnfinishedUploadCleanupResult> {
   await cleanupStaleUploadSessionMarkers().catch((error) => {
     logError("Could not clean stale upload session markers", error);
   });
@@ -1280,6 +1314,11 @@ export async function cleanupStaleUnfinishedUploads(
       `Ignored ${ignoredUnownedStaleUploadCount} unowned stale unfinished upload(s); local owner marker is required before cancellation.`,
     );
   }
+
+  return {
+    reclaimedOwnedStaleUploadCount,
+    ignoredUnownedStaleUploadCount,
+  };
 }
 
 async function cleanupOwnedUnfinishedUpload(
@@ -1324,22 +1363,24 @@ async function cleanupStaleSameKeyUnfinishedUploads(
 ): Promise<void> {
   const minAgeMs = options.unfinishedCleanupMinAgeMs ?? UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
   const cutoffMs = Date.now() - Math.max(0, minAgeMs);
-  await cleanupMatchingUnfinishedUploads(
+  const canceledCount = await cleanupMatchingUnfinishedUploads(
     bucket,
     remotePath,
     options,
     "Stale same-key unfinished upload",
-    async (file) => {
+    (file) => {
       const startedMs = startedMsFromFileInfo(file.fileInfo);
-      const uploadSessionId = file.fileInfo?.[UPLOAD_SESSION_ID_INFO_KEY];
       return (
         file.fileName === remotePath &&
+        file.fileInfo?.[UPLOAD_OWNER_INFO_KEY] === "b2-vscode" &&
         startedMs !== undefined &&
-        startedMs <= cutoffMs &&
-        (await hasMatchingUploadSessionMarker(remotePath, uploadSessionId, startedMs))
+        startedMs <= cutoffMs
       );
     },
   );
+  if (canceledCount > 0) {
+    log(`Canceled ${canceledCount} stale same-key unfinished upload(s) for ${remotePath}.`);
+  }
 }
 
 async function runSerializedUnfinishedUploadCleanup<T>(cleanup: () => Promise<T>): Promise<T> {

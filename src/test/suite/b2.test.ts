@@ -63,6 +63,7 @@ import {
   releasePrivateTempRoot,
 } from "../../utils/privateTempRoot";
 import type { B2Credentials } from "../../services/authService";
+import { cleanupStaleUnfinishedUploadsForClient } from "../../extension";
 import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
@@ -1555,7 +1556,7 @@ suite("B2 transfer helpers", () => {
             nextFileId: null,
           };
         },
-        async cancelLargeFile(fileId) {
+        async cancelLargeFile(fileId: unknown) {
           reclaimed.push(fileId);
         },
         file() {
@@ -1572,6 +1573,113 @@ suite("B2 transfer helpers", () => {
       });
 
       assert.deepStrictEqual(reclaimed, [largeFileId("locally-owned-stale-upload")]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("activation stale-upload sweep reclaims marked uploads and ignores spoofed metadata", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-activation-reclaim-"));
+    const localPath = path.join(dir, "file.bin");
+    const remotePath = "remote/file.bin";
+    fs.writeFileSync(localPath, Buffer.from([1, 2, 3]));
+    let capturedFileInfo: Record<string, string> | undefined;
+
+    const interruptedBucket = {
+      async listUnfinishedLargeFiles() {
+        return { files: [], nextFileId: null };
+      },
+      async cancelLargeFile() {
+        assert.fail("First cleanup should not have a matching remote upload to cancel");
+      },
+      file(fileName: string) {
+        assert.strictEqual(fileName, remotePath);
+        return {
+          createWriteStream(options) {
+            capturedFileInfo = options?.fileInfo;
+            return {
+              writable: new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error("activation marker setup failure");
+                },
+              }),
+              done: new Promise<FileVersion>(() => undefined),
+            };
+          },
+        };
+      },
+      async upload() {
+        assert.fail("Expected non-empty local files to use the streaming upload path");
+      },
+    } satisfies UploadBucketHandle;
+
+    try {
+      await assert.rejects(
+        () => uploadFileFromDisk(interruptedBucket, localPath, remotePath),
+        /activation marker setup failure/i,
+      );
+      assert.ok(capturedFileInfo);
+
+      const reclaimed: unknown[] = [];
+      let spoofedCancelCalls = 0;
+      const reclaimBucket = {
+        name: "reclaim-bucket",
+        async listUnfinishedLargeFiles() {
+          return {
+            files: [
+              {
+                fileId: largeFileId("activation-reclaimed"),
+                fileName: remotePath,
+                fileInfo: capturedFileInfo,
+              },
+            ],
+            nextFileId: null,
+          };
+        },
+        async cancelLargeFile(fileId: unknown) {
+          reclaimed.push(fileId);
+        },
+      } as unknown as UploadBucketHandle & { name: string };
+      const spoofedBucket = {
+        name: "spoofed-bucket",
+        async listUnfinishedLargeFiles() {
+          return {
+            files: [
+              {
+                fileId: largeFileId("activation-spoofed"),
+                fileName: "remote/spoofed.bin",
+                fileInfo: {
+                  "b2-vscode-upload-owner": "b2-vscode",
+                  "b2-vscode-upload-session-id": "missing-local-marker",
+                  "b2-vscode-upload-started-ms": "0",
+                },
+              },
+            ],
+            nextFileId: null,
+          };
+        },
+        async cancelLargeFile() {
+          spoofedCancelCalls += 1;
+        },
+      } as unknown as UploadBucketHandle & { name: string };
+      const client = {
+        async listBuckets() {
+          return [reclaimBucket, spoofedBucket];
+        },
+      } as unknown as Pick<B2Client, "listBuckets">;
+
+      const result = await cleanupStaleUnfinishedUploadsForClient(client, {
+        unfinishedCleanupMaxAgeMs: -1,
+      });
+
+      assert.deepStrictEqual(reclaimed, [largeFileId("activation-reclaimed")]);
+      assert.strictEqual(spoofedCancelCalls, 0);
+      assert.deepStrictEqual(result, {
+        bucketCount: 2,
+        reclaimedOwnedStaleUploadCount: 1,
+        ignoredUnownedStaleUploadCount: 1,
+        failedBucketCount: 0,
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1738,15 +1846,13 @@ suite("B2 transfer helpers", () => {
 
   test("aborts timed-out unfinished upload list operations", async () => {
     let listSignal: AbortSignal | undefined;
-    let resolveAborted: (value: boolean) => void = () => undefined;
-    const aborted = new Promise<boolean>((resolve) => {
-      resolveAborted = resolve;
-    });
     const bucket = {
       listUnfinishedLargeFiles(options) {
         listSignal = options?.signal;
-        listSignal?.addEventListener("abort", () => resolveAborted(true), { once: true });
         return new Promise<never>(() => undefined);
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected timed-out list cleanup not to cancel uploads");
       },
       file() {
         assert.fail("Expected cleanup test not to open an upload stream");
@@ -1756,14 +1862,11 @@ suite("B2 transfer helpers", () => {
       },
     } satisfies UploadBucketHandle;
 
-    await Promise.all([
-      assert.rejects(
-        () => cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupTimeoutMs: 20 }),
-        /timed out/i,
-      ),
-      aborted,
-    ]);
+    const diagnosticsBefore = getUnfinishedUploadCleanupDiagnostics();
+    await cleanupStaleUnfinishedUploads(bucket, { unfinishedCleanupTimeoutMs: 20 });
     assert.strictEqual(listSignal?.aborted, true);
+    const diagnosticsAfter = getUnfinishedUploadCleanupDiagnostics();
+    assert.ok(diagnosticsAfter.timedOutCleanupCount > diagnosticsBefore.timedOutCleanupCount);
   });
 
   test("aborts timed-out unfinished upload cancel operations", async () => {
@@ -2524,13 +2627,23 @@ suite("B2 transfer helpers", () => {
   test("cleans stale workspace transfer temp files", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
     const transferDir = path.join(workspaceRoot, "downloads", ".b2-vscode-transfers");
-    const stale = path.join(transferDir, "b2-transfer-1-stale.tmp");
-    const fresh = path.join(transferDir, "b2-transfer-1-fresh.tmp");
+    const nestedDir = path.join(workspaceRoot, "downloads", "nested");
+    const stale = path.join(transferDir, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");
+    const fresh = path.join(transferDir, "b2-transfer-1-111111111111111111111111.tmp");
+    const looseStale = path.join(nestedDir, "b2-transfer-1-222222222222222222222222.tmp");
+    const looseFresh = path.join(nestedDir, "b2-transfer-1-333333333333333333333333.tmp");
+    const userLike = path.join(nestedDir, "b2-transfer-1-stale.tmp");
     fs.mkdirSync(transferDir, { recursive: true });
+    fs.mkdirSync(nestedDir, { recursive: true });
     fs.writeFileSync(stale, "stale");
     fs.writeFileSync(fresh, "fresh");
+    fs.writeFileSync(looseStale, "loose stale");
+    fs.writeFileSync(looseFresh, "loose fresh");
+    fs.writeFileSync(userLike, "user data");
     const oldTime = new Date(Date.now() - 10_000);
     fs.utimesSync(stale, oldTime, oldTime);
+    fs.utimesSync(looseStale, oldTime, oldTime);
+    fs.utimesSync(userLike, oldTime, oldTime);
 
     try {
       await cleanupWorkspaceTransferTempFiles({
@@ -2542,6 +2655,9 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(stale), false);
       assert.strictEqual(fs.readFileSync(fresh, "utf8"), "fresh");
+      assert.strictEqual(fs.existsSync(looseStale), false);
+      assert.strictEqual(fs.readFileSync(looseFresh, "utf8"), "loose fresh");
+      assert.strictEqual(fs.readFileSync(userLike, "utf8"), "user data");
     } finally {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }

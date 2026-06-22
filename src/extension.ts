@@ -11,8 +11,12 @@ import * as vscode from "vscode";
 import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
 import {
+  cleanupStaleUnfinishedUploads,
+  cleanupStaleUploadSessionMarkers,
   cleanupStaleTransferTempFiles,
   cleanupWorkspaceTransferTempFiles,
+  type StaleUnfinishedUploadCleanupOptions,
+  type StaleUnfinishedUploadCleanupResult,
 } from "./services/fileTransfers";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
@@ -28,6 +32,48 @@ import { cleanupStalePrivateTempRoots } from "./utils/privateTempRoot";
 /** The current B2 client instance, or null if not authenticated. */
 let currentClient: B2Client | null = null;
 
+export interface StaleUnfinishedUploadSweepResult {
+  readonly bucketCount: number;
+  readonly reclaimedOwnedStaleUploadCount: number;
+  readonly ignoredUnownedStaleUploadCount: number;
+  readonly failedBucketCount: number;
+}
+
+export async function cleanupStaleUnfinishedUploadsForClient(
+  client: Pick<B2Client, "listBuckets">,
+  options: StaleUnfinishedUploadCleanupOptions = {},
+): Promise<StaleUnfinishedUploadSweepResult> {
+  const buckets = await client.listBuckets();
+  let reclaimedOwnedStaleUploadCount = 0;
+  let ignoredUnownedStaleUploadCount = 0;
+  let failedBucketCount = 0;
+
+  for (const bucket of buckets) {
+    let result: StaleUnfinishedUploadCleanupResult;
+    try {
+      result = await cleanupStaleUnfinishedUploads(bucket, options);
+    } catch (error) {
+      failedBucketCount += 1;
+      logError(`Could not clean stale unfinished uploads for bucket ${bucket.name}`, error);
+      continue;
+    }
+
+    reclaimedOwnedStaleUploadCount += result.reclaimedOwnedStaleUploadCount;
+    ignoredUnownedStaleUploadCount += result.ignoredUnownedStaleUploadCount;
+  }
+
+  log(
+    `Activation stale unfinished-upload sweep scanned ${buckets.length} bucket(s), reclaimed ${reclaimedOwnedStaleUploadCount}, ignored ${ignoredUnownedStaleUploadCount}, failed ${failedBucketCount}.`,
+  );
+
+  return {
+    bucketCount: buckets.length,
+    reclaimedOwnedStaleUploadCount,
+    ignoredUnownedStaleUploadCount,
+    failedBucketCount,
+  };
+}
+
 function scheduleTempCleanups(context: vscode.ExtensionContext): void {
   void cleanupStalePrivateTempRoots(TEMP_DIR_NAME).catch((error) => {
     logError("Could not clean stale temp cache roots during activation", error);
@@ -37,6 +83,9 @@ function scheduleTempCleanups(context: vscode.ExtensionContext): void {
   });
   void cleanupStaleTempFileCache().catch((error) => {
     logError("Could not clean stale temp file cache during activation", error);
+  });
+  void cleanupStaleUploadSessionMarkers().catch((error) => {
+    logError("Could not clean stale upload session markers during activation", error);
   });
 
   const cleanupWorkspace = (folder: vscode.WorkspaceFolder): void => {
@@ -50,6 +99,12 @@ function scheduleTempCleanups(context: vscode.ExtensionContext): void {
       event.added.forEach(cleanupWorkspace);
     }),
   );
+}
+
+function scheduleAuthenticatedCleanups(client: B2Client): void {
+  void cleanupStaleUnfinishedUploadsForClient(client).catch((error) => {
+    logError("Could not run stale unfinished-upload sweep during activation", error);
+  });
 }
 
 /**
@@ -116,6 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
+      scheduleAuthenticatedCleanups(client);
     } else {
       const warning = authService.getCredentialResolutionWarning();
       await authService.setAuthState({

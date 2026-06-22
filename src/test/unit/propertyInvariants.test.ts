@@ -15,8 +15,8 @@ import {
   assertSafeFileWritePath,
   assertSafeWritePath,
   prepareSafeFileWritePath,
-  writeFileNoFollow,
-  writeFileNoFollowWithinRoot,
+  writeNewFileNoFollow,
+  writeNewFileNoFollowWithinRoot,
 } from "../../services/pathSafety";
 import { createPrivateTempRoot, releasePrivateTempRoot } from "../../utils/privateTempRoot";
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
@@ -227,7 +227,7 @@ test("safe writes create owner-only files and reject final symlinks", async () =
   const filePath = path.join(root, "nested", "file.txt");
 
   await prepareSafeFileWritePath(root, filePath);
-  await writeFileNoFollow(filePath, Buffer.from("content"));
+  await writeNewFileNoFollow(filePath, Buffer.from("content"));
 
   const mode = fs.statSync(filePath).mode & 0o777;
   if (process.platform !== "win32") {
@@ -248,23 +248,17 @@ test("safe writes create owner-only files and reject final symlinks", async () =
       () => assertSafeWritePath(root, path.join(danglingSymlinkPath, "child.txt")),
       /symlink/i,
     );
-    await assert.rejects(() => writeFileNoFollow(symlinkPath, Buffer.from("blocked")));
+    await assert.rejects(() => writeNewFileNoFollow(symlinkPath, Buffer.from("blocked")));
   }
 });
 
-test("root-bound no-follow writes require overwrite refusal", async () => {
+test("root-bound no-follow writes create only new files", async () => {
   const root = fs.mkdtempSync(path.join(propertyRoot, "root-bound-write-"));
   const filePath = path.join(root, "file.txt");
 
+  await writeNewFileNoFollowWithinRoot(root, filePath, Buffer.from("content"));
   await assert.rejects(
-    () => writeFileNoFollowWithinRoot(root, filePath, Buffer.from("blocked")),
-    /overwrite disabled/i,
-  );
-  assert.equal(fs.existsSync(filePath), false);
-
-  await writeFileNoFollowWithinRoot(root, filePath, Buffer.from("content"), { overwrite: false });
-  await assert.rejects(
-    () => writeFileNoFollowWithinRoot(root, filePath, Buffer.from("replace"), { overwrite: false }),
+    () => writeNewFileNoFollowWithinRoot(root, filePath, Buffer.from("replace")),
     /EEXIST|file already exists/i,
   );
   assert.equal(fs.readFileSync(filePath, "utf8"), "content");
@@ -308,10 +302,7 @@ test(
 
     try {
       await assert.rejects(
-        () =>
-          writeFileNoFollowWithinRoot(root, destinationPath, Buffer.from("new"), {
-            overwrite: false,
-          }),
+        () => writeNewFileNoFollowWithinRoot(root, destinationPath, Buffer.from("new")),
         /outside|symlink/i,
       );
 
@@ -454,6 +445,10 @@ test("presign operation supports object names with empty path segments", async (
       async getBucket(bucketName: string) {
         assert.equal(bucketName, "bucket");
         return {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepEqual(options, { prefix: "a//b.txt", pageSize: 2 });
+            return { files: [{ fileName: "a//b.txt" }], nextFileName: null };
+          },
           async getDownloadAuthorization(fileName: string, expiresIn: number) {
             authorizationRequests.push([fileName, expiresIn]);
             return { authorizationToken: "token/with #spaces" };
@@ -476,17 +471,24 @@ test("presign operation supports object names with empty path segments", async (
   assert.equal(parsedUrl.pathname, "/file/bucket/a//b.txt");
   assert.equal(parsedUrl.searchParams.get("Authorization"), "token/with #spaces");
   assert.equal(result.authorizedPrefix, "a//b.txt");
-  assert.match(result.message, /starting with a\/\/b\.txt/);
+  assert.match(result.message, /ALL B2 object names beginning with a\/\/b\.txt/);
   assert.equal(result.message.includes("token/with #spaces"), false);
   assert.equal(result.message.includes(result.url), false);
 });
 
-test("presign operation documents B2 prefix authorization scope", async () => {
+test("presign operation rejects adjacent same-prefix objects", async () => {
   const authorizationRequests: Array<[string, number]> = [];
   const extras = {
     getClient: () => ({
       async getBucket() {
         return {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepEqual(options, { prefix: "customers/123", pageSize: 2 });
+            return {
+              files: [{ fileName: "customers/123" }, { fileName: "customers/1234/tax.pdf" }],
+              nextFileName: null,
+            };
+          },
           async getDownloadAuthorization(fileName: string, expiresIn: number) {
             authorizationRequests.push([fileName, expiresIn]);
             return { authorizationToken: "token" };
@@ -499,17 +501,16 @@ test("presign operation documents B2 prefix authorization scope", async () => {
     }),
   } as unknown as ToolExtras;
 
-  const result = await presignUrlOperation.execute(
-    { bucket: "bucket", path: "customers/123", expiresIn: 120 },
-    extras,
+  await assert.rejects(
+    () =>
+      presignUrlOperation.execute(
+        { bucket: "bucket", path: "customers/123", expiresIn: 120 },
+        extras,
+      ),
+    /authorize ALL object names beginning with that value/i,
   );
 
-  assert.deepEqual(authorizationRequests, [["customers/123", 120]]);
-  assert.equal(result.authorizedPrefix, "customers/123");
-  assert.equal("customers/1234/tax.pdf".startsWith(result.authorizedPrefix), true);
-  assert.equal("customers/123/secret.txt".startsWith(result.authorizedPrefix), true);
-  assert.equal("customers/124/tax.pdf".startsWith(result.authorizedPrefix), false);
-  assert.match(result.message, /object names starting with customers\/123/);
+  assert.deepEqual(authorizationRequests, []);
 });
 
 test("presign operation defaults to short-lived prefix authorization", async () => {
@@ -518,6 +519,10 @@ test("presign operation defaults to short-lived prefix authorization", async () 
     getClient: () => ({
       async getBucket() {
         return {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepEqual(options, { prefix: "file.txt", pageSize: 2 });
+            return { files: [{ fileName: "file.txt" }], nextFileName: null };
+          },
           async getDownloadAuthorization(fileName: string, expiresIn: number) {
             authorizationRequests.push([fileName, expiresIn]);
             return { authorizationToken: "token" };
@@ -536,11 +541,38 @@ test("presign operation defaults to short-lived prefix authorization", async () 
   assert.equal(result.expiresIn, 300);
 });
 
-test("presign operation rejects broad, empty, and folder-prefix paths before B2 calls", async () => {
+test("presign operation supports short exact object names", async () => {
+  const authorizationRequests: Array<[string, number]> = [];
+  const extras = {
+    getClient: () => ({
+      async getBucket() {
+        return {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepEqual(options, { prefix: "cv.pdf", pageSize: 2 });
+            return { files: [{ fileName: "cv.pdf" }], nextFileName: null };
+          },
+          async getDownloadAuthorization(fileName: string, expiresIn: number) {
+            authorizationRequests.push([fileName, expiresIn]);
+            return { authorizationToken: "token" };
+          },
+        };
+      },
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    }),
+  } as unknown as ToolExtras;
+
+  const result = await presignUrlOperation.execute({ bucket: "bucket", path: "cv.pdf" }, extras);
+
+  assert.deepEqual(authorizationRequests, [["cv.pdf", 300]]);
+  assert.equal(result.authorizedPrefix, "cv.pdf");
+});
+
+test("presign operation rejects empty and folder-prefix paths before B2 calls", async () => {
   for (const [filePath, expectedError] of [
     ["", /empty/i],
-    ["a", /at least 8 characters/i],
-    ["reports/", /folder prefix/i],
+    ["reports/", /folder path ending in slash/i],
     ["bad\0path", /NUL/i],
   ] as const) {
     let bucketLookupWasCalled = false;

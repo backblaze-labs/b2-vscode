@@ -48,14 +48,13 @@
   modal warning plus exact bucket-name confirmation. Ambiguous failures after a
   public-affecting visibility request refresh the bucket tree and warn that the
   bucket may already be public.
-- Automatic global cleanup of stale unfinished multipart uploads has been
-  removed because B2 file info is caller-controlled. Failed uploads cancel
-  unfinished uploads that match the active upload session only. The extension
-  does not run age-based stale cleanup because another live VS Code window or
-  machine could still be writing an old unfinished upload. Operators should
-  configure a B2 lifecycle rule or use B2 tools to clean legacy unfinished
-  multipart uploads so older extension versions, crashes, or power-loss orphans
-  cannot accumulate storage cost.
+- Activation now runs a bounded, sequential cleanup sweep across buckets to
+  reclaim stale unfinished multipart uploads only when B2 file info matches a
+  locally persisted owner marker. Failed uploads still cancel unfinished uploads
+  that match the active upload session, and stale same-key extension-owned
+  uploads are cleaned before a retry. Configure a B2 lifecycle rule as a
+  backstop for stale unfinished large files after deleted local state, older
+  extension versions, deleted workstations, or failed cleanup.
 - Workspace downloads and open-file cache downloads now enforce a 1 GiB default
   size cap, abort oversized streams, and remove partial local files.
 - Interactive open-file downloads now stream with the same 5-minute stall
@@ -66,10 +65,12 @@
 - LM `downloadFile` writes only to workspace-relative paths and refuses to
   overwrite existing workspace files. LM `uploadFile` reads only
   workspace-relative files.
-- `presignUrl` now rejects empty, slash-terminated, or too-short paths,
-  validates `expiresIn` between 1 and 3600 seconds, and explicitly reports that
-  B2 download authorization tokens are name-prefix scoped. Presigned URLs
-  default to 300 seconds; longer-lived links require an explicit `expiresIn`.
+- `presignUrl` now rejects empty or slash-terminated paths, validates
+  `expiresIn` between 1 and 3600 seconds, checks that the requested path
+  currently names exactly one downloadable object with no adjacent same-prefix
+  object, and explicitly reports that B2 download authorization tokens remain
+  name-prefix scoped. Presigned URLs default to 300 seconds; longer-lived links
+  require an explicit `expiresIn`.
 - Temp-open downloads now use a private per-process cache directory with
   owner-only file permissions. Stale temp-root cleanup preserves active roots
   with live owner markers or recently updated child files.

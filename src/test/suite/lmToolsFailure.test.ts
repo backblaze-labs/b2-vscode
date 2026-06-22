@@ -399,10 +399,10 @@ suite("B2 LM tool failure handling", () => {
     await assert.rejects(
       () =>
         presignUrlOperation.execute(
-          { bucket: "b", path: "a.txt", expiresIn: 604_801 },
+          { bucket: "b", path: "a.txt", expiresIn: 3_601 },
           { getClient: () => client },
         ),
-      /between 1 and 604800 seconds/i,
+      /between 1 and 3600 seconds/i,
     );
   });
 
@@ -472,7 +472,7 @@ suite("B2 LM tool failure handling", () => {
         let result: Awaited<ReturnType<typeof downloadFileOperation.execute>> | undefined;
         await withWindowUiStubs({}, async () => {
           result = await downloadFileOperation.execute(
-            { bucket: "b", path: "remote/payload.txt", localPath: "./downloads/payload.txt" },
+            { bucket: "b", path: "remote/payload.txt", localPath: "downloads/payload.txt" },
             { getClient: () => client },
           );
         });
@@ -997,7 +997,10 @@ suite("B2 LM tool failure handling", () => {
           downloadedPaths.push(result.localPath);
           assert.match(path.basename(result.localPath), /^__b2_/);
           assert.notStrictEqual(path.basename(result.localPath), path.basename(remotePath));
-          assert.strictEqual(fs.readFileSync(result.localPath, "utf8"), "downloaded");
+          assert.strictEqual(
+            fs.readFileSync(path.join(workspaceDir, result.localPath), "utf8"),
+            "downloaded",
+          );
         }
       });
 
@@ -1037,7 +1040,10 @@ suite("B2 LM tool failure handling", () => {
         );
 
         assert.strictEqual(path.basename(result.localPath), ".npmrc");
-        assert.strictEqual(fs.readFileSync(result.localPath, "utf8"), "downloaded");
+        assert.strictEqual(
+          fs.readFileSync(path.join(workspaceDir, result.localPath), "utf8"),
+          "downloaded",
+        );
       });
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });

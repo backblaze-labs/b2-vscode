@@ -23,6 +23,7 @@ import {
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError } from "../../errors";
+import { normalizeB2ObjectNameInput } from "../b2ObjectName";
 
 interface DownloadFileParams {
   bucket: string;
@@ -46,22 +47,6 @@ function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: 
   }
 }
 
-function normalizeDownloadFilePath(filePath: string): string {
-  if (!filePath) {
-    throw new Error("path must name a B2 object and must not be empty.");
-  }
-
-  if (filePath.includes("\0")) {
-    throw new Error("path must not contain NUL bytes.");
-  }
-
-  if (filePath.endsWith("/")) {
-    throw new Error("path must name a B2 object, not a folder path ending in slash.");
-  }
-
-  return filePath;
-}
-
 function relativeDisplayPath(
   workspaceRoot: string,
   absolutePath: string,
@@ -77,7 +62,6 @@ function relativeDisplayPath(
 function sanitizeWorkspaceDownloadError(
   error: unknown,
   destination: WorkspaceDestination,
-  temporaryDirectory?: string,
 ): unknown {
   if (!(error instanceof Error)) {
     return error;
@@ -85,9 +69,7 @@ function sanitizeWorkspaceDownloadError(
 
   const destinationDirectory = path.dirname(destination.path);
   const relativeDirectory = path.dirname(destination.relativePath);
-  const relativeTemporaryDirectory = path.join(relativeDirectory, ".b2-vscode-transfers");
   const replacements: PathMessageReplacement[] = [
-    { search: temporaryDirectory, replacement: relativeTemporaryDirectory },
     { search: destination.path, replacement: destination.relativePath },
     {
       search: destinationDirectory,
@@ -162,7 +144,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
 
     // Determine local save path before any remote request so invalid local
     // paths fail without touching B2.
-    const remotePath = normalizeDownloadFilePath(params.path);
+    const remotePath = normalizeB2ObjectNameInput(params.path);
     const destination = await workspacePath(remotePath, params.localPath);
     const savePath = destination.path;
 

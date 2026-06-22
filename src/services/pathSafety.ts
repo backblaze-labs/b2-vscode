@@ -134,6 +134,10 @@ function assertPrivateDirectoryStats(stats: fs.Stats, directory: string, label: 
   }
 }
 
+export async function assertPrivateDirectory(directory: string, label: string): Promise<void> {
+  assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+}
+
 export async function ensurePrivateDirectory(
   directory: string,
   label: string,
@@ -439,25 +443,27 @@ export async function prepareSafeFileWritePath(
   await assertSafeFileWritePath(rootPath, candidate, label);
 }
 
-export async function writeFileNoFollow(
+export async function writeNewFileNoFollow(
   filePath: string,
   data: string | Uint8Array | NodeJS.ReadableStream,
-  options: { overwrite?: boolean } = {},
 ): Promise<void> {
-  await writeFileNoFollowInternal(filePath, data, { overwrite: options.overwrite !== false });
+  await writeFileNoFollowInternal(filePath, data, { overwrite: false });
 }
 
-export async function writeFileNoFollowWithinRoot(
+export async function replaceFileNoFollow(
+  filePath: string,
+  data: string | Uint8Array | NodeJS.ReadableStream,
+): Promise<void> {
+  await writeFileNoFollowInternal(filePath, data, { overwrite: true });
+}
+
+export async function writeNewFileNoFollowWithinRoot(
   rootPath: string,
   filePath: string,
   data: string | Uint8Array | NodeJS.ReadableStream,
-  options: { overwrite?: boolean; label?: string } = {},
+  options: { label?: string } = {},
 ): Promise<void> {
   const label = options.label ?? "path";
-  if (options.overwrite !== false) {
-    throw new UnsafePathError(`${label} must be written with overwrite disabled.`);
-  }
-
   await assertSafeFileWritePath(rootPath, filePath, label);
   await writeFileNoFollowInternal(filePath, data, {
     overwrite: false,

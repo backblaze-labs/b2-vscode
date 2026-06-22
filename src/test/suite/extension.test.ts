@@ -5,6 +5,8 @@
  */
 
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
 import { presignUrlTool } from "../../tools/definitions/presignUrl";
@@ -122,5 +124,13 @@ suite("B2 Extension Test Suite", () => {
     assert.strictEqual(expiresIn.minimum, 1);
     assert.strictEqual(expiresIn.maximum, MAX_PRESIGN_URL_EXPIRES_IN_SECONDS);
     assert.deepStrictEqual(expiresIn, presignUrlTool.parameters.properties.expiresIn);
+  });
+
+  test("auto-auth schedules stale unfinished-upload cleanup", () => {
+    const extensionSourcePath = path.join(__dirname, "../../../../src/extension.ts");
+    const source = fs.readFileSync(extensionSourcePath, "utf8");
+
+    assert.match(source, /scheduleAuthenticatedCleanups\(client\)/);
+    assert.match(source, /cleanupStaleUnfinishedUploadsForClient\(client\)/);
   });
 });

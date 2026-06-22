@@ -9,18 +9,27 @@ import { inputText } from "./inputText";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-  MIN_PRESIGN_URL_PREFIX_LENGTH,
 } from "../presignUrlLimits";
 
-function describeExpiresIn(value: unknown): number {
-  return Number.isInteger(value) ? Number(value) : DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS;
+function describeExpiresIn(value: unknown): string {
+  if (value === undefined) {
+    return `${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds`;
+  }
+  if (
+    Number.isInteger(value) &&
+    Number(value) >= 1 &&
+    Number(value) <= MAX_PRESIGN_URL_EXPIRES_IN_SECONDS
+  ) {
+    return `${Number(value)} seconds`;
+  }
+  return "an invalid expiresIn value that the operation will reject";
 }
 
 export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
   displayName: "B2: Pre-sign URL",
   description:
-    "Generates a pre-signed B2 download URL using a name-prefix authorization token. The token can download any object whose name starts with the supplied path. The URL is valid for the specified duration (default: 5 minutes).",
+    "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
   parameters: {
     type: "object",
     properties: {
@@ -30,8 +39,9 @@ export const presignUrlTool: B2ToolDefinition = {
       },
       path: {
         type: "string",
-        minLength: MIN_PRESIGN_URL_PREFIX_LENGTH,
-        description: `B2 object name prefix to authorize. Supplying a full file name still grants prefix scope, so "reports/q4.pdf" also authorizes names such as "reports/q4.pdf.bak". Must be at least ${MIN_PRESIGN_URL_PREFIX_LENGTH} characters and must not end with "/".`,
+        minLength: 1,
+        description:
+          'B2 object name to authorize. The path must currently match exactly one downloadable object and no other current object may start with that value. B2 still grants prefix scope, so future names such as "reports/q4.pdf.bak" may also be authorized until expiry.',
       },
       expiresIn: {
         type: "integer",
@@ -45,5 +55,5 @@ export const presignUrlTool: B2ToolDefinition = {
   tags: ["b2", "file", "presign", "url"],
   risk: "exfiltration",
   describeEffect: (input) =>
-    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)} that is valid for ${describeExpiresIn(input.expiresIn)} seconds and authorizes every object name starting with that path`,
+    `create a shareable prefix-scoped download URL for b2://${inputText(input.bucket)}/${inputText(input.path)} that is valid for ${describeExpiresIn(input.expiresIn)} and authorizes ALL object names beginning with that path, not just this file`,
 };

@@ -11,6 +11,8 @@ import * as path from "path";
 const STALE_PRIVATE_TEMP_ROOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PRIVATE_TEMP_ROOT_OWNER_FILE = ".b2-vscode-owner.json";
 const PRIVATE_TEMP_ROOT_HEARTBEAT_MS = 60 * 1000;
+const PRIVATE_TEMP_ROOT_CLEANUP_BUDGET_MS = 2_000;
+const PRIVATE_TEMP_ROOT_CLEANUP_MAX_ENTRIES = 2_000;
 
 const privateTempRootHeartbeats = new Map<string, NodeJS.Timeout>();
 
@@ -94,9 +96,25 @@ async function hasLiveOwnerMarker(tempRoot: string, cutoff: number): Promise<boo
   return false;
 }
 
-async function hasRecentChildActivity(rootPath: string, cutoff: number): Promise<boolean> {
+interface ChildActivityScanBudget {
+  readonly deadlineMs: number;
+  readonly maxEntries: number;
+  scannedEntries: number;
+  capHit: boolean;
+}
+
+async function hasRecentChildActivity(
+  rootPath: string,
+  cutoff: number,
+  budget: ChildActivityScanBudget,
+): Promise<boolean> {
   const pending = [rootPath];
   while (pending.length > 0) {
+    if (Date.now() >= budget.deadlineMs || budget.scannedEntries >= budget.maxEntries) {
+      budget.capHit = true;
+      return true;
+    }
+
     const current = pending.pop();
     if (current === undefined) {
       continue;
@@ -110,6 +128,11 @@ async function hasRecentChildActivity(rootPath: string, cutoff: number): Promise
     }
 
     for (const entry of entries) {
+      if (Date.now() >= budget.deadlineMs || budget.scannedEntries >= budget.maxEntries) {
+        budget.capHit = true;
+        return true;
+      }
+
       const candidate = path.join(current, entry);
       let stats: fs.Stats;
       try {
@@ -117,6 +140,7 @@ async function hasRecentChildActivity(rootPath: string, cutoff: number): Promise
       } catch {
         continue;
       }
+      budget.scannedEntries += 1;
 
       if (stats.mtimeMs > cutoff) {
         return true;
@@ -132,13 +156,19 @@ async function hasRecentChildActivity(rootPath: string, cutoff: number): Promise
 
 export async function cleanupStalePrivateTempRoots(
   prefix: string,
-  options: { maxAgeMs?: number } = {},
+  options: { maxAgeMs?: number; budgetMs?: number; maxEntries?: number } = {},
 ): Promise<void> {
   assertSimpleTempPrefix(prefix);
 
   const tempRoot = os.tmpdir();
   const entryPrefix = `${prefix}-`;
   const cutoff = Date.now() - (options.maxAgeMs ?? STALE_PRIVATE_TEMP_ROOT_MAX_AGE_MS);
+  const scanBudget: ChildActivityScanBudget = {
+    deadlineMs: Date.now() + Math.max(0, options.budgetMs ?? PRIVATE_TEMP_ROOT_CLEANUP_BUDGET_MS),
+    maxEntries: Math.max(0, options.maxEntries ?? PRIVATE_TEMP_ROOT_CLEANUP_MAX_ENTRIES),
+    scannedEntries: 0,
+    capHit: false,
+  };
   let entries: string[];
   try {
     entries = await fs.promises.readdir(tempRoot);
@@ -148,6 +178,11 @@ export async function cleanupStalePrivateTempRoots(
 
   const mkdtempEntryPattern = new RegExp(`^${escapeRegExp(entryPrefix)}[A-Za-z0-9]{6}$`);
   for (const entry of entries) {
+    if (Date.now() >= scanBudget.deadlineMs || scanBudget.scannedEntries >= scanBudget.maxEntries) {
+      scanBudget.capHit = true;
+      break;
+    }
+
     if (!mkdtempEntryPattern.test(entry)) {
       continue;
     }
@@ -161,7 +196,7 @@ export async function cleanupStalePrivateTempRoots(
       if (
         stats.isDirectory() &&
         ((await hasLiveOwnerMarker(candidate, cutoff)) ||
-          (await hasRecentChildActivity(candidate, cutoff)))
+          (await hasRecentChildActivity(candidate, cutoff, scanBudget)))
       ) {
         continue;
       }
@@ -169,5 +204,15 @@ export async function cleanupStalePrivateTempRoots(
     } catch {
       // Best effort: another extension host may have already removed it.
     }
+  }
+
+  if (scanBudget.capHit) {
+    void import("../logger")
+      .then(({ log }) => {
+        log(
+          `Stale private temp-root cleanup stopped after scanning ${scanBudget.scannedEntries} entr${scanBudget.scannedEntries === 1 ? "y" : "ies"} because a cleanup cap was reached.`,
+        );
+      })
+      .catch(() => undefined);
   }
 }
