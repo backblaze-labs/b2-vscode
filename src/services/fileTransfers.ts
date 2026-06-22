@@ -311,6 +311,7 @@ async function ensureTransferTempDirectory(
       allowedRootDirectory,
       directory,
       "Workspace transfer temp directory",
+      { recursive: true, mode: 0o700 },
     );
     await setPrivateDirectoryPermissions(directory);
     return;
