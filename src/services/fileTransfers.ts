@@ -697,7 +697,16 @@ function withActivityProgress(
 }
 
 export async function openUploadSourceFile(localPath: string): Promise<UploadSourceFile> {
-  const handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+    }
+    throw error;
+  }
+
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) {

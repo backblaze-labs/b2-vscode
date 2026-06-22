@@ -37,6 +37,7 @@ import {
   DEFAULT_DOWNLOAD_MAX_BYTES,
   DownloadSizeLimitError,
   downloadStreamToFile,
+  openUploadSourceFile,
   STREAMING_UPLOAD_PART_SIZE,
   TransferStallTimeoutError,
   uploadFileFromDisk,
@@ -78,6 +79,19 @@ function fakeFileVersion(fileName: string, contentLength: number, id: string): F
 function createDirectorySymlink(target: string, linkPath: string): boolean {
   try {
     fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "ENOTSUP" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function createFileSymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, "file");
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -926,6 +940,31 @@ suite("B2 transfer helpers", () => {
       assert.deepStrictEqual(uploaded, [9, 8, 7, 6]);
       assert.strictEqual(result.fileId, "uploaded-id");
       assert.strictEqual(result.contentLength, 4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reports symlink upload sources clearly", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-source-"));
+    const target = path.join(dir, "target.bin");
+    const linkPath = path.join(dir, "link.bin");
+    fs.writeFileSync(target, Buffer.from([1, 2, 3]));
+    const symlinkCreated = createFileSymlink(target, linkPath);
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await assert.rejects(
+        () => openUploadSourceFile(linkPath),
+        /upload source must be a real file, not a symlink/i,
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
