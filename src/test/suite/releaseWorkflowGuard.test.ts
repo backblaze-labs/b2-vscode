@@ -115,6 +115,24 @@ suite("Release workflow guard assertions", () => {
     guard.assertMarketplacePublisherDependencyGate(workflow);
   });
 
+  test("accepts formatted publisher hash variable expressions", () => {
+    const guard = loadReleaseWorkflowGuard();
+    const workflow = validPublishWorkflow() as {
+      jobs: { publish: { steps: { name?: string; env?: Record<string, string> }[] } };
+    };
+    const gateStep = workflow.jobs.publish.steps.find(
+      (step) => step.name === "Verify Marketplace publisher dependency tree",
+    );
+    if (!gateStep?.env) {
+      throw new Error("Synthetic workflow is missing the dependency gate step.");
+    }
+    const gateEnv = gateStep.env;
+    gateEnv.EXPECTED_PUBLISHER_PACKAGE_SHA256 = "${{vars.MARKETPLACE_PUBLISHER_PACKAGE_SHA256}}";
+    gateEnv.EXPECTED_PUBLISHER_LOCK_SHA256 = "${{  vars.MARKETPLACE_PUBLISHER_LOCK_SHA256  }}";
+
+    guard.assertMarketplacePublisherDependencyGate(workflow);
+  });
+
   test("rejects bracket-syntax marketplace secrets outside publish", () => {
     const guard = loadReleaseWorkflowGuard();
 

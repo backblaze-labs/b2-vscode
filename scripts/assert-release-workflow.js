@@ -106,6 +106,15 @@ function normalizedCommand(command) {
   return command.replace(/\s+/g, " ").trim();
 }
 
+function normalizedGithubExpression(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const match = value.match(/^\s*\$\{\{\s*([\s\S]*?)\s*\}\}\s*$/);
+  return match ? `\${{ ${match[1].trim()} }}` : value.trim();
+}
+
 function stepIndexInSteps(steps, jobName, stepName) {
   const index = steps.findIndex((candidate) => candidate.name === stepName);
   assert(index >= 0, `${jobName} must include step: ${stepName}.`);
@@ -299,12 +308,12 @@ function assertMarketplacePublisherDependencyGate(workflowToCheck = loadReleaseW
 
   const gateStep = steps[gateStepIndex];
   assert(
-    gateStep.env?.EXPECTED_PUBLISHER_PACKAGE_SHA256 ===
+    normalizedGithubExpression(gateStep.env?.EXPECTED_PUBLISHER_PACKAGE_SHA256) ===
       "${{ vars.MARKETPLACE_PUBLISHER_PACKAGE_SHA256 }}",
     "Marketplace publisher package hash must come from protected environment variables.",
   );
   assert(
-    gateStep.env?.EXPECTED_PUBLISHER_LOCK_SHA256 ===
+    normalizedGithubExpression(gateStep.env?.EXPECTED_PUBLISHER_LOCK_SHA256) ===
       "${{ vars.MARKETPLACE_PUBLISHER_LOCK_SHA256 }}",
     "Marketplace publisher lockfile hash must come from protected environment variables.",
   );
