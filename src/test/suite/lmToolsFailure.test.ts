@@ -656,6 +656,33 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool checks buckets before creating parent directories", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-missing-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const client = {
+      async getBucket() {
+        return null;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "missing", path: "payload.txt", localPath: "downloads/payload.txt" },
+              { getClient: () => client },
+            ),
+          /bucket .* not found/i,
+        );
+      });
+
+      assert.strictEqual(fs.existsSync(downloadDir), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("download tool rejects workspace path traversal before writing", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-policy-"));
     let downloadWasCalled = false;

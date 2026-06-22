@@ -651,6 +651,7 @@ export async function assertSafeFileReadPath(
 export interface ResolveWorkspaceFilePathOptions {
   readonly access: "read" | "write-new";
   readonly label?: string;
+  readonly createParentDirectories?: boolean;
 }
 
 async function assertFileDoesNotExist(filePath: string): Promise<void> {
@@ -681,14 +682,16 @@ export async function resolveWorkspaceFilePath(
 
   await assertSafeFileWritePath(workspaceRoot, resolvedPath);
   await assertFileDoesNotExist(resolvedPath);
-  await ensureContainedDirectoryPath(
-    workspaceRoot,
-    path.dirname(resolvedPath),
-    "Workspace localPath directory",
-    { recursive: true },
-  );
-  await assertSafeFileWritePath(workspaceRoot, resolvedPath);
-  await assertFileDoesNotExist(resolvedPath);
+  if (options.createParentDirectories !== false) {
+    await ensureContainedDirectoryPath(
+      workspaceRoot,
+      path.dirname(resolvedPath),
+      "Workspace localPath directory",
+      { recursive: true },
+    );
+    await assertSafeFileWritePath(workspaceRoot, resolvedPath);
+    await assertFileDoesNotExist(resolvedPath);
+  }
   return resolvedPath;
 }
 
