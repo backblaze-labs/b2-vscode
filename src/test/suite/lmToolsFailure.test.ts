@@ -331,6 +331,53 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool result reports workspace-relative destination path", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-result-"));
+    const destinationPath = path.join(workspaceDir, "downloads", "payload.txt");
+    const bucket = {
+      async download() {
+        return {
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("downloaded"));
+              controller.close();
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket() {
+        return bucket;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        let result: Awaited<ReturnType<typeof downloadFileOperation.execute>> | undefined;
+        await withWindowUiStubs({}, async () => {
+          result = await downloadFileOperation.execute(
+            { bucket: "b", path: "remote/payload.txt", localPath: "downloads/payload.txt" },
+            { getClient: () => client },
+          );
+        });
+
+        if (!result) {
+          throw new Error("downloadFileOperation did not return a result.");
+        }
+        assert.strictEqual(result.localPath, "downloads/payload.txt");
+        assert.match(
+          result.message,
+          /Downloaded remote\/payload\.txt from b to downloads\/payload\.txt/,
+        );
+        assert.strictEqual(result.message.includes(workspaceDir), false);
+        assert.strictEqual(fs.readFileSync(destinationPath, "utf8"), "downloaded");
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("object lookup failures are mapped for file-oriented tools", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-tools-"));
     const localFile = path.join(dir, "a.txt");

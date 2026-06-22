@@ -69,6 +69,7 @@ async function ensureWorkspaceDestinationDirectory(
 
 interface WorkspaceDestination {
   readonly path: string;
+  readonly relativePath: string;
   readonly workspaceRoot: string;
 }
 
@@ -88,7 +89,11 @@ async function workspacePath(relativePath: string): Promise<WorkspaceDestination
   // Re-check after creating parent directories to avoid overwriting a target
   // that appeared while validation was in progress.
   await assertDestinationDoesNotExist(destinationPath);
-  return { path: destinationPath, workspaceRoot: workspaceFolder.uri.fsPath };
+  return {
+    path: destinationPath,
+    relativePath: path.relative(workspaceFolder.uri.fsPath, destinationPath),
+    workspaceRoot: workspaceFolder.uri.fsPath,
+  };
 }
 
 export const downloadFileOperation: B2ToolOperation<DownloadFileParams, DownloadFileResult> = {
@@ -144,9 +149,9 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     );
 
     return {
-      localPath: savePath,
+      localPath: destination.relativePath,
       size,
-      message: `Downloaded ${params.path} from ${params.bucket} to ${savePath} (${size} bytes)`,
+      message: `Downloaded ${params.path} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
     };
   },
 };

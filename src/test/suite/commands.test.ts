@@ -755,12 +755,12 @@ suite("B2 public bucket command safety", () => {
         new Promise<CreateBucketResult>((resolve) => {
           setTimeout(() => {
             resolve({ name: "public-bucket" } as CreateBucketResult);
-          }, 10);
+          }, 150);
         }),
     );
     const commandServices = makeCommandServices(client, {
-      bucketMutationTimeoutMs: 5,
-      bucketMutationPostTimeoutSettleMs: 50,
+      bucketMutationTimeoutMs: 50,
+      bucketMutationPostTimeoutSettleMs: 1_000,
     });
 
     const ui = await withWindowUiStubs(
