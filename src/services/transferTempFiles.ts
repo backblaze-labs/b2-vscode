@@ -10,11 +10,12 @@ import * as os from "os";
 import * as path from "path";
 import { logError } from "../logger";
 import {
+  ensureContainedDirectoryPath,
   ensurePrivateDirectory as ensurePrivateDirectoryPath,
   pathExistsAsRealDirectory,
 } from "./pathSafety";
 
-const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
+export const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
@@ -34,6 +35,30 @@ export async function ensurePrivateDirectory(directory: string): Promise<void> {
     recursive: true,
     mode: 0o700,
   });
+}
+
+async function setPrivateDirectoryPermissions(directory: string): Promise<void> {
+  await fs.promises.chmod(directory, 0o700).catch((error) => {
+    logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
+  });
+}
+
+export async function ensureTransferTempDirectory(
+  directory: string,
+  allowedRootDirectory: string | undefined,
+): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    await ensureContainedDirectoryPath(
+      allowedRootDirectory,
+      directory,
+      "Workspace transfer temp directory",
+      { recursive: true, mode: 0o700 },
+    );
+    await setPrivateDirectoryPermissions(directory);
+    return;
+  }
+
+  await ensurePrivateDirectory(directory);
 }
 
 export function transferTempPath(directory: string): string {
@@ -154,9 +179,12 @@ export async function cleanupStaleTransferTempFiles(
 export async function cleanupStaleDestinationTempFiles(options: {
   directory: string;
   maxAgeMs?: number;
+  preservePath?: string;
 }): Promise<void> {
   const directory = options.directory;
   const maxAgeMs = options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS;
+  const preservedPath =
+    options.preservePath !== undefined ? path.resolve(options.preservePath) : undefined;
 
   try {
     if (!(await pathExistsAsRealDirectory(directory, "Destination directory"))) {
@@ -180,11 +208,15 @@ export async function cleanupStaleDestinationTempFiles(options: {
 
   const cutoff = Date.now() - maxAgeMs;
   for (const entry of entries) {
-    if (!isCrossDeviceMoveTempFile(entry)) {
+    if (!isDestinationTempFile(entry)) {
       continue;
     }
 
     const filePath = path.join(directory, entry);
+    if (preservedPath !== undefined && path.resolve(filePath) === preservedPath) {
+      continue;
+    }
+
     try {
       const stats = await fs.promises.lstat(filePath);
       if (stats.mtimeMs > cutoff) {
@@ -204,16 +236,12 @@ export async function cleanupTransferTempFilesForDownload(directory: string): Pr
   }
 }
 
-export async function cleanupDestinationTempFilesForDownload(directory: string): Promise<void> {
+export async function cleanupDestinationTempFilesForDownload(
+  directory: string,
+  preservePath?: string,
+): Promise<void> {
   if (shouldRunThrottledCleanup(`destination:${path.resolve(directory)}`)) {
-    await cleanupStaleDestinationTempFiles({ directory });
-  }
-}
-
-export function assertDestinationFileNameIsNotReserved(destinationPath: string): void {
-  const name = path.basename(destinationPath);
-  if (isTransferTempFile(name) || isDestinationTempFile(name)) {
-    throw new Error(`Destination filename uses a reserved B2 transfer temp pattern: ${name}`);
+    await cleanupStaleDestinationTempFiles({ directory, preservePath });
   }
 }
 
@@ -229,31 +257,25 @@ async function replaceExistingDestination(
   sourcePath: string,
   destinationPath: string,
 ): Promise<void> {
-  const backupPath = destinationReplaceBackupPath(destinationPath);
-  try {
-    await fs.promises.copyFile(destinationPath, backupPath, fs.constants.COPYFILE_EXCL);
-  } catch (error) {
-    await removeTempFile(backupPath);
-    throw error;
+  const destinationStats = await fs.promises.lstat(destinationPath);
+  if (!destinationStats.isFile()) {
+    throw new Error(`Download destination must be a regular file: ${destinationPath}`);
   }
 
-  let destinationRemoved = false;
+  const backupPath = destinationReplaceBackupPath(destinationPath);
   try {
-    await fs.promises.rm(destinationPath, { force: true });
-    destinationRemoved = true;
+    await fs.promises.rename(destinationPath, backupPath);
     await fs.promises.rename(sourcePath, destinationPath);
   } catch (error) {
-    if (destinationRemoved) {
-      try {
+    try {
+      if (!fs.existsSync(destinationPath) && fs.existsSync(backupPath)) {
         await fs.promises.rename(backupPath, destinationPath);
-      } catch (restoreError) {
-        logError(
-          `Could not restore original destination after failed replace: ${destinationPath}`,
-          restoreError,
-        );
       }
-    } else {
-      await removeTempFile(backupPath);
+    } catch (restoreError) {
+      logError(
+        `Could not restore original destination after failed replace: ${destinationPath}`,
+        restoreError,
+      );
     }
     throw error;
   }

@@ -33,6 +33,7 @@ export interface FixedTimeoutOptions {
 export interface ActivityAbortSignal {
   readonly signal: AbortSignal;
   markActivity(): void;
+  abort(reason?: unknown): void;
   timeoutError(): TransferStallTimeoutError | undefined;
   dispose(): void;
 }
@@ -113,6 +114,12 @@ export function createActivityAbortSignal(
   return {
     signal: controller.signal,
     markActivity,
+    abort(reason?: unknown) {
+      clearTimer();
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    },
     timeoutError: () => timedOut,
     dispose() {
       clearTimer();
