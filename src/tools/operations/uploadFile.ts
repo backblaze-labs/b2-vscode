@@ -19,6 +19,7 @@ import {
 } from "../../services/fileTransfers";
 import {
   findWorkspaceControlDirectory,
+  findWorkspaceSecretPath,
   isPathInsideOrEqual,
   resolveContainedRelativePath,
 } from "../../services/pathSafety";
@@ -47,6 +48,10 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
     throw new B2ToolInputError(
       `uploadFile refuses to read inside workspace control directory: ${blocked}`,
     );
+  }
+  const secret = findWorkspaceSecretPath(workspaceRoot, localPath);
+  if (secret) {
+    throw new B2ToolInputError(`uploadFile refuses to read sensitive workspace path: ${secret}`);
   }
 }
 

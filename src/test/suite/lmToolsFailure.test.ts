@@ -1251,6 +1251,32 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("upload tool rejects workspace secret files", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-secret-"));
+    fs.writeFileSync(path.join(workspaceDir, ".env"), "TOKEN=secret");
+    fs.mkdirSync(path.join(workspaceDir, ".config", "b2"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, ".config", "b2", "account.json"), "{}");
+    const client = {
+      async getBucket() {
+        assert.fail("Expected secret-file validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        for (const localPath of [".env", path.join(".config", "b2", "account.json")]) {
+          await assert.rejects(
+            () =>
+              uploadFileOperation.execute({ bucket: "b", localPath }, { getClient: () => client }),
+            /sensitive workspace path/i,
+          );
+        }
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("upload tool rejects symlink escapes before reading", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-symlink-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-outside-"));
