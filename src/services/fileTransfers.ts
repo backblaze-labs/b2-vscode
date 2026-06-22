@@ -923,7 +923,7 @@ async function cleanupOwnedUnfinishedUpload(
     | "unfinishedCleanupBudgetMs"
   > = {},
 ): Promise<void> {
-  await runSerializedUnfinishedUploadCleanup("Owned unfinished upload", () =>
+  await runSerializedUnfinishedUploadCleanup(() =>
     cleanupMatchingUnfinishedUploads(
       bucket,
       remotePath,
@@ -970,10 +970,7 @@ async function cleanupStaleSameKeyUnfinishedUploads(
   );
 }
 
-async function runSerializedUnfinishedUploadCleanup(
-  _description: string,
-  cleanup: () => Promise<void>,
-): Promise<void> {
+async function runSerializedUnfinishedUploadCleanup(cleanup: () => Promise<void>): Promise<void> {
   if (unfinishedUploadCleanupPendingCount > 0) {
     unfinishedUploadCleanupDiagnostics.queuedOwnedCleanupCount += 1;
   }
