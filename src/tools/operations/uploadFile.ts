@@ -8,7 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { B2ResourceNotFoundError } from "../../errors";
+import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import {
   assertUploadSourcePathUnchanged,
   closeUploadSource,
@@ -44,7 +44,9 @@ interface UploadFileResult {
 function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string): void {
   const blocked = findWorkspaceControlDirectory(workspaceRoot, localPath);
   if (blocked) {
-    throw new Error(`uploadFile refuses to read inside workspace control directory: ${blocked}`);
+    throw new B2ToolInputError(
+      `uploadFile refuses to read inside workspace control directory: ${blocked}`,
+    );
   }
 }
 

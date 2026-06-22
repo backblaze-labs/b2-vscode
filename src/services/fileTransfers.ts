@@ -1113,7 +1113,9 @@ function withActivityProgress(
 async function assertRealUploadSourcePath(localPath: string): Promise<fs.Stats> {
   const pathStats = await fs.promises.lstat(localPath);
   if (pathStats.isSymbolicLink()) {
-    throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+    throw new B2ToolInputError(
+      `Local upload source must be a real file, not a symlink: ${localPath}`,
+    );
   }
   if (!pathStats.isFile()) {
     throw new B2ToolInputError(`Local path is not a file: ${localPath}`);
@@ -1129,7 +1131,9 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
     handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ELOOP") {
-      throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+      throw new B2ToolInputError(
+        `Local upload source must be a real file, not a symlink: ${localPath}`,
+      );
     }
     throw error;
   }
