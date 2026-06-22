@@ -636,14 +636,20 @@ suite("B2 LM tool failure handling", () => {
       fs.rmSync(probeLink, { recursive: true, force: true });
 
       await withWorkspaceFolder(workspaceDir, async () => {
-        await assert.rejects(
-          () =>
-            downloadFileOperation.execute(
-              { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
-              { getClient: () => client },
-            ),
-          /real directory|symlink|outside the allowed root/i,
-        );
+        let message = "";
+        try {
+          await downloadFileOperation.execute(
+            { bucket: "b", path: "payload.txt", localPath: "downloads/payload.txt" },
+            { getClient: () => client },
+          );
+          assert.fail("Expected symlink swap to reject.");
+        } catch (error) {
+          message = error instanceof Error ? error.message : String(error);
+        }
+
+        assert.match(message, /real directory|symlink|outside the allowed root/i);
+        assert.strictEqual(message.includes(workspaceDir), false);
+        assert.strictEqual(message.includes(outsideDir), false);
       });
 
       assert.strictEqual(downloadWasCalled, true);
