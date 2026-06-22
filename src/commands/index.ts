@@ -137,6 +137,22 @@ function validateBucketName(bucketName: string): string | undefined {
   return undefined;
 }
 
+function validateFolderName(folderName: string): string | undefined {
+  if (!folderName) {
+    return "Folder name is required";
+  }
+  if (folderName.includes("/") || folderName.includes("\\")) {
+    return "Folder name cannot contain path separators";
+  }
+  if (/[\0-\x1f\x7f]/u.test(folderName)) {
+    return "Folder name cannot contain control characters";
+  }
+  if (folderName === "." || folderName === "..") {
+    return "Folder name cannot be '.' or '..'";
+  }
+  return undefined;
+}
+
 function withAbortSignal<T extends object>(
   options: T,
   signal: AbortSignal,
@@ -375,17 +391,14 @@ export async function createFolderCommand(
     prompt: `Create a new folder inside "${item instanceof BucketTreeItem ? item.bucketName : item.prefix}"`,
     placeHolder: "my-folder",
     ignoreFocusOut: true,
-    validateInput: (value) => {
-      if (!value) {
-        return "Folder name is required";
-      }
-      if (value.includes("/")) {
-        return "Folder name cannot contain '/'";
-      }
-      return undefined;
-    },
+    validateInput: validateFolderName,
   });
   if (!folderName) {
+    return;
+  }
+  const folderNameValidation = validateFolderName(folderName);
+  if (folderNameValidation) {
+    vscode.window.showErrorMessage(`B2: ${folderNameValidation}`);
     return;
   }
 

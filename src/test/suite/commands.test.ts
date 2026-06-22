@@ -296,7 +296,37 @@ suite("B2 commands error handling", () => {
     assert.strictEqual(refreshed, false);
     assert.deepStrictEqual(ui.infos, []);
     assert.strictEqual(ui.errors.length, 1);
-    assert.match(ui.errors[0] ?? "", /stalled/i);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("create folder revalidates path-shaped names after input", async () => {
+    for (const folderName of ["..", "bad\0name"]) {
+      let uploadCalled = false;
+      const bucket = {
+        name: "bucket",
+        id: "bucket-id",
+        info: { bucketType: "allPrivate" },
+        async upload() {
+          uploadCalled = true;
+          return undefined;
+        },
+      };
+      const item = new BucketTreeItem(
+        bucket as unknown as ConstructorParameters<typeof BucketTreeItem>[0],
+      );
+
+      const ui = await withWindowUiStubs({ inputValues: [folderName] }, () =>
+        createFolderCommand(item, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+      );
+
+      assert.strictEqual(uploadCalled, false);
+      assert.deepStrictEqual(ui.infos, []);
+      assert.strictEqual(ui.errors.length, 1);
+      assert.match(ui.errors[0] ?? "", /Folder name/);
+    }
   });
 
   test("classifies public mutation failures by certainty", () => {
