@@ -199,8 +199,10 @@ async function withBucketMutationTimeout<T>(
     } catch (settleError) {
       if (settleTimedOut) {
         observeLateSettlement();
+      } else {
+        logError(`${description} failed while settling after the client-side timeout`, settleError);
       }
-      throw settleError;
+      throw error;
     } finally {
       if (settleTimer) {
         clearTimeout(settleTimer);

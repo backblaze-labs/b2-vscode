@@ -384,6 +384,42 @@ suite("B2 public bucket command safety", () => {
     assert.match(ui.errors[0] ?? "", /timed out/i);
   });
 
+  test("keeps timeout error when aborted bucket creation rejects during settle", async () => {
+    const { client, calls } = makeCreateBucketClient(
+      (options) =>
+        new Promise<CreateBucketResult>((_resolve, reject) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("The operation was aborted");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+    );
+    const commandServices = makeCommandServices(client, {
+      bucketMutationTimeoutMs: 5,
+      bucketMutationPostTimeoutSettleMs: 100,
+    });
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["private-bucket"],
+        quickPickLabels: [PRIVATE_VISIBILITY_LABEL],
+      },
+      () => createBucketCommand(commandServices.services),
+    );
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0]?.signal?.aborted, true);
+    assert.strictEqual(commandServices.refreshCount(), 1);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+    assert.doesNotMatch(ui.errors[0] ?? "", /aborted/i);
+  });
+
   test("does not create a public bucket when typed confirmation name mismatches", async () => {
     const { client, calls } = makeCreateBucketClient();
     const commandServices = makeCommandServices(client);
