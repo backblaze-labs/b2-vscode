@@ -192,7 +192,7 @@ suite("B2 LM tool operations with simulator", () => {
       const authorizedPath = fs.realpathSync(localPath);
 
       mutableFs.open = (async (...args: Parameters<typeof fs.promises.open>) => {
-        if (!swapped && path.resolve(String(args[0])) === path.resolve(authorizedPath)) {
+        if (!swapped && path.resolve(String(args[0])) === path.resolve(localPath)) {
           swapped = true;
           fs.rmSync(authorizedPath, { force: true });
           if (!createFileSymlink(outsidePath, authorizedPath)) {
@@ -209,7 +209,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: "export.txt", bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot.txt" },
               { getClient: () => client },
             ),
-          /changed after workspace authorization|ELOOP|symbolic link/i,
+          /changed after workspace authorization|ELOOP|symbolic link|real file/i,
         ),
       );
 
@@ -269,9 +269,57 @@ suite("B2 LM tool operations with simulator", () => {
         ),
       );
 
-      assert.strictEqual(downloaded.localPath, downloadPath);
+      assert.strictEqual(downloaded.localPath, path.join("downloads", "source file.txt"));
       assert.strictEqual(downloaded.size, Buffer.byteLength(CONTENT));
       assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile rejects known objects over the LM byte limit before streaming", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const destinationPath = path.join(workspaceRoot, "oversized.bin");
+    let canceled = false;
+    const bucket = {
+      async download() {
+        return {
+          headers: { contentLength: 512 * 1024 * 1024 + 1 },
+          body: new ReadableStream<Uint8Array>({
+            cancel() {
+              canceled = true;
+            },
+          }),
+        };
+      },
+    };
+    const client = {
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              {
+                bucket: SIMULATOR_BUCKET_NAME,
+                path: "oversized.bin",
+                localPath: "oversized.bin",
+              },
+              { getClient: () => client as never },
+            ),
+          /512 MiB|configured size limit/i,
+        ),
+      );
+
+      assert.strictEqual(canceled, true);
+      assert.strictEqual(fs.existsSync(destinationPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -454,7 +502,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               { getClient: () => client as never },
             ),
-          /Destination directory must be a real directory|outside the allowed root/i,
+          /Workspace download directory must be a real directory|outside the allowed root/i,
         ),
       );
 
@@ -485,7 +533,7 @@ suite("B2 LM tool operations with simulator", () => {
         ),
       );
 
-      assert.strictEqual(downloaded.localPath, expectedPath);
+      assert.strictEqual(downloaded.localPath, "..notes.txt");
       assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -526,21 +574,68 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("presignUrl accepts an exact file that has same-prefix siblings", async () => {
-    const { bucket, extras } = await createUploadedToolFixture();
-    await bucket.upload({
-      fileName: `${REMOTE_PATH}.copy`,
-      source: new BufferSource(Buffer.from("copy")),
-    });
+  test("presignUrl rejects control characters before list or authorization calls", async () => {
+    let listRequested = false;
+    let authorizationRequested = false;
+    const bucket = {
+      async listFileNames() {
+        listRequested = true;
+        return { files: [], nextFileName: null };
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "control-token" };
+      },
+    };
+    const client = {
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
 
-    const presigned = await presignUrlOperation.execute(
-      { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
-      extras,
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\u0000name.txt", expiresIn: 123 },
+          { getClient: () => client as never },
+        ),
+      /control characters/i,
     );
+    assert.strictEqual(listRequested, false);
+    assert.strictEqual(authorizationRequested, false);
+  });
 
-    const url = new URL(presigned.url);
-    assert.ok(url.searchParams.get("Authorization"));
-    assert.match(presigned.message, /Other current objects with the same prefix/i);
+  test("presignUrl rejects an exact file that has same-prefix siblings", async () => {
+    let authorizationRequested = false;
+    const bucket = {
+      async listFileNames(options: { prefix: string; pageSize: number }) {
+        assert.deepStrictEqual(options, { prefix: REMOTE_PATH, pageSize: 2 });
+        return {
+          files: [{ fileName: REMOTE_PATH }, { fileName: `${REMOTE_PATH}.copy` }],
+          nextFileName: null,
+        };
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "sibling-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        presignUrlOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+          { getClient: () => client as never },
+        ),
+      /additional current objects sharing this prefix/i,
+    );
+    assert.strictEqual(authorizationRequested, false);
   });
 
   test("presignUrl rejects hidden file markers", async () => {
@@ -669,6 +764,56 @@ suite("B2 LM tool operations with simulator", () => {
       /temporary forbidden/i,
     );
     assert.strictEqual(authorizationRequested, false);
+  });
+
+  test("presignUrl times out stalled list verification", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: NodeJS.Timeout[] = [];
+    let authorizationRequested = false;
+    const bucket = {
+      async listFileNames() {
+        return new Promise<never>(() => undefined);
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "stalled-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    globalThis.setTimeout = ((
+      callback: (...args: unknown[]) => void,
+      _timeout?: number,
+      ...args: unknown[]
+    ) => {
+      const timer = originalSetTimeout(callback, 0, ...args);
+      timers.push(timer);
+      return timer;
+    }) as typeof setTimeout;
+
+    try {
+      await assert.rejects(
+        () =>
+          presignUrlOperation.execute(
+            { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+            { getClient: () => client as never },
+          ),
+        /timed out/i,
+      );
+      assert.strictEqual(authorizationRequested, false);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      for (const timer of timers) {
+        originalClearTimeout(timer);
+      }
+    }
   });
 
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {

@@ -180,6 +180,7 @@ export async function cleanupStaleTempFileCache(
 export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
+  private readonly inFlight = new Map<string, Promise<string>>();
 
   constructor(tempRoot = defaultTempRoot()) {
     this.tempRoot = path.resolve(tempRoot);
@@ -246,6 +247,30 @@ export class TempFileManager implements vscode.Disposable {
       return cachedPath;
     }
 
+    const inFlight = this.inFlight.get(key);
+    if (inFlight) {
+      await stream.cancel().catch(() => undefined);
+      return inFlight;
+    }
+
+    const populate = this.populateCache(bucketName, fileName, stream, options);
+    this.inFlight.set(key, populate);
+    try {
+      return await populate;
+    } finally {
+      if (this.inFlight.get(key) === populate) {
+        this.inFlight.delete(key);
+      }
+    }
+  }
+
+  private async populateCache(
+    bucketName: string,
+    fileName: string,
+    stream: ReadableStream<Uint8Array>,
+    options: DownloadStreamToFileOptions,
+  ): Promise<string> {
+    const key = `${bucketName}/${fileName}`;
     const bucketRoot = resolveContainedRelativePath(this.tempRoot, bucketName, "B2 bucket name");
     const localPath = resolveContainedRelativePath(bucketRoot, fileName, "B2 file name");
     await this.ensureCacheDirectoryPath(path.dirname(localPath));
@@ -255,6 +280,7 @@ export class TempFileManager implements vscode.Disposable {
       ...options,
       overwrite: false,
       allowedRootDirectory: this.tempRoot,
+      temporaryDirectory: path.join(path.dirname(localPath), ".b2-vscode-transfers"),
     });
 
     this.cache.set(key, localPath);
@@ -274,5 +300,6 @@ export class TempFileManager implements vscode.Disposable {
       // Best-effort cleanup — ignore errors
     }
     this.cache.clear();
+    this.inFlight.clear();
   }
 }

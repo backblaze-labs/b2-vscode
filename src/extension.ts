@@ -14,6 +14,7 @@ import {
   cleanupStaleUnfinishedUploads,
   cleanupStaleUploadSessionMarkers,
   cleanupStaleTransferTempFiles,
+  cleanupWorkspaceDestinationTempFiles,
   cleanupWorkspaceTransferTempFiles,
   type StaleUnfinishedUploadCleanupOptions,
   type StaleUnfinishedUploadCleanupResult,
@@ -181,6 +182,11 @@ function scheduleTempCleanups(context: vscode.ExtensionContext): void {
     void cleanupWorkspaceTransferTempFiles({ workspaceRoot: folder.uri.fsPath }).catch((error) => {
       logError(`Could not clean workspace transfer temp files: ${folder.uri.fsPath}`, error);
     });
+    void cleanupWorkspaceDestinationTempFiles({ workspaceRoot: folder.uri.fsPath }).catch(
+      (error) => {
+        logError(`Could not clean workspace destination temp files: ${folder.uri.fsPath}`, error);
+      },
+    );
   };
   vscode.workspace.workspaceFolders?.forEach(cleanupWorkspace);
   context.subscriptions.push(

@@ -93,7 +93,7 @@ export function normalizeTransferError(error: unknown, activity: ActivityAbortSi
   throw error;
 }
 
-function abortPromise(signal: AbortSignal): Promise<never> {
+export function abortPromise(signal: AbortSignal): Promise<never> {
   const abortReason = () => signal.reason ?? new DOMException("Aborted", "AbortError");
 
   if (signal.aborted) {

@@ -85,6 +85,46 @@ suite("TempFileManager", () => {
     }
   });
 
+  test("coalesces concurrent saveStream calls for the same B2 object", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const manager = new TempFileManager(tempRoot);
+    let firstController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const firstStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        firstController = controller;
+      },
+    });
+    let secondCanceled = false;
+    let secondPulled = false;
+    const secondStream = new ReadableStream<Uint8Array>({
+      pull() {
+        secondPulled = true;
+      },
+      cancel() {
+        secondCanceled = true;
+      },
+    });
+
+    try {
+      const firstSave = manager.saveStream("bucket", "same.txt", firstStream);
+      const secondSave = manager.saveStream("bucket", "same.txt", secondStream);
+
+      firstController?.enqueue(Buffer.from("cached once"));
+      firstController?.close();
+
+      const [firstPath, secondPath] = await Promise.all([firstSave, secondSave]);
+
+      assert.strictEqual(firstPath, secondPath);
+      assert.strictEqual(secondCanceled, true);
+      assert.strictEqual(secondPulled, false);
+      assert.strictEqual(fs.readFileSync(firstPath, "utf8"), "cached once");
+      assert.strictEqual(manager.getCachedPath("bucket", "same.txt"), firstPath);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("replaces stale on-disk cache files missing from memory", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
     const manager = new TempFileManager(tempRoot);
@@ -284,29 +324,28 @@ suite("TempFileManager", () => {
     }
   });
 
-  test("rejects cache parent symlink swaps before the final open", async () => {
+  test("rejects cache parent symlink swaps before final publish", async () => {
     const tempRoot = tempDir("b2-vscode-temp-manager-");
     const outsideRoot = tempDir("b2-vscode-temp-outside-");
     const manager = new TempFileManager(tempRoot);
     const symlinkPath = path.join(tempRoot, "bucket", "link");
-    const localPath = path.join(symlinkPath, "escape.txt");
     const outsideFile = path.join(outsideRoot, "escape.txt");
     const capabilityLink = path.join(tempRoot, "symlink-capability");
-    const originalOpen = fs.promises.open;
-    const mutablePromises = fs.promises as unknown as { open: typeof fs.promises.open };
+    const originalRealpath = fs.promises.realpath;
+    const mutablePromises = fs.promises as unknown as { realpath: typeof fs.promises.realpath };
+    let realpathChecks = 0;
     let symlinkInjected = false;
 
-    mutablePromises.open = (async (
-      filePath: fs.PathLike,
-      flags?: string | number,
-      mode?: fs.Mode,
-    ) => {
-      if (!symlinkInjected && path.resolve(String(filePath)) === path.resolve(localPath)) {
+    mutablePromises.realpath = (async (...args: Parameters<typeof fs.promises.realpath>) => {
+      if (path.resolve(String(args[0])) === path.resolve(symlinkPath)) {
+        realpathChecks += 1;
+      }
+      if (!symlinkInjected && realpathChecks > 1) {
         fs.rmSync(symlinkPath, { recursive: true, force: true });
         symlinkInjected = createDirectorySymlink(outsideRoot, symlinkPath);
       }
-      return originalOpen(filePath, flags, mode);
-    }) as typeof fs.promises.open;
+      return originalRealpath(...args);
+    }) as typeof fs.promises.realpath;
 
     try {
       if (!createDirectorySymlink(outsideRoot, capabilityLink)) {
@@ -317,7 +356,7 @@ suite("TempFileManager", () => {
       await assert.rejects(
         () =>
           manager.saveStream("bucket", path.join("link", "escape.txt"), streamFromText("escape")),
-        /Destination directory.*real directory|outside the allowed root|ENOENT|no such file/i,
+        /Temp file cache directory|Workspace download directory|outside the allowed root|real directory|ENOENT|no such file/i,
       );
       assert.strictEqual(symlinkInjected, true);
       assert.strictEqual(fs.existsSync(outsideFile), false);
@@ -326,7 +365,7 @@ suite("TempFileManager", () => {
         undefined,
       );
     } finally {
-      mutablePromises.open = originalOpen;
+      mutablePromises.realpath = originalRealpath;
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });
       fs.rmSync(outsideRoot, { recursive: true, force: true });

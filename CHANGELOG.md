@@ -13,9 +13,10 @@
   Node 22, matching the SDK's runtime requirement.
 - `presignUrl` now requires an integer expiration from 1 to 604800 seconds and
   rejects empty paths, folder-like paths, and paths that `listFiles` cannot
-  verify as an existing downloadable B2 file before issuing a prefix-based
-  download authorization. The token-bearing link is returned in the structured
-  `url` field rather than repeated in the human-readable message.
+  verify as one existing downloadable B2 file with no current same-prefix
+  sibling files before issuing a prefix-based download authorization. The
+  token-bearing link is returned in the structured `url` field rather than
+  repeated in the human-readable message.
 
 ### Fixed
 
