@@ -649,35 +649,22 @@ suite("B2 transfer helpers", () => {
     const probeLink = path.join(workspaceDir, "probe");
     fs.mkdirSync(downloadDir);
     const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
-    const originalOpen = fs.promises.open;
     const originalLstat = fs.promises.lstat;
     const mutablePromises = fs.promises as unknown as {
-      open: typeof fs.promises.open;
       lstat: typeof fs.promises.lstat;
     };
-    let destinationTempOpened = false;
+    let downloaded = false;
     let swapped = false;
     const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
+      pull(controller) {
+        downloaded = true;
         controller.enqueue(Buffer.from("do not publish outside"));
         controller.close();
       },
     });
 
-    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
-      const openedPath = String(args[0]);
-      const handle = await originalOpen(...args);
-      if (path.basename(openedPath).startsWith(".b2-cross-device-payload.bin-")) {
-        destinationTempOpened = true;
-      }
-      return handle;
-    }) as typeof fs.promises.open;
     mutablePromises.lstat = (async (...args: Parameters<typeof fs.promises.lstat>) => {
-      if (
-        destinationTempOpened &&
-        !swapped &&
-        path.resolve(String(args[0])) === path.resolve(destination)
-      ) {
+      if (downloaded && !swapped && path.resolve(String(args[0])) === path.resolve(destination)) {
         swapped = true;
         fs.renameSync(downloadDir, movedDownloadDir);
         fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
@@ -703,7 +690,6 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(swapped, true);
       assert.strictEqual(fs.existsSync(outsideTarget), false);
     } finally {
-      mutablePromises.open = originalOpen;
       mutablePromises.lstat = originalLstat;
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -724,10 +710,11 @@ suite("B2 transfer helpers", () => {
     const mutablePromises = fs.promises as unknown as {
       open: typeof fs.promises.open;
     };
-    let destinationTempOpened = false;
+    let downloaded = false;
     let swapped = false;
     const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
+      pull(controller) {
+        downloaded = true;
         controller.enqueue(Buffer.from("do not publish outside"));
         controller.close();
       },
@@ -735,21 +722,13 @@ suite("B2 transfer helpers", () => {
 
     mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
       const openedPath = String(args[0]);
-      if (
-        destinationTempOpened &&
-        !swapped &&
-        path.resolve(openedPath) === path.resolve(destination)
-      ) {
+      if (downloaded && !swapped && path.resolve(openedPath) === path.resolve(destination)) {
         swapped = createFileSymlink(outsideTarget, destination);
         if (!swapped) {
           throw new Error("File symlink creation became unavailable.");
         }
       }
-      const handle = await originalOpen(...args);
-      if (path.basename(openedPath).startsWith(".b2-cross-device-payload.bin-")) {
-        destinationTempOpened = true;
-      }
-      return handle;
+      return originalOpen(...args);
     }) as typeof fs.promises.open;
 
     try {
@@ -880,8 +859,10 @@ suite("B2 transfer helpers", () => {
     const existing = path.join(dir, "existing.bin");
     const originalLink = fs.promises.link;
     const originalCopyFile = fs.promises.copyFile;
+    const originalOpen = fs.promises.open;
     let linkCalls = 0;
     let destinationCopyFileCalls = 0;
+    let destinationTempOpenCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
     fs.promises.link = async (): Promise<void> => {
       linkCalls += 1;
@@ -898,6 +879,14 @@ suite("B2 transfer helpers", () => {
       }
       await originalCopyFile(sourcePath, destinationPath, mode);
     };
+    fs.promises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (path.basename(openedPath).startsWith(".b2-cross-device-file.bin-")) {
+        destinationTempOpenCalls += 1;
+        throw new Error("root-bound downloads must publish directly from the staged temp");
+      }
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
 
     try {
       const size = await downloadStreamToNewFileWithinRoot(
@@ -914,6 +903,7 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(size, 3);
       assert.strictEqual(linkCalls, 0);
       assert.strictEqual(destinationCopyFileCalls, 0);
+      assert.strictEqual(destinationTempOpenCalls, 0);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -943,6 +933,7 @@ suite("B2 transfer helpers", () => {
     } finally {
       fs.promises.link = originalLink;
       fs.promises.copyFile = originalCopyFile;
+      fs.promises.open = originalOpen;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

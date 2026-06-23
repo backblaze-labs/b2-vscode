@@ -745,42 +745,40 @@ async function copyIntoPlaceNoFollow(
   options: MoveIntoPlaceOptions = {},
   allowedRootDirectory?: string,
 ): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    if (options.overwrite !== false) {
+      throw new Error("Root-bound downloads must be written without overwrite.");
+    }
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    if (await pathExists(destinationPath)) {
+      const error = new Error(`Download destination file already exists: ${destinationPath}`);
+      (error as NodeJS.ErrnoException).code = "EEXIST";
+      throw error;
+    }
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await publishNewFileNoOverwrite(sourcePath, destinationPath, {
+      allowedRootDirectory,
+      preferHardlink: false,
+    });
+    await removeTempFile(sourcePath);
+    return;
+  }
+
   const destinationTempPath = destinationMoveTempPath(destinationPath);
   let destinationTempCreated = false;
 
   try {
-    if (allowedRootDirectory !== undefined) {
-      if (options.overwrite !== false) {
-        throw new Error("Root-bound downloads must be written without overwrite.");
-      }
-      await writeNewFileNoFollowWithinRoot(
-        allowedRootDirectory,
-        destinationTempPath,
-        fs.createReadStream(sourcePath),
-        {
-          label: "download target temp file",
-        },
-      );
-    } else {
-      await writeNewFileNoFollow(destinationTempPath, fs.createReadStream(sourcePath));
-    }
+    await writeNewFileNoFollow(destinationTempPath, fs.createReadStream(sourcePath));
 
     destinationTempCreated = true;
-    if (allowedRootDirectory !== undefined) {
-      await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
-    }
     if (options.overwrite === false && (await pathExists(destinationPath))) {
       const error = new Error(`Download destination file already exists: ${destinationPath}`);
       (error as NodeJS.ErrnoException).code = "EEXIST";
       throw error;
     }
-    if (allowedRootDirectory !== undefined) {
-      await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
-    }
     if (options.overwrite === false) {
       await publishNewFileNoOverwrite(destinationTempPath, destinationPath, {
-        allowedRootDirectory,
-        preferHardlink: allowedRootDirectory === undefined,
+        preferHardlink: true,
       });
       await removeTempFile(destinationTempPath);
     } else {
