@@ -145,5 +145,4 @@ suite("B2 Extension Test Suite", () => {
     assert.deepStrictEqual(scheduledClients, [client]);
     assert.deepStrictEqual(assignedClients, [client, null]);
   });
-
 });

@@ -92,10 +92,7 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
     return;
   }
 
-  const segments = path
-    .relative(workspaceBase, candidatePath)
-    .split(path.sep)
-    .filter(Boolean);
+  const segments = path.relative(workspaceBase, candidatePath).split(path.sep).filter(Boolean);
 
   if (segments.some(isWorkspaceControlDirectorySegment)) {
     throw new B2ToolInputError(
@@ -177,19 +174,18 @@ function resolveAbsoluteToolPath(
       description: "the extension tools temporary directory",
     },
   ].filter(
-    (candidate): candidate is {
+    (
+      candidate,
+    ): candidate is {
       roots: string[];
       kind: ToolLocalPathRootKind;
       description: string;
-    } =>
-      candidate !== undefined,
+    } => candidate !== undefined,
   );
 
   const resolvedAbsolutePath = path.resolve(absolutePath);
   for (const allowedRoot of allowedRoots) {
-    const matchedRoot = allowedRoot.roots.find((root) =>
-      isPathInside(root, resolvedAbsolutePath),
-    );
+    const matchedRoot = allowedRoot.roots.find((root) => isPathInside(root, resolvedAbsolutePath));
     if (matchedRoot === undefined) {
       continue;
     }

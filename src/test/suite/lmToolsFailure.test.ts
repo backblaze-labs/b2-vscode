@@ -1230,10 +1230,7 @@ suite("B2 LM tool failure handling", () => {
         for (const localPath of ["", ".", "..", "payloads/"] as const) {
           await assert.rejects(
             () =>
-              uploadFileOperation.execute(
-                { bucket: "b", localPath },
-                { getClient: () => client },
-              ),
+              uploadFileOperation.execute({ bucket: "b", localPath }, { getClient: () => client }),
             /file path, not a directory path/i,
           );
         }
