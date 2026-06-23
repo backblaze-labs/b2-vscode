@@ -36,8 +36,25 @@ import {
   writeNewFileNoFollow,
   writeNewFileNoFollowWithinRoot,
 } from "./pathSafety";
+import {
+  DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+  abortPromise,
+  createActivityAbortSignal,
+  normalizeTransferError,
+  type TransferTimeoutOptions,
+} from "./transferTimeout";
 
-export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+export {
+  DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+  TransferStallTimeoutError,
+  abortPromise,
+  createActivityAbortSignal,
+  normalizeTransferError,
+  withTransferStallTimeout,
+  type ActivityAbortSignal,
+  type TransferTimeoutOptions,
+} from "./transferTimeout";
+
 export const DEFAULT_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 
@@ -97,23 +114,11 @@ const TRANSFER_TEMP_FILE_PATTERN = new RegExp(
   "u",
 );
 
-export class TransferStallTimeoutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TransferStallTimeoutError";
-  }
-}
-
 export class DownloadSizeLimitError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DownloadSizeLimitError";
   }
-}
-
-export interface TransferTimeoutOptions {
-  readonly signal?: AbortSignal;
-  readonly stallTimeoutMs?: number;
 }
 
 export interface DownloadStreamToFileOptions extends TransferTimeoutOptions {
@@ -149,6 +154,8 @@ export interface StaleUnfinishedUploadCleanupOptions extends Pick<
 > {
   readonly remotePath?: string;
   readonly unfinishedCleanupMaxAgeMs?: number;
+  readonly skipUploadSessionMarkerCleanup?: boolean;
+  readonly onMissingCapability?: (description: string, error: unknown) => void;
 }
 
 export interface StaleUnfinishedUploadCleanupResult {
@@ -193,81 +200,6 @@ export interface UploadSourceFile {
   readonly path: string;
   readonly handle: fs.promises.FileHandle;
   readonly stats: fs.Stats;
-}
-
-interface ActivityAbortSignal {
-  readonly signal: AbortSignal;
-  markActivity(): void;
-  timeoutError(): TransferStallTimeoutError | undefined;
-  dispose(): void;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}
-
-function createActivityAbortSignal(
-  parentSignal: AbortSignal | undefined,
-  stallTimeoutMs: number,
-  description: string,
-): ActivityAbortSignal {
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  let timedOut: TransferStallTimeoutError | undefined;
-
-  const clearTimer = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-  };
-
-  const markActivity = () => {
-    clearTimer();
-    if (stallTimeoutMs <= 0 || controller.signal.aborted) {
-      return;
-    }
-
-    timer = setTimeout(() => {
-      timedOut = new TransferStallTimeoutError(
-        `${description} stalled for ${stallTimeoutMs} ms with no transfer activity.`,
-      );
-      controller.abort(timedOut);
-    }, stallTimeoutMs);
-    timer.unref?.();
-  };
-
-  const abortFromParent = () => {
-    if (!controller.signal.aborted) {
-      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
-    }
-  };
-
-  if (parentSignal?.aborted) {
-    abortFromParent();
-  } else {
-    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-    markActivity();
-  }
-
-  return {
-    signal: controller.signal,
-    markActivity,
-    timeoutError: () => timedOut,
-    dispose() {
-      clearTimer();
-      parentSignal?.removeEventListener("abort", abortFromParent);
-    },
-  };
-}
-
-function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): never {
-  const timeoutError = activity.timeoutError();
-  if (timeoutError && (activity.signal.aborted || isAbortLikeError(error))) {
-    throw timeoutError;
-  }
-
-  throw error;
 }
 
 function normalizedMaxBytes(maxBytes: number | undefined): number {
@@ -319,41 +251,6 @@ function createDownloadSizeLimitTransform(
       callback(null, chunk);
     },
   });
-}
-
-function abortPromise(signal: AbortSignal): Promise<never> {
-  const abortReason = () => signal.reason ?? new DOMException("Aborted", "AbortError");
-
-  if (signal.aborted) {
-    return Promise.reject(abortReason());
-  }
-
-  return new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(abortReason()), { once: true });
-  });
-}
-
-export async function withTransferStallTimeout<T>(
-  description: string,
-  options: TransferTimeoutOptions,
-  run: (signal: AbortSignal, markActivity: () => void) => Promise<T>,
-): Promise<T> {
-  const activity = createActivityAbortSignal(
-    options.signal,
-    options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
-    description,
-  );
-
-  try {
-    return await Promise.race([
-      run(activity.signal, activity.markActivity),
-      abortPromise(activity.signal),
-    ]);
-  } catch (error) {
-    return normalizeTransferError(error, activity);
-  } finally {
-    activity.dispose();
-  }
 }
 
 function transferTempDirectory(
@@ -431,19 +328,6 @@ function isDestinationTempFile(name: string): boolean {
       name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) &&
     name.endsWith(TRANSFER_TEMP_SUFFIX)
   );
-}
-
-function backupDestinationPath(directory: string, name: string): string | undefined {
-  if (!name.startsWith(REPLACE_BACKUP_TEMP_PREFIX) || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
-    return undefined;
-  }
-
-  const encoded = name.slice(
-    REPLACE_BACKUP_TEMP_PREFIX.length,
-    name.length - TRANSFER_TEMP_SUFFIX.length,
-  );
-  const match = /^(.*)-\d+-[a-f0-9]+$/u.exec(encoded);
-  return match ? path.join(directory, match[1]) : undefined;
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -645,13 +529,8 @@ async function cleanupDestinationTempEntry(
       return false;
     }
 
-    const restorePath = backupDestinationPath(directory, entry);
-    if (restorePath && !(await pathExists(restorePath))) {
-      if (!stats.isFile()) {
-        await fs.promises.rm(filePath, { force: true });
-        return true;
-      }
-      await fs.promises.rename(filePath, restorePath);
+    if (entry.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) {
+      await fs.promises.rm(filePath, { force: true });
       return true;
     }
 
@@ -1326,6 +1205,30 @@ function recordUnfinishedUploadCleanupTimeout(description: string, error: unknow
   );
 }
 
+function isMissingCapabilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const details = error as Error & { code?: string };
+  return String(details.code ?? "").toLowerCase() === "missing_capability";
+}
+
+function recordUnfinishedUploadCleanupMissingCapability(
+  description: string,
+  error: unknown,
+  onMissingCapability: ((description: string, error: unknown) => void) | undefined,
+): void {
+  if (onMissingCapability) {
+    onMissingCapability(description, error);
+    return;
+  }
+
+  log(
+    `${description} cleanup skipped because the B2 key lacks the required unfinished-upload listing capability.`,
+  );
+}
+
 function remainingCleanupBudget(startedAt: number, budgetMs: number): number {
   return Math.max(0, startedAt + budgetMs - Date.now());
 }
@@ -1507,9 +1410,11 @@ export async function cleanupStaleUnfinishedUploads(
   bucket: UploadBucketHandle,
   options: StaleUnfinishedUploadCleanupOptions = {},
 ): Promise<StaleUnfinishedUploadCleanupResult> {
-  await cleanupStaleUploadSessionMarkers().catch((error) => {
-    logError("Could not clean stale upload session markers", error);
-  });
+  if (!options.skipUploadSessionMarkerCleanup) {
+    await cleanupStaleUploadSessionMarkers().catch((error) => {
+      logError("Could not clean stale upload session markers", error);
+    });
+  }
 
   const cutoff =
     Date.now() - (options.unfinishedCleanupMaxAgeMs ?? STALE_UNFINISHED_UPLOAD_MAX_AGE_MS);
@@ -1646,7 +1551,8 @@ async function cleanupMatchingUnfinishedUploads(
     | "unfinishedCleanupMaxCancels"
     | "unfinishedCleanupTimeoutMs"
     | "unfinishedCleanupBudgetMs"
-  > = {},
+  > &
+    Pick<StaleUnfinishedUploadCleanupOptions, "onMissingCapability"> = {},
   description: string,
   shouldCancel: (file: UnfinishedLargeFile) => boolean | undefined | Promise<boolean | undefined>,
 ): Promise<number> {
@@ -1701,6 +1607,12 @@ async function cleanupMatchingUnfinishedUploads(
     } catch (error) {
       if (error instanceof CleanupOperationTimeoutError) {
         recordUnfinishedUploadCleanupTimeout(`${description} list`, error);
+      } else if (isMissingCapabilityError(error)) {
+        recordUnfinishedUploadCleanupMissingCapability(
+          `${description} list`,
+          error,
+          options.onMissingCapability,
+        );
       } else {
         logError(`${description} list failed`, error);
       }

@@ -25,6 +25,31 @@ export interface ActivityAbortSignal {
   dispose(): void;
 }
 
+function linkParentAbort(parentSignal: AbortSignal | undefined): {
+  readonly controller: AbortController;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const abortFromParent = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
+    }
+  };
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+
+  return {
+    controller,
+    dispose() {
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
 function isAbortLikeError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
@@ -34,7 +59,8 @@ export function createActivityAbortSignal(
   stallTimeoutMs: number,
   description: string,
 ): ActivityAbortSignal {
-  const controller = new AbortController();
+  const linkedAbort = linkParentAbort(parentSignal);
+  const { controller } = linkedAbort;
   let timer: NodeJS.Timeout | undefined;
   let timedOut: TransferStallTimeoutError | undefined;
 
@@ -60,16 +86,7 @@ export function createActivityAbortSignal(
     timer.unref?.();
   };
 
-  const abortFromParent = () => {
-    if (!controller.signal.aborted) {
-      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
-    }
-  };
-
-  if (parentSignal?.aborted) {
-    abortFromParent();
-  } else {
-    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  if (!parentSignal?.aborted) {
     markActivity();
   }
 
@@ -79,7 +96,7 @@ export function createActivityAbortSignal(
     timeoutError: () => timedOut,
     dispose() {
       clearTimer();
-      parentSignal?.removeEventListener("abort", abortFromParent);
+      linkedAbort.dispose();
     },
   };
 }
@@ -135,37 +152,17 @@ export async function withTimeout<T>(
   options: { signal?: AbortSignal } = {},
 ): Promise<T> {
   const parentSignal = options.signal;
+  const linkedAbort = linkParentAbort(parentSignal);
+  const { controller } = linkedAbort;
   if (timeoutMs <= 0) {
-    const controller = new AbortController();
-    const abortFromParent = () => {
-      if (!controller.signal.aborted) {
-        controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
-      }
-    };
-    if (parentSignal?.aborted) {
-      abortFromParent();
-    } else {
-      parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-    }
     try {
       return await Promise.race([run(controller.signal), abortPromise(controller.signal)]);
     } finally {
-      parentSignal?.removeEventListener("abort", abortFromParent);
+      linkedAbort.dispose();
     }
   }
 
-  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
-  const abortFromParent = () => {
-    if (!controller.signal.aborted) {
-      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
-    }
-  };
-  if (parentSignal?.aborted) {
-    abortFromParent();
-  } else {
-    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-  }
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const timeoutError = new Error(`${description} timed out after ${timeoutMs} ms.`);
@@ -185,6 +182,6 @@ export async function withTimeout<T>(
     if (timer) {
       clearTimeout(timer);
     }
-    parentSignal?.removeEventListener("abort", abortFromParent);
+    linkedAbort.dispose();
   }
 }

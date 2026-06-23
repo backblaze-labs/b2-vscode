@@ -111,7 +111,9 @@ async function assertExactCurrentObjectWithoutAdjacentPrefix(
     throwIfAborted(signal);
     // The current B2 SDK list/auth helpers do not accept AbortSignal. The
     // surrounding withTimeout still bounds tool latency and this explicit check
-    // prevents issuing later calls after a timeout or LM cancellation.
+    // prevents issuing later calls after a timeout or LM cancellation. Calls
+    // are sequential, so at most one SDK request per presign invocation can
+    // continue in the background after the bounded tool result returns.
     page = await bucket.listFileNames({ prefix: filePath, pageSize: 2 });
     throwIfAborted(signal);
   } catch (error) {

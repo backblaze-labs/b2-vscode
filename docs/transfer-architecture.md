@@ -20,7 +20,6 @@ helper owns a particular temp-file convention. The stable API is:
 Supporting concerns that can be reused safely live outside the facade:
 
 - `pathSafety.ts` owns contained path and real-directory checks.
-- `sourceFileIdentity.ts` owns upload source identity construction.
 - `transferTimeout.ts` owns reusable fixed-deadline helpers, while
   `fileTransfers.ts` remains the facade for download/upload stall-timeout
   exports until those public imports are consolidated.

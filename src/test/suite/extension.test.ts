@@ -5,9 +5,9 @@
  */
 
 import * as assert from "assert";
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
+import { B2Client } from "@backblaze-labs/b2-sdk";
+import { createAuthenticatedClientSetter } from "../../extension";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
 import { presignUrlTool } from "../../tools/definitions/presignUrl";
 import { uploadFileTool } from "../../tools/definitions/uploadFile";
@@ -126,11 +126,20 @@ suite("B2 Extension Test Suite", () => {
     assert.deepStrictEqual(expiresIn, presignUrlTool.parameters.properties.expiresIn);
   });
 
-  test("auto-auth schedules stale unfinished-upload cleanup", () => {
-    const extensionSourcePath = path.join(__dirname, "../../../../src/extension.ts");
-    const source = fs.readFileSync(extensionSourcePath, "utf8");
+  test("authenticated client setter schedules stale unfinished-upload cleanup", () => {
+    const client = new B2Client({ applicationKeyId: "key-id", applicationKey: "app-key" });
+    const scheduledClients: B2Client[] = [];
+    const setClient = createAuthenticatedClientSetter((scheduledClient) => {
+      scheduledClients.push(scheduledClient);
+    });
 
-    assert.match(source, /scheduleAuthenticatedCleanups\(client\)/);
-    assert.match(source, /cleanupStaleUnfinishedUploadsForClient\(client\)/);
+    try {
+      setClient(client);
+      setClient(null);
+
+      assert.deepStrictEqual(scheduledClients, [client]);
+    } finally {
+      setClient(null);
+    }
   });
 });

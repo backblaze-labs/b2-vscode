@@ -277,6 +277,26 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("downloadFile rejects control characters in remote object names before B2 calls", async () => {
+    let bucketLookupRequested = false;
+    const client = {
+      async getBucket() {
+        bucketLookupRequested = true;
+        throw new Error("bucket lookup should not run");
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        downloadFileOperation.execute(
+          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\tname.txt" },
+          { getClient: () => client as never },
+        ),
+      /control characters/i,
+    );
+    assert.strictEqual(bucketLookupRequested, false);
+  });
+
   test("downloadFile rejects known objects over the LM byte limit before streaming", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");

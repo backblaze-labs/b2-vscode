@@ -65,7 +65,11 @@ import {
   releasePrivateTempRoot,
 } from "../../utils/privateTempRoot";
 import type { B2Credentials } from "../../services/authService";
-import { cleanupStaleUnfinishedUploadsForClient } from "../../extension";
+import {
+  cleanupStaleUnfinishedUploadsForClient,
+  STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS,
+  STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS,
+} from "../../extension";
 import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
@@ -1924,6 +1928,151 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("activation stale unfinished-upload sweep times out bucket listing", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: NodeJS.Timeout[] = [];
+    let listBucketsCalled = false;
+    const client = {
+      listBuckets() {
+        listBucketsCalled = true;
+        return new Promise<never>(() => undefined);
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    globalThis.setTimeout = ((
+      callback: (...args: unknown[]) => void,
+      _timeout?: number,
+      ...args: unknown[]
+    ) => {
+      const timer = originalSetTimeout(callback, 0, ...args);
+      timers.push(timer);
+      return timer;
+    }) as typeof setTimeout;
+
+    try {
+      const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+      assert.strictEqual(listBucketsCalled, true);
+      assert.deepStrictEqual(result, {
+        bucketCount: 0,
+        reclaimedOwnedStaleUploadCount: 0,
+        ignoredUnownedStaleUploadCount: 0,
+        failedBucketCount: 0,
+      });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      for (const timer of timers) {
+        originalClearTimeout(timer);
+      }
+    }
+  });
+
+  test("activation stale unfinished-upload sweep caps bucket count", async () => {
+    let listCalls = 0;
+    const buckets = Array.from(
+      { length: STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS + 3 },
+      (_, index) => ({
+        name: `bucket-${index}`,
+        async listUnfinishedLargeFiles() {
+          listCalls += 1;
+          return { files: [], nextFileId: null };
+        },
+        async cancelLargeFile() {
+          assert.fail("Expected empty cleanup pages not to cancel uploads");
+        },
+      }),
+    ) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
+      async listBuckets() {
+        return buckets;
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+    assert.strictEqual(listCalls, STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS);
+    assert.deepStrictEqual(result, {
+      bucketCount: STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS,
+      reclaimedOwnedStaleUploadCount: 0,
+      ignoredUnownedStaleUploadCount: 0,
+      failedBucketCount: 0,
+    });
+  });
+
+  test("activation stale unfinished-upload sweep enforces aggregate budget", async () => {
+    const originalNow = Date.now;
+    let now = 10_000;
+    let listCalls = 0;
+    const buckets = [0, 1].map((index) => ({
+      name: `bucket-${index}`,
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        now += STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS + 1;
+        return { files: [], nextFileId: null };
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected empty cleanup pages not to cancel uploads");
+      },
+    })) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
+      async listBuckets() {
+        return buckets;
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    Date.now = () => now;
+    try {
+      const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+      assert.strictEqual(listCalls, 1);
+      assert.deepStrictEqual(result, {
+        bucketCount: 1,
+        reclaimedOwnedStaleUploadCount: 0,
+        ignoredUnownedStaleUploadCount: 0,
+        failedBucketCount: 0,
+      });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("activation stale unfinished-upload sweep reports missing capability once", async () => {
+    let listCalls = 0;
+    let missingCapabilityReports = 0;
+    const buckets = [0, 1].map((index) => ({
+      name: `bucket-${index}`,
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        throw Object.assign(new Error("missing capability"), { code: "missing_capability" });
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected missing capability not to cancel uploads");
+      },
+    })) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
+      async listBuckets() {
+        return buckets;
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    const result = await cleanupStaleUnfinishedUploadsForClient(client, {
+      onMissingCapability: () => {
+        missingCapabilityReports += 1;
+      },
+    });
+
+    assert.strictEqual(listCalls, 2);
+    assert.strictEqual(missingCapabilityReports, 1);
+    assert.deepStrictEqual(result, {
+      bucketCount: 2,
+      reclaimedOwnedStaleUploadCount: 0,
+      ignoredUnownedStaleUploadCount: 0,
+      failedBucketCount: 0,
+    });
+  });
+
   test("does not trust spoofable remote unfinished upload metadata", async () => {
     const spoofedId = largeFileId("spoofed-upload");
     const otherSessionId = largeFileId("other-session-upload");
@@ -2905,7 +3054,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("cleans stale destination temp files and restores orphaned backups", async () => {
+  test("cleans stale destination temp files without restoring orphaned backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
     const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
     const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
@@ -2932,7 +3081,7 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(crossDevice), false);
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
-      assert.strictEqual(fs.readFileSync(path.join(dir, "file.bin"), "utf8"), "original");
+      assert.strictEqual(fs.existsSync(path.join(dir, "file.bin")), false);
       assert.strictEqual(fs.readFileSync(freshOrphanedBackup, "utf8"), "fresh original");
       assert.strictEqual(fs.existsSync(path.join(dir, "fresh-missing.bin")), false);
       assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
@@ -2943,7 +3092,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("streams workspace destination cleanup and restores orphaned backups", async () => {
+  test("streams workspace destination cleanup without restoring forged backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-"));
     const nested = path.join(dir, "nested", "downloads");
     const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
@@ -2974,7 +3123,7 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(readdirCalled, false);
       assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.readFileSync(restored, "utf8"), "report");
+      assert.strictEqual(fs.existsSync(restored), false);
       assert.strictEqual(fs.existsSync(staleTemp), false);
     } finally {
       mutablePromises.readdir = originalReaddir;
@@ -3023,7 +3172,7 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("does not restore symlink destination backups", async () => {
+  test("deletes stale symlink destination backups without restoring them", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
     const target = path.join(dir, "target");
     const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
@@ -3038,11 +3187,11 @@ suite("B2 transfer helpers", () => {
 
       await cleanupStaleDestinationTempFiles({
         directory: dir,
-        maxAgeMs: Number.POSITIVE_INFINITY,
+        maxAgeMs: -1,
       });
 
       assert.strictEqual(fs.existsSync(restored), false);
-      assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
+      assert.strictEqual(fs.existsSync(backup), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
