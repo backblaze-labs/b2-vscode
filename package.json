@@ -562,7 +562,7 @@
     "@types/sql.js": "^1.4.10",
     "@types/vscode": "1.101.0",
     "@typescript-eslint/eslint-plugin": "^8.30.1",
-    "@typescript-eslint/parser": "^8.30.1",
+    "@typescript-eslint/parser": "^8.61.1",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.7.1",
