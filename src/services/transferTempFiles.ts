@@ -15,6 +15,7 @@ import {
   ensurePrivateDirectory as ensurePrivateDirectoryPath,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
+  UnsafePathError,
   writeNewFileNoFollow,
   writeNewFileNoFollowWithinRoot,
 } from "./pathSafety";
@@ -189,7 +190,9 @@ function isDestinationTempFile(name: string): boolean {
 export function assertDestinationFileNameIsNotReserved(destinationPath: string): void {
   const name = path.basename(destinationPath);
   if (isTransferTempFile(name) || isDestinationTempFile(name)) {
-    throw new Error(`Destination filename uses a reserved B2 transfer temp pattern: ${name}`);
+    throw new UnsafePathError(
+      `Destination filename uses a reserved B2 transfer temp pattern: ${name}`,
+    );
   }
 }
 

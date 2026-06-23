@@ -889,7 +889,11 @@ suite("B2 transfer helpers", () => {
     try {
       await assert.rejects(
         () => downloadStreamToFile(stream, destination),
-        /reserved B2 transfer temp pattern/i,
+        (error: unknown) => {
+          assert.match((error as Error).message, /reserved B2 transfer temp pattern/i);
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          return true;
+        },
       );
 
       assert.strictEqual(fs.existsSync(destination), false);
