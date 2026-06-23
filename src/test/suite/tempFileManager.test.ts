@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { DownloadSizeLimitError } from "../../services/fileTransfers";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
-import { createDirectorySymlink } from "../../testSupport/symlinks";
+import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
 import { streamFromText } from "../../testSupport/streams";
 import { tempDir } from "../../testSupport/tempDir";
 
@@ -55,6 +55,28 @@ suite("TempFileManager", () => {
     } finally {
       manager.dispose();
       fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("drops cached paths replaced by symlinks", async () => {
+    const tempRoot = tempDir("b2-vscode-temp-manager-");
+    const outsideRoot = tempDir("b2-vscode-temp-outside-");
+    const manager = new TempFileManager(tempRoot);
+
+    try {
+      const localPath = await manager.saveStream("bucket", "linked.txt", streamFromText("old"));
+      const outsideFile = path.join(outsideRoot, "outside.txt");
+      fs.writeFileSync(outsideFile, "outside");
+      fs.rmSync(localPath, { force: true });
+      if (!createFileSymlink(outsideFile, localPath)) {
+        return;
+      }
+
+      assert.strictEqual(manager.getCachedPath("bucket", "linked.txt"), undefined);
+    } finally {
+      manager.dispose();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
     }
   });
 

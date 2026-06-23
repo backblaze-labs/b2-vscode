@@ -224,7 +224,14 @@ export class TempFileManager implements vscode.Disposable {
     if (!cachedPath) {
       return undefined;
     }
-    if (!fs.existsSync(cachedPath)) {
+    let cachedStats: fs.Stats;
+    try {
+      cachedStats = fs.lstatSync(cachedPath);
+    } catch {
+      this.cache.delete(key);
+      return undefined;
+    }
+    if (!cachedStats.isFile()) {
       this.cache.delete(key);
       return undefined;
     }

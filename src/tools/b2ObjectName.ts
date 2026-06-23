@@ -4,12 +4,14 @@
  * @module tools/b2ObjectName
  */
 
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+
 export function normalizeB2ObjectNameInput(filePath: string): string {
   if (!filePath) {
     throw new Error("path must not be empty or a folder prefix.");
   }
 
-  if (/[\u0000-\u001F\u007F]/u.test(filePath)) {
+  if (CONTROL_CHARACTER_PATTERN.test(filePath)) {
     throw new Error("path must not contain NUL or other control characters.");
   }
 

@@ -289,7 +289,7 @@ suite("B2 LM tool operations with simulator", () => {
     await assert.rejects(
       () =>
         downloadFileOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\tname.txt" },
+          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\u0085name.txt" },
           { getClient: () => client as never },
         ),
       /control characters/i,
@@ -616,7 +616,7 @@ suite("B2 LM tool operations with simulator", () => {
     await assert.rejects(
       () =>
         presignUrlOperation.execute(
-          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\u0000name.txt", expiresIn: 123 },
+          { bucket: SIMULATOR_BUCKET_NAME, path: "folder/bad\u009fname.txt", expiresIn: 123 },
           { getClient: () => client as never },
         ),
       /control characters/i,
