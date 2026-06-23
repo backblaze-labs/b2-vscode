@@ -21,6 +21,7 @@ const PR_AUDIT_METADATA_FILES = Object.freeze([
   { path: "audit-policy.jsonc", maxBytes: 64 * 1024 },
   { path: "package.json", maxBytes: 256 * 1024 },
   { path: "package-lock.json", maxBytes: 5 * 1024 * 1024 },
+  { path: "SECURITY.md", maxBytes: 256 * 1024 },
 ]);
 
 const UNSUPPORTED_PR_AUDIT_METADATA_FILES = Object.freeze([
