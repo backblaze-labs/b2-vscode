@@ -637,14 +637,23 @@ function assertPullRequestOnlyStep(step, stepName) {
   );
 }
 
+function assertDependencyVsixDiffConditionalStep(step, stepName) {
+  assertPullRequestOnlyStep(step, stepName);
+  assert(
+    String(step.if ?? "").includes("steps.dependency-vsix-diff.outputs.should_check == 'true'"),
+    `${stepName} must only run when the dependency VSIX diff gate is required.`,
+  );
+}
+
 function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkflow()) {
   const steps = jobSteps(workflowToCheck, "build");
+  const recordChangedFilesIndex = stepIndexInSteps(steps, "build", "Record changed files");
+  const evaluateGateIndex = stepIndexInSteps(steps, "build", "Evaluate dependency VSIX diff gate");
   const checkoutBaseIndex = stepIndexInSteps(
     steps,
     "build",
     "Checkout base source for artifact diff",
   );
-  const recordChangedFilesIndex = stepIndexInSteps(steps, "build", "Record changed files");
   const packageHeadIndex = stepIndexInSteps(steps, "build", "Package VSIX");
   const packageBaseIndex = stepIndexInSteps(
     steps,
@@ -658,8 +667,12 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
   );
 
   assert(
-    checkoutBaseIndex < packageBaseIndex && recordChangedFilesIndex < gateIndex,
-    "dependency VSIX diff gate must collect base source and changed files before comparing artifacts.",
+    recordChangedFilesIndex < evaluateGateIndex && evaluateGateIndex < checkoutBaseIndex,
+    "dependency VSIX diff gate must decide before checking out base source.",
+  );
+  assert(
+    checkoutBaseIndex < packageBaseIndex && evaluateGateIndex < gateIndex,
+    "dependency VSIX diff gate must collect base source and decide before comparing artifacts.",
   );
   assert(
     packageHeadIndex < gateIndex && packageBaseIndex < gateIndex,
@@ -667,7 +680,10 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
   );
 
   const checkoutBaseStep = steps[checkoutBaseIndex];
-  assertPullRequestOnlyStep(checkoutBaseStep, "Checkout base source for artifact diff");
+  assertDependencyVsixDiffConditionalStep(
+    checkoutBaseStep,
+    "Checkout base source for artifact diff",
+  );
   assert(
     normalizedGithubExpression(checkoutBaseStep.with?.ref) ===
       "${{ github.event.pull_request.base.sha }}",
@@ -687,8 +703,22 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
     "dependency VSIX diff gate must record changed files from the PR base.",
   );
 
+  const evaluateGateStep = steps[evaluateGateIndex];
+  assertPullRequestOnlyStep(evaluateGateStep, "Evaluate dependency VSIX diff gate");
+  assert(
+    evaluateGateStep.id === "dependency-vsix-diff",
+    "dependency VSIX diff gate decision step must expose id: dependency-vsix-diff.",
+  );
+  const evaluateGateRun = normalizedCommand(String(evaluateGateStep.run ?? ""));
+  assert(
+    evaluateGateRun.includes("shouldCheckDependencyVsixDiff") &&
+      evaluateGateRun.includes("GITHUB_OUTPUT") &&
+      evaluateGateRun.includes("should_check"),
+    "dependency VSIX diff gate must publish a should_check output from changed files.",
+  );
+
   const packageBaseStep = steps[packageBaseIndex];
-  assertPullRequestOnlyStep(packageBaseStep, "Package base VSIX for dependency diff");
+  assertDependencyVsixDiffConditionalStep(packageBaseStep, "Package base VSIX for dependency diff");
   assert(
     packageBaseStep["working-directory"] === "base-source",
     "base VSIX packaging must run in the base-source checkout.",
@@ -702,7 +732,10 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
   );
 
   const gateStep = steps[gateIndex];
-  assertPullRequestOnlyStep(gateStep, "Check dependency-only VSIX generated-code diff");
+  assertDependencyVsixDiffConditionalStep(
+    gateStep,
+    "Check dependency-only VSIX generated-code diff",
+  );
   const gateRun = normalizedCommand(String(gateStep.run ?? ""));
   assert(
     gateRun.includes("scripts/assert-dependency-vsix-diff.js") &&

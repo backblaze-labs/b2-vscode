@@ -10,7 +10,6 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const JSZip = require("jszip");
 
 const repoRoot = path.join(__dirname, "..");
 const DEFAULT_ALLOWLIST_PATH = path.join(repoRoot, ".github", "vsix-generated-diff-allowlist.json");
@@ -28,6 +27,12 @@ const GENERATED_ENTRY_PATTERNS = [
   /^extension\/dist\/.+/u,
   /^extension\/resources\/b2-icons\.woff$/u,
 ];
+let JSZip;
+
+function loadJSZip() {
+  JSZip ??= require("jszip");
+  return JSZip;
+}
 
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
@@ -96,7 +101,7 @@ async function generatedEntries(vsixPath) {
     throw new Error(`VSIX not found: ${vsixPath}`);
   }
 
-  const zip = await JSZip.loadAsync(fs.readFileSync(vsixPath));
+  const zip = await loadJSZip().loadAsync(fs.readFileSync(vsixPath));
   const entries = new Map();
   const generatedEntryNames = Object.keys(zip.files)
     .filter((entryName) => isGeneratedEntry(entryName) && !zip.files[entryName].dir)

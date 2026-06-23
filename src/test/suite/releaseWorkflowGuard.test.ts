@@ -454,17 +454,27 @@ suite("Release workflow guard assertions", () => {
             build: {
               steps: [
                 {
-                  name: "Checkout base source for artifact diff",
+                  name: "Record changed files",
                   if: "github.event_name == 'pull_request'",
+                  run: 'git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+                },
+                {
+                  name: "Evaluate dependency VSIX diff gate",
+                  id: "dependency-vsix-diff",
+                  if: "github.event_name == 'pull_request'",
+                  run: [
+                    'const { shouldCheckDependencyVsixDiff } = require("./scripts/assert-dependency-vsix-diff.js");',
+                    "shouldCheckDependencyVsixDiff([]);",
+                    'fs.appendFileSync(process.env.GITHUB_OUTPUT, "should_check=true\\n");',
+                  ].join("\n"),
+                },
+                {
+                  name: "Checkout base source for artifact diff",
+                  if: "github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'",
                   with: {
                     ref: "${{ github.event.pull_request.base.sha }}",
                     path: "base-source",
                   },
-                },
-                {
-                  name: "Record changed files",
-                  if: "github.event_name == 'pull_request'",
-                  run: 'git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
                 },
                 {
                   name: "Package VSIX",
@@ -472,7 +482,7 @@ suite("Release workflow guard assertions", () => {
                 },
                 {
                   name: "Package base VSIX for dependency diff",
-                  if: "github.event_name == 'pull_request'",
+                  if: "github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'",
                   "working-directory": "base-source",
                   run: "npm ci --ignore-scripts\nnpm run vsix",
                 },

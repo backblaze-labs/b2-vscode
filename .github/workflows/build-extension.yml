@@ -62,22 +62,10 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Checkout base source for artifact diff
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: base-source
-          persist-credentials: false
-
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22.13.0"
-
-      - name: Install dependencies
-        working-directory: source
-        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Record changed files
         if: github.event_name == 'pull_request'
@@ -88,6 +76,43 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
           cat "$RUNNER_TEMP/changed-files.txt"
+
+      - name: Evaluate dependency VSIX diff gate
+        id: dependency-vsix-diff
+        if: github.event_name == 'pull_request'
+        working-directory: source
+        env:
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.txt
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const { shouldCheckDependencyVsixDiff } = require("./scripts/assert-dependency-vsix-diff.js");
+
+          const changedFiles = fs
+            .readFileSync(process.env.CHANGED_FILES_PATH, "utf8")
+            .split(/\r?\n/u)
+            .filter(Boolean);
+          const decision = shouldCheckDependencyVsixDiff(changedFiles);
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `should_check=${decision.check ? "true" : "false"}\nreason=${decision.reason.replace(/\r?\n/gu, " ")}\n`,
+          );
+          console.log(
+            `Dependency VSIX generated-code diff gate ${decision.check ? "required" : "skipped"}: ${decision.reason}`,
+          );
+          NODE
+
+      - name: Checkout base source for artifact diff
+        if: github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-source
+          persist-credentials: false
+
+      - name: Install dependencies
+        working-directory: source
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Assert audit policy guardrails
         working-directory: source
@@ -117,14 +142,14 @@ jobs:
         run: npm run vsix
 
       - name: Package base VSIX for dependency diff
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'
         working-directory: base-source
         run: |
           bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
           npm run vsix
 
       - name: Check dependency-only VSIX generated-code diff
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'
         run: |
           BASE_VSIX=$(node source/scripts/resolve-vsix-artifact.js base-source)
           HEAD_VSIX=$(node source/scripts/resolve-vsix-artifact.js source)
