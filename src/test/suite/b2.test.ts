@@ -3040,6 +3040,47 @@ suite("B2 transfer helpers", () => {
     assert.strictEqual(runSignal?.aborted, true);
   });
 
+  test("cleans up fixed transfer timeouts when callbacks throw synchronously", async () => {
+    for (const timeoutMs of [0, 100] as const) {
+      const controller = new AbortController();
+      const signal = controller.signal as AbortSignal & {
+        addEventListener: AbortSignal["addEventListener"];
+        removeEventListener: AbortSignal["removeEventListener"];
+      };
+      const originalAddEventListener = signal.addEventListener.bind(signal);
+      const originalRemoveEventListener = signal.removeEventListener.bind(signal);
+      const thrown = new Error(`sync failure ${timeoutMs}`);
+      let linkedAbortListenerCount = 0;
+
+      signal.addEventListener = ((type, listener, options) => {
+        if (type === "abort") {
+          linkedAbortListenerCount += 1;
+        }
+        return originalAddEventListener(type, listener, options);
+      }) as AbortSignal["addEventListener"];
+      signal.removeEventListener = ((type, listener, options) => {
+        if (type === "abort") {
+          linkedAbortListenerCount -= 1;
+        }
+        return originalRemoveEventListener(type, listener, options);
+      }) as AbortSignal["removeEventListener"];
+
+      await assert.rejects(
+        () =>
+          withTimeout(
+            () => {
+              throw thrown;
+            },
+            timeoutMs,
+            "request setup",
+            { signal },
+          ),
+        (error) => error === thrown,
+      );
+      assert.strictEqual(linkedAbortListenerCount, 0);
+    }
+  });
+
   test("cleans stale managed transfer temp files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-"));
     const stale = path.join(dir, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");

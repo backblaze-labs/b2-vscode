@@ -122,6 +122,13 @@ export function abortPromise(signal: AbortSignal): Promise<never> {
   });
 }
 
+function runWithAbortSignal<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  return Promise.resolve().then(() => run(signal));
+}
+
 export async function withTransferStallTimeout<T>(
   description: string,
   options: TransferTimeoutOptions,
@@ -155,8 +162,10 @@ export async function withTimeout<T>(
   const linkedAbort = linkParentAbort(parentSignal);
   const { controller } = linkedAbort;
   if (timeoutMs <= 0) {
+    const operation = runWithAbortSignal(run, controller.signal);
+    void operation.catch(() => undefined);
     try {
-      return await Promise.race([run(controller.signal), abortPromise(controller.signal)]);
+      return await Promise.race([operation, abortPromise(controller.signal)]);
     } finally {
       linkedAbort.dispose();
     }
@@ -173,7 +182,7 @@ export async function withTimeout<T>(
     }, timeoutMs);
     timer.unref?.();
   });
-  const operation = run(controller.signal);
+  const operation = runWithAbortSignal(run, controller.signal);
   void operation.catch(() => undefined);
 
   try {
