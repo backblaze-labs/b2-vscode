@@ -280,9 +280,13 @@ function parseArgs(argv) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  for (const requiredOption of ["baseVsixPath", "changedFilesPath", "headVsixPath"]) {
-    if (!parsed[requiredOption]) {
-      throw new Error(`Missing required option: ${requiredOption}`);
+  for (const [propertyName, optionName] of [
+    ["baseVsixPath", "--base"],
+    ["changedFilesPath", "--changed-files"],
+    ["headVsixPath", "--head"],
+  ]) {
+    if (!parsed[propertyName]) {
+      throw new Error(`Missing required option: ${optionName}`);
     }
   }
 

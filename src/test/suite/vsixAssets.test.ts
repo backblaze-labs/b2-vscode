@@ -305,6 +305,20 @@ suite("VSIX runtime asset assertions", () => {
     }
   });
 
+  test("dependency VSIX diff CLI reports missing required flags", () => {
+    const guard = loadDependencyVsixDiffGuard();
+
+    assert.throws(() => guard.parseArgs([]), /Missing required option: --base/);
+    assert.throws(
+      () => guard.parseArgs(["--base", "base.vsix"]),
+      /Missing required option: --changed-files/,
+    );
+    assert.throws(
+      () => guard.parseArgs(["--base", "base.vsix", "--changed-files", "changed.txt"]),
+      /Missing required option: --head/,
+    );
+  });
+
   test("accepts a VSIX with the bundled sql.js WASM and loadable extension bundle", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();
