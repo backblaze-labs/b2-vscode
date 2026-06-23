@@ -429,7 +429,7 @@
           "download"
         ],
         "toolReferenceName": "downloadFile",
-        "modelDescription": "Downloads a file from a B2 bucket to the first open workspace folder without overwriting existing files. Returns the local file path where the file was saved.",
+        "modelDescription": "Downloads a file from a B2 bucket to the first open workspace folder or the extension tools temporary directory without overwriting existing files. Returns the local file path where the file was saved.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -444,7 +444,7 @@
             },
             "localPath": {
               "type": "string",
-              "description": "Optional workspace-relative local path inside the first open workspace folder. Absolute paths are rejected. Defaults to that workspace root with the same file name. Existing files are not overwritten."
+              "description": "Optional local file path. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected."
             }
           },
           "required": [
@@ -462,14 +462,14 @@
           "upload"
         ],
         "toolReferenceName": "uploadFile",
-        "modelDescription": "Uploads a file from the first open workspace folder to a B2 bucket. Returns the uploaded file info including file ID and size.",
+        "modelDescription": "Uploads a file from the first open workspace folder or the extension tools temporary directory to a B2 bucket. Returns the uploaded file info including file ID and size.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
           "properties": {
             "localPath": {
               "type": "string",
-              "description": "Workspace-relative path to a local file inside the first open workspace folder. Absolute paths are rejected."
+              "description": "Local file path to upload. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Sensitive workspace config/secret paths are rejected."
             },
             "bucket": {
               "type": "string",

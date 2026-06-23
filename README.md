@@ -75,7 +75,7 @@ Several tools change state or expose data: `uploadFile` reads a workspace-relati
 
 In agent mode, treat bucket listings and file contents as untrusted input: an agent that reads them can be steered by injected instructions toward a destructive or data-sharing call. Review each confirmation, avoid blanket auto-approval for these tools, and use B2 application keys scoped to the least privilege the task needs.
 
-Downloads are capped at 1 GiB by default for open-file temp cache reads and at 512 MiB for `downloadFile` workspace writes. If a remote stream exceeds the cap, the transfer aborts and the partial local file is removed.
+Downloads are capped at 1 GiB by default for open-file temp cache reads and at 512 MiB for `downloadFile` workspace writes. If a remote stream exceeds the cap or stalls, the transfer aborts and the partial local file is removed.
 
 Large uploads tag in-progress multipart sessions so the extension can cancel its own failed upload session without touching uploads from another VS Code window or machine. On activation, stale unfinished-upload cleanup is limited to uploads that still have locally persisted session markers for this extension, so unowned B2 uploads are not touched. Unfinished uploads created by older extension versions, crashes, power loss, or failed cleanup may remain in B2, so bucket operators should configure a B2 lifecycle rule or use B2 tools to remove legacy unfinished multipart uploads before they accumulate storage cost.
 
@@ -146,6 +146,10 @@ src/
 └── ui/
     └── statusBar.ts          # Status bar integration
 ```
+
+Transfer orchestration is consolidated in `fileTransfers.ts` so timeout handling, temp-file
+staging, atomic publish, unfinished-upload cleanup, and upload/download stream behavior share one
+service boundary.
 
 ## License
 

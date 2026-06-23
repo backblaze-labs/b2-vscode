@@ -8,6 +8,7 @@
 
 import { Buffer } from "buffer";
 import { createHash } from "crypto";
+import * as path from "path";
 import { toWellFormedString } from "./strings";
 import {
   assertNoNul,
@@ -21,6 +22,8 @@ import { isWorkspaceControlDirectorySegment } from "./workspaceControlDirectorie
 const ENCODED_SEGMENT_PREFIX = "__b2_";
 const HASHED_ENCODED_SEGMENT_PREFIX = "__b2h_";
 const MAX_ENCODED_SEGMENT_LENGTH = 120;
+const MAX_NATURAL_SEGMENT_BYTES = 180;
+const LONG_SEGMENT_HASH_LENGTH = 16;
 const HASHED_SEGMENT_HEX_PREFIX_LENGTH = 32;
 const UNSAFE_LOCAL_PATH_CHARACTERS = /[\u0000-\u001F\u007F<>:"|?*\\/]/g;
 const UNSAFE_BIDI_CONTROL_CHARACTERS = /[\u202A-\u202E\u2066-\u2069]/g;
@@ -43,6 +46,51 @@ function encodeRawLocalPathSegment(segment: string): string {
   return `${HASHED_ENCODED_SEGMENT_PREFIX}${hex.slice(0, HASHED_SEGMENT_HEX_PREFIX_LENGTH)}_${digest}`;
 }
 
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = "";
+  let usedBytes = 0;
+
+  for (const character of value) {
+    const characterBytes = byteLength(character);
+    if (usedBytes + characterBytes > maxBytes) {
+      break;
+    }
+    result += character;
+    usedBytes += characterBytes;
+  }
+
+  return result;
+}
+
+function safeExtensionForSegment(segment: string): string {
+  const extension = path.posix.extname(segment);
+  if (
+    !extension ||
+    extension === segment ||
+    byteLength(extension) > Math.floor(MAX_NATURAL_SEGMENT_BYTES / 3)
+  ) {
+    return "";
+  }
+
+  return extension;
+}
+
+function fitLongNaturalSegment(segment: string, hashInput: string): string {
+  const extension = safeExtensionForSegment(segment);
+  const stem = extension ? segment.slice(0, -extension.length) : segment;
+  const digest = createHash("sha256")
+    .update(Buffer.from(hashInput, "utf8"))
+    .digest("hex")
+    .slice(0, LONG_SEGMENT_HASH_LENGTH);
+  const suffix = `-${digest}${extension}`;
+  const maxStemBytes = Math.max(1, MAX_NATURAL_SEGMENT_BYTES - byteLength(suffix));
+  return `${truncateUtf8(stem, maxStemBytes) || "file"}${suffix}`;
+}
+
 export function sanitizeLocalPathSegment(segment: string): string {
   const wellFormedSegment = toWellFormedString(segment);
   const sanitized = wellFormedSegment
@@ -59,6 +107,10 @@ export function sanitizeLocalPathSegment(segment: string): string {
     sanitized.startsWith(HASHED_ENCODED_SEGMENT_PREFIX)
   ) {
     return encodeRawLocalPathSegment(wellFormedSegment);
+  }
+
+  if (byteLength(sanitized) > MAX_NATURAL_SEGMENT_BYTES) {
+    return fitLongNaturalSegment(sanitized, wellFormedSegment);
   }
 
   return sanitized;

@@ -23,6 +23,7 @@ import {
   type ProgressListener,
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
+import { B2ToolInputError } from "../errors";
 import { log, logError } from "../logger";
 import { isMissingCapabilityError } from "../utils/b2Errors";
 import { humanSize } from "../utils/humanSize";
@@ -80,6 +81,8 @@ const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS = 10;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
+const UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT = 16;
+const STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS = 1_000;
 const UNFINISHED_UPLOAD_STALE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
 const STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -94,6 +97,8 @@ const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOF
 const lastCleanupByDirectory = new Map<string, number>();
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
 let unfinishedUploadCleanupPendingCount = 0;
+let unfinishedUploadCleanupInFlightCount = 0;
+const preUploadCleanupInFlightByBucket = new WeakMap<UploadBucketHandle, Set<string>>();
 
 export interface UnfinishedUploadCleanupDiagnostics {
   readonly queuedOwnedCleanupCount: number;
@@ -212,10 +217,44 @@ export interface UploadSourceFile {
 
 function normalizedMaxBytes(maxBytes: number | undefined): number {
   const normalized = maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    throw new Error("Download maximum byte count must be a non-negative finite number.");
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new B2ToolInputError("Download maximum byte count must be a positive integer.");
   }
   return normalized;
+}
+
+function asToolInputError(error: unknown, fallbackMessage: string): B2ToolInputError {
+  if (error instanceof B2ToolInputError) {
+    return error;
+  }
+
+  const message = error instanceof Error && error.message ? error.message : fallbackMessage;
+  return new B2ToolInputError(message);
+}
+
+async function ensureContainedDirectoryPathForTool(
+  rootPath: string,
+  targetDirectory: string,
+  label: string,
+  options: Parameters<typeof ensureContainedDirectoryPath>[3] = {},
+): Promise<void> {
+  try {
+    await ensureContainedDirectoryPath(rootPath, targetDirectory, label, options);
+  } catch (error) {
+    throw asToolInputError(error, `${label} must stay within the allowed root.`);
+  }
+}
+
+async function prepareSafeDownloadWritePath(
+  rootPath: string,
+  destinationPath: string,
+  label: string,
+): Promise<void> {
+  try {
+    await prepareSafeFileWritePath(rootPath, destinationPath, label);
+  } catch (error) {
+    throw asToolInputError(error, `${label} must stay within the allowed root.`);
+  }
 }
 
 function assertKnownDownloadSizeWithinLimit(
@@ -281,7 +320,7 @@ async function ensureTransferTempDirectory(
   requiresPrivateDirectory: boolean,
 ): Promise<void> {
   if (allowedRootDirectory !== undefined) {
-    await ensureContainedDirectoryPath(
+    await ensureContainedDirectoryPathForTool(
       allowedRootDirectory,
       directory,
       "Workspace transfer temp directory",
@@ -342,6 +381,10 @@ function isDestinationTempFile(name: string): boolean {
 
   const payload = name.slice(prefix.length, -TRANSFER_TEMP_SUFFIX.length);
   return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
+}
+
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -424,7 +467,9 @@ async function cleanupStaleTransferTempFile(filePath: string, cutoff: number): P
       return true;
     }
   } catch (error) {
-    logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    if (!isEnoent(error)) {
+      logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    }
   }
 
   return false;
@@ -552,7 +597,9 @@ async function cleanupDestinationTempEntry(
     await fs.promises.rm(filePath, { force: true });
     return true;
   } catch (error) {
-    logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    if (!isEnoent(error)) {
+      logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    }
   }
 
   return false;
@@ -755,7 +802,7 @@ async function copyIntoPlaceNoFollow(
     if (options.overwrite !== false) {
       throw new Error("Root-bound downloads must be written without overwrite.");
     }
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
     if (await pathExists(destinationPath)) {
       const error = new Error(`Download destination file already exists: ${destinationPath}`);
       (error as NodeJS.ErrnoException).code = "EEXIST";
@@ -763,7 +810,7 @@ async function copyIntoPlaceNoFollow(
     }
     // Re-check after the existence probe so a parent swap between validation and
     // no-overwrite publish is caught before opening the final path.
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
     await publishNewFileNoOverwrite(sourcePath, destinationPath, {
       allowedRootDirectory,
       preferHardlink: false,
@@ -971,7 +1018,7 @@ async function ensureDownloadDestinationDirectory(
 ): Promise<string> {
   const destinationDirectory = path.dirname(destinationPath);
   if (allowedRootDirectory !== undefined) {
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
   } else {
     await ensureRealDirectory(destinationDirectory, "Download destination directory", {
       recursive: true,
@@ -1104,10 +1151,12 @@ function withActivityProgress(
 async function assertRealUploadSourcePath(localPath: string): Promise<fs.Stats> {
   const pathStats = await fs.promises.lstat(localPath);
   if (pathStats.isSymbolicLink()) {
-    throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+    throw new B2ToolInputError(
+      `Local upload source must be a real file, not a symlink: ${localPath}`,
+    );
   }
   if (!pathStats.isFile()) {
-    throw new Error(`Local path is not a file: ${localPath}`);
+    throw new B2ToolInputError(`Local path is not a file: ${localPath}`);
   }
   return pathStats;
 }
@@ -1120,7 +1169,9 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
     handle = await fs.promises.open(localPath, fs.constants.O_RDONLY | NOFOLLOW_OPEN_FLAG);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ELOOP") {
-      throw new Error(`Local upload source must be a real file, not a symlink: ${localPath}`);
+      throw new B2ToolInputError(
+        `Local upload source must be a real file, not a symlink: ${localPath}`,
+      );
     }
     throw error;
   }
@@ -1128,7 +1179,7 @@ export async function openUploadSourceFile(localPath: string): Promise<UploadSou
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) {
-      throw new Error(`Local path is not a file: ${localPath}`);
+      throw new B2ToolInputError(`Local path is not a file: ${localPath}`);
     }
 
     const pathStats = await assertRealUploadSourcePath(localPath);
@@ -1194,6 +1245,18 @@ class CleanupOperationTimeoutError extends Error {
   }
 }
 
+export class UploadFinalizationIndeterminateError extends Error {
+  readonly originalError?: unknown;
+
+  constructor(remotePath: string, originalError?: unknown) {
+    super(
+      `B2 upload finalization for ${remotePath} did not finish before timeout or cancellation. The local upload stream closed, so the upload may still complete in B2; check the bucket before retrying.`,
+    );
+    this.name = "UploadFinalizationIndeterminateError";
+    this.originalError = originalError;
+  }
+}
+
 async function observeImmediateUploadDoneError(
   done: Promise<FileVersion> | undefined,
 ): Promise<unknown | undefined> {
@@ -1213,16 +1276,73 @@ async function observeImmediateUploadDoneError(
   ]);
 }
 
+async function waitForUploadFinalization(
+  done: Promise<FileVersion>,
+  signal: AbortSignal,
+  remotePath: string,
+): Promise<FileVersion> {
+  try {
+    return await Promise.race([done, abortPromise(signal)]);
+  } catch (error) {
+    if (signal.aborted) {
+      throw new UploadFinalizationIndeterminateError(remotePath, error);
+    }
+    throw error;
+  }
+}
+
 async function withAbortableTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   description: string,
 ): Promise<T> {
-  return withTimeout(operation, timeoutMs, description, {
-    createTimeoutError: (timeoutDescription, timeoutMsValue) =>
-      new CleanupOperationTimeoutError(
-        `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
-      ),
+  if (timeoutMs <= 0) {
+    return withTimeout(operation, timeoutMs, description, {
+      createTimeoutError: (timeoutDescription, timeoutMsValue) =>
+        new CleanupOperationTimeoutError(
+          `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+        ),
+    });
+  }
+
+  if (unfinishedUploadCleanupInFlightCount >= UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT) {
+    throw new CleanupOperationTimeoutError(
+      `${description} skipped because unfinished-upload cleanup already has ${unfinishedUploadCleanupInFlightCount} in-flight operation(s).`,
+    );
+  }
+
+  unfinishedUploadCleanupInFlightCount += 1;
+  let timeoutReturned = false;
+  let inFlightReleased = false;
+  const releaseInFlight = () => {
+    if (!inFlightReleased) {
+      unfinishedUploadCleanupInFlightCount -= 1;
+      inFlightReleased = true;
+    }
+  };
+
+  return withTimeout(
+    async (signal) => {
+      try {
+        return await operation(signal);
+      } finally {
+        releaseInFlight();
+      }
+    },
+    timeoutMs,
+    description,
+    {
+      createTimeoutError: (timeoutDescription, timeoutMsValue) => {
+        timeoutReturned = true;
+        return new CleanupOperationTimeoutError(
+          `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+        );
+      },
+    },
+  ).finally(() => {
+    if (!timeoutReturned) {
+      releaseInFlight();
+    }
   });
 }
 
@@ -1542,6 +1662,66 @@ async function cleanupStaleSameKeyUnfinishedUploads(
   }
 }
 
+function preUploadCleanupOptions(
+  options: Pick<
+    UploadFileFromDiskOptions,
+    | "unfinishedCleanupMaxPages"
+    | "unfinishedCleanupMaxCancels"
+    | "unfinishedCleanupTimeoutMs"
+    | "unfinishedCleanupBudgetMs"
+    | "unfinishedCleanupMinAgeMs"
+  >,
+): Pick<
+  UploadFileFromDiskOptions,
+  | "unfinishedCleanupMaxPages"
+  | "unfinishedCleanupMaxCancels"
+  | "unfinishedCleanupTimeoutMs"
+  | "unfinishedCleanupBudgetMs"
+  | "unfinishedCleanupMinAgeMs"
+> {
+  const requestedBudget =
+    options.unfinishedCleanupBudgetMs ?? STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS;
+  const budgetMs = Math.min(requestedBudget, STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS);
+  const requestedTimeout = options.unfinishedCleanupTimeoutMs ?? budgetMs;
+
+  return {
+    ...options,
+    unfinishedCleanupBudgetMs: budgetMs,
+    unfinishedCleanupTimeoutMs: Math.min(requestedTimeout, budgetMs),
+  };
+}
+
+function scheduleStaleSameKeyUnfinishedUploadCleanup(
+  bucket: UploadBucketHandle,
+  remotePath: string,
+  options: Pick<
+    UploadFileFromDiskOptions,
+    | "unfinishedCleanupMaxPages"
+    | "unfinishedCleanupMaxCancels"
+    | "unfinishedCleanupTimeoutMs"
+    | "unfinishedCleanupBudgetMs"
+    | "unfinishedCleanupMinAgeMs"
+  > = {},
+): void {
+  let inFlight = preUploadCleanupInFlightByBucket.get(bucket);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    preUploadCleanupInFlightByBucket.set(bucket, inFlight);
+  }
+  if (inFlight.has(remotePath)) {
+    return;
+  }
+
+  inFlight.add(remotePath);
+  void cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, preUploadCleanupOptions(options))
+    .catch((error) => {
+      logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
+    })
+    .finally(() => {
+      inFlight.delete(remotePath);
+    });
+}
+
 async function runSerializedUnfinishedUploadCleanup<T>(cleanup: () => Promise<T>): Promise<T> {
   if (unfinishedUploadCleanupPendingCount > 0) {
     unfinishedUploadCleanupDiagnostics.queuedOwnedCleanupCount += 1;
@@ -1725,9 +1905,7 @@ export async function uploadFileFromDisk(
       ]);
     }
 
-    await cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, options).catch((error) => {
-      logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
-    });
+    scheduleStaleSameKeyUnfinishedUploadCleanup(bucket, remotePath, options);
     try {
       await writeUploadSessionMarker({ remotePath, uploadSessionId, startedMs: uploadStartedMs });
       uploadSessionMarkerWritten = true;
@@ -1760,7 +1938,7 @@ export async function uploadFileFromDisk(
     const readable = Readable.toWeb(readableStream) as ReadableStream<Uint8Array>;
 
     await readable.pipeTo(writable, { signal: activity.signal });
-    const result = await done;
+    const result = await waitForUploadFinalization(done, activity.signal, remotePath);
     if (uploadSessionMarkerWritten) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
@@ -1781,10 +1959,12 @@ export async function uploadFileFromDisk(
     if (uploadSessionMarkerWritten && (!uploadStreamWasCreated || canceledCount > 0)) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
-    normalizeTransferError(
-      uploadDoneError ?? (await observeImmediateUploadDoneError(uploadDone)) ?? error,
-      activity,
-    );
+    const transferError =
+      uploadDoneError ?? (await observeImmediateUploadDoneError(uploadDone)) ?? error;
+    if (transferError instanceof UploadFinalizationIndeterminateError) {
+      throw transferError;
+    }
+    normalizeTransferError(transferError, activity);
   } finally {
     activity.dispose();
     await closeUploadSource(source);

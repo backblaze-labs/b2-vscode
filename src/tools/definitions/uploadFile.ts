@@ -20,14 +20,14 @@ export const uploadFileTool: B2ToolDefinition = {
   name: "b2_uploadFile",
   displayName: "B2: Upload File",
   description:
-    "Uploads a local file to a B2 bucket. Returns the uploaded file info including file ID and size.",
+    "Uploads a file from the first open workspace folder or the extension tools temporary directory to a B2 bucket. Returns the uploaded file info including file ID and size.",
   parameters: {
     type: "object",
     properties: {
       localPath: {
         type: "string",
         description:
-          "Workspace-relative path to a local file inside the first open workspace folder. Absolute paths are rejected.",
+          "Local file path to upload. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Sensitive workspace config/secret paths are rejected.",
       },
       bucket: {
         type: "string",

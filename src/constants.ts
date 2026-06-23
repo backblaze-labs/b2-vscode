@@ -27,6 +27,8 @@ export const VIEW_BUCKETS = "b2Buckets";
 // ── Temp File Directory ─────────────────────────────────────────────────────
 
 export const TEMP_DIR_NAME = "b2-vscode";
+export const TEMP_CACHE_DIR_NAME = "cache";
+export const TEMP_TOOLS_DIR_NAME = "tools";
 
 // ── File listing ────────────────────────────────────────────────────────────
 

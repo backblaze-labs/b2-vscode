@@ -10,6 +10,8 @@ import type { FileHandle } from "fs/promises";
 import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
 export class UnsafePathError extends Error {
+  readonly code = "ERR_B2_TOOL_INPUT";
+
   constructor(message: string) {
     super(message);
     this.name = "UnsafePathError";
@@ -43,6 +45,32 @@ function portableSegments(relativePath: string, label: string): string[] {
   }
 
   return segments;
+}
+
+const WORKSPACE_SECRET_DIRECTORIES = new Set([".aws", ".ssh", ".gnupg"]);
+const WORKSPACE_SECRET_DIRECTORY_PATHS = [[".config", "b2"]];
+
+const WORKSPACE_SECRET_FILES = new Set([
+  ".b2_account_info",
+  ".env",
+  ".netrc",
+  ".npmrc",
+  "terraform.tfvars",
+]);
+
+function normalizedWorkspaceSegment(segment: string): string {
+  return segment.toLowerCase().replace(/[. ]+$/u, "");
+}
+
+function isWorkspaceSecretFile(segment: string): boolean {
+  const normalized = normalizedWorkspaceSegment(segment);
+  return (
+    WORKSPACE_SECRET_FILES.has(normalized) ||
+    normalized.startsWith(".env.") ||
+    normalized.startsWith("id_") ||
+    normalized.endsWith(".key") ||
+    normalized.endsWith(".pem")
+  );
 }
 
 export interface EnsureRealDirectoryOptions {
@@ -108,10 +136,16 @@ export async function ensureRealDirectory(
     return;
   }
 
-  await fs.promises.mkdir(directory, {
-    recursive: options.recursive ?? false,
-    ...(options.mode !== undefined ? { mode: options.mode } : {}),
-  });
+  try {
+    await fs.promises.mkdir(directory, {
+      recursive: options.recursive ?? false,
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
   assertRealDirectory(await fs.promises.lstat(directory), directory, label);
 }
 
@@ -527,6 +561,34 @@ export function findWorkspaceControlDirectory(
     .split(path.sep)
     .filter((segment) => segment.length > 0)
     .find(isWorkspaceControlDirectorySegment);
+}
+
+export function findWorkspaceSecretPath(
+  workspaceRoot: string,
+  candidatePath: string,
+): string | undefined {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
+  const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+  const normalizedSegments = segments.map(normalizedWorkspaceSegment);
+  for (let index = 0; index < segments.length; index += 1) {
+    const normalized = normalizedSegments[index];
+    if (WORKSPACE_SECRET_DIRECTORIES.has(normalized)) {
+      return segments.slice(0, index + 1).join(path.sep);
+    }
+    for (const secretPath of WORKSPACE_SECRET_DIRECTORY_PATHS) {
+      if (
+        secretPath.every(
+          (secretSegment, offset) => normalizedSegments[index + offset] === secretSegment,
+        )
+      ) {
+        return segments.slice(0, index + secretPath.length).join(path.sep);
+      }
+    }
+    if (isWorkspaceSecretFile(segments[index])) {
+      return segments.slice(0, index + 1).join(path.sep);
+    }
+  }
+  return undefined;
 }
 
 export function resolveContainedRelativePath(

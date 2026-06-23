@@ -183,7 +183,7 @@ suite("LM Tool Safety", () => {
     });
 
     assert.match(text, /absolute path \/tmp\/downloads\/out\.csv/);
-    assert.match(text, /rejected by this tool/);
+    assert.match(text, /first workspace or extension tools temporary directory/);
     assert.doesNotMatch(text, /your local workspace/);
   });
 

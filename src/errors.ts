@@ -70,6 +70,8 @@ const SAFE_LOCAL_ERROR_CODES = new Set([
   "EACCES",
   "EEXIST",
   "EISDIR",
+  "ERR_B2_TOOL_INPUT",
+  "ERR_PATH_CONTAINMENT",
   "EMFILE",
   "ENAMETOOLONG",
   "ENOENT",
@@ -99,6 +101,15 @@ export class B2PartialFailureError extends Error {
     super(message);
     this.name = "B2PartialFailureError";
     this.originalError = originalError;
+  }
+}
+
+export class B2ToolInputError extends Error {
+  readonly code = "ERR_B2_TOOL_INPUT";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "B2ToolInputError";
   }
 }
 
