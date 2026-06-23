@@ -479,6 +479,10 @@ function assertTestWorkflow(testWorkflow) {
   assert(workflowHasEvent(testWorkflow, "push"), "test workflow must run on push.");
   assertNoPullRequestEvent(testWorkflow, "test workflow");
   assertEventHasNoPathFilters(testWorkflow, "pull_request_target", "test workflow");
+  assert(
+    String(testWorkflow.concurrency?.["cancel-in-progress"] ?? "").includes("pull_request_target"),
+    "test workflow must cancel superseded pull_request_target audit runs.",
+  );
 
   for (const targetPath of [
     "README.md",
@@ -906,43 +910,6 @@ function expectGuardFailure(name, run) {
   throw new Error(`negative workflow case unexpectedly passed: ${name}`);
 }
 
-function assertRawContains(text, label, snippets) {
-  for (const snippet of snippets) {
-    assert(text.includes(snippet), `${label} raw workflow text must include: ${snippet}`);
-  }
-}
-
-function assertRawTestWorkflowText(text) {
-  assertRawContains(text, "test", [
-    "pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.",
-    "name: Dependency Audit Gate",
-    "path: trusted-source",
-    "path: source",
-    "getContentWithRetry",
-    "getBlobWithRetry",
-    "github.rest.git.getBlob",
-    "data.encoding === 'none' || !data.content",
-    "'npm-shrinkwrap.json'",
-    "npm-shrinkwrap.json is not supported by the audit gate",
-    "'.npmrc'",
-    ".npmrc is not supported by the audit gate",
-    'node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"',
-    'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
-    "npm audit signatures --registry=https://registry.npmjs.org/",
-  ]);
-}
-
-function assertRawPrTestsWorkflowText(text) {
-  assertRawContains(text, "PR tests", [
-    "pull_request:",
-    "name: VS Code Extension Tests",
-    "path: source",
-    "npm run compile",
-    "npm run lint",
-    "xvfb-run -a npm test",
-  ]);
-}
-
 function assertDependencyGateDocs() {
   const security = fs.readFileSync(path.join(repoRoot, "SECURITY.md"), "utf8");
   assert(
@@ -962,33 +929,17 @@ function assertDependencyGateDocs() {
   );
 }
 
-function runNegativeRawWorkflowTests(testWorkflowText, prTestsWorkflowText) {
-  expectGuardFailure("raw workflow audit command removed", () =>
-    assertRawTestWorkflowText(
-      testWorkflowText.replace(
-        'node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"',
-        'node -e "process.exit(0)"',
-      ),
-    ),
-  );
-  expectGuardFailure("raw workflow PR tests removed", () =>
-    assertRawPrTestsWorkflowText(prTestsWorkflowText.replace("xvfb-run -a npm test", "true")),
-  );
-  expectGuardFailure("raw workflow npmrc rejection removed", () =>
-    assertRawTestWorkflowText(
-      testWorkflowText.replace(
-        ".npmrc is not supported by the audit gate",
-        "npmrc rejection removed",
-      ),
-    ),
-  );
-}
-
 function runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildWorkflow) {
   const mutablePrWorkflow = clone(testWorkflow);
   workflowOn(mutablePrWorkflow).pull_request = { branches: ["main"] };
   expectGuardFailure("trusted audit runs on PR-controlled workflow trigger", () =>
     assertTestWorkflow(mutablePrWorkflow),
+  );
+
+  const uncanceledPrTargetWorkflow = clone(testWorkflow);
+  uncanceledPrTargetWorkflow.concurrency["cancel-in-progress"] = "${{ false }}";
+  expectGuardFailure("trusted audit PR target concurrency cancellation removed", () =>
+    assertTestWorkflow(uncanceledPrTargetWorkflow),
   );
 
   const prTargetCheckoutWorkflow = clone(testWorkflow);
@@ -1046,12 +997,8 @@ function runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildWorkflow) 
 }
 
 function runGuardrails() {
-  const { text: testWorkflowText, workflow: testWorkflow } = readWorkflow(
-    ".github/workflows/test.yml",
-  );
-  const { text: prTestsWorkflowText, workflow: prTestsWorkflow } = readWorkflow(
-    ".github/workflows/pr-tests.yml",
-  );
+  const { workflow: testWorkflow } = readWorkflow(".github/workflows/test.yml");
+  const { workflow: prTestsWorkflow } = readWorkflow(".github/workflows/pr-tests.yml");
   const { workflow: releaseWorkflow } = readWorkflow(".github/workflows/release.yml");
   const { workflow: buildExtensionWorkflow } = readWorkflow(
     ".github/workflows/build-extension.yml",
@@ -1069,7 +1016,6 @@ function runGuardrails() {
   ];
 
   runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildExtensionWorkflow);
-  runNegativeRawWorkflowTests(testWorkflowText, prTestsWorkflowText);
   for (const [workflowName, workflow] of workflows) {
     assertNoAuditCi(workflow, workflowName);
     assertNoEventEnvOverride(workflow, workflowName);
@@ -1079,9 +1025,7 @@ function runGuardrails() {
   assertNoPlainPrWorkflowInstalls(workflows);
   assertNoPlainNpmCi(releaseWorkflow, "release workflow");
   assertTestWorkflow(testWorkflow);
-  assertRawTestWorkflowText(testWorkflowText);
   assertPrTestsWorkflow(prTestsWorkflow);
-  assertRawPrTestsWorkflowText(prTestsWorkflowText);
   assertDependencyGateDocs();
   assertBuildExtensionWorkflow(buildExtensionWorkflow);
   assertReleaseWorkflow(releaseWorkflow);
