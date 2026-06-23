@@ -776,7 +776,9 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
   for (const eventName of ["push", "pull_request"]) {
     const paths = eventPaths(workflowToCheck, eventName);
     for (const requiredPath of [
+      ".npmrc",
       ".github/vsix-generated-diff-allowlist.json",
+      "npm-shrinkwrap.json",
       "package-lock.json",
       "package.json",
       "scripts/assert-dependency-vsix-diff.js",

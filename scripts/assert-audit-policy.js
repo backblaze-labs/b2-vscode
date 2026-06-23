@@ -167,6 +167,7 @@ function assertCodeOwnerProtection() {
     "/scripts/assert-package-metadata.js",
     "/scripts/assert-ignore-scripts-install.js",
     "/scripts/assert-audit-gate-fixture.js",
+    "/scripts/assert-dependency-vsix-diff.js",
     "/.github/vsix-generated-diff-allowlist.json",
     "/.github/workflows/pr-tests.yml",
   ]) {
