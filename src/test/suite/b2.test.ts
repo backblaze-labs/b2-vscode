@@ -2871,6 +2871,32 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("bounds stale private temp root scans across empty candidates", async () => {
+    const prefix = `b2-vscode-budget-cache-${process.pid}`;
+    const staleRoots = Array.from({ length: 3 }, () =>
+      fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`)),
+    );
+    const oldTime = new Date(Date.now() - 10_000);
+    for (const staleRoot of staleRoots) {
+      fs.utimesSync(staleRoot, oldTime, oldTime);
+    }
+
+    try {
+      await cleanupStalePrivateTempRoots(prefix, {
+        maxAgeMs: 1_000,
+        maxEntries: 1,
+        budgetMs: 1_000,
+      });
+
+      const remainingRoots = staleRoots.filter((staleRoot) => fs.existsSync(staleRoot));
+      assert.ok(remainingRoots.length >= 2, "scan cap should leave unscanned roots in place");
+    } finally {
+      for (const staleRoot of staleRoots) {
+        fs.rmSync(staleRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("keeps stale private temp roots with active child files", async () => {
     const prefix = `b2-vscode-active-cache-${process.pid}`;
     const activeRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));

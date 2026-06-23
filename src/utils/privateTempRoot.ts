@@ -186,6 +186,7 @@ export async function cleanupStalePrivateTempRoots(
     if (!mkdtempEntryPattern.test(entry)) {
       continue;
     }
+    scanBudget.scannedEntries += 1;
 
     const candidate = path.join(tempRoot, entry);
     try {
