@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../constants";
 import { B2ToolInputError } from "../errors";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 import {
   ensurePrivateDirectorySync,
   isAbsolutePortable,
@@ -22,7 +23,6 @@ import {
 // Leaves enough room under common 255-byte segment limits for atomic temp suffixes.
 const DEFAULT_DOWNLOAD_NAME_MAX_BYTES = 180;
 const EXTENSION_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-const SENSITIVE_WORKSPACE_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
 export type ToolLocalPathRootKind = "workspace" | "toolsTemp";
 
@@ -90,10 +90,9 @@ function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: stri
   const segments = path
     .relative(workspaceBase, candidatePath)
     .split(path.sep)
-    .filter(Boolean)
-    .map((segment) => segment.toLowerCase());
+    .filter(Boolean);
 
-  if (segments.some((segment) => SENSITIVE_WORKSPACE_DIRECTORIES.has(segment))) {
+  if (segments.some(isWorkspaceControlDirectorySegment)) {
     throw new B2ToolInputError(
       "localPath must not target workspace control directories such as .git or .vscode.",
     );

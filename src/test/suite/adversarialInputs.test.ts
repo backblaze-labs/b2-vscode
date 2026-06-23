@@ -8,7 +8,6 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as vscode from "vscode";
 import * as fc from "fast-check";
 import {
   SSE_NONE,
@@ -47,6 +46,7 @@ import {
   writeReadableStreamAtomically,
 } from "../../pathSafety";
 import type { ToolExtras } from "../../tools/types";
+import { withWorkspaceFolder } from "../../testSupport/workspace";
 
 const FUZZ_RUNS = 80;
 const ASYNC_FUZZ_RUNS = 40;
@@ -211,34 +211,6 @@ function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
-}
-
-async function withWorkspaceFolder<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
-  const mutableWorkspace = vscode.workspace as unknown as {
-    workspaceFolders?: readonly vscode.WorkspaceFolder[];
-  };
-  const originalDescriptor = Object.getOwnPropertyDescriptor(mutableWorkspace, "workspaceFolders");
-
-  Object.defineProperty(mutableWorkspace, "workspaceFolders", {
-    configurable: true,
-    get: () => [
-      {
-        uri: vscode.Uri.file(workspacePath),
-        name: path.basename(workspacePath),
-        index: 0,
-      },
-    ],
-  });
-
-  try {
-    return await run();
-  } finally {
-    if (originalDescriptor) {
-      Object.defineProperty(mutableWorkspace, "workspaceFolders", originalDescriptor);
-    } else {
-      delete mutableWorkspace.workspaceFolders;
-    }
-  }
 }
 
 function operationExtras(bucketName: string, fileName: string): ToolExtras {
@@ -578,6 +550,14 @@ suite("Adversarial untrusted input fuzzing", () => {
       );
       assert.throws(
         () => resolveWorkspaceRelativePath(workspaceRoot, ".vscode/settings.json"),
+        /workspace control directories/,
+      );
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, ".git./config"),
+        /workspace control directories/,
+      );
+      assert.throws(
+        () => resolveWorkspaceRelativePath(workspaceRoot, ".vscode /settings.json"),
         /workspace control directories/,
       );
     } finally {
