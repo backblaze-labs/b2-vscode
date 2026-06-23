@@ -58,9 +58,16 @@ function defaultTransferTempDirectoryPrefix(): string {
   return `${TRANSFER_TEMP_DIR_NAME}-${defaultTransferTempDirectoryUserPart()}-`;
 }
 
+export function defaultTransferTempDirectoryForSession(sessionId: string): string {
+  if (!sessionId || /[/\\]/.test(sessionId)) {
+    throw new Error("Transfer temp directory session id must be a non-empty path segment.");
+  }
+  return path.join(os.tmpdir(), `${defaultTransferTempDirectoryPrefix()}${sessionId}`);
+}
+
 function defaultTransferTempDirectoryName(): string {
   const random = crypto.randomBytes(12).toString("hex");
-  return `${defaultTransferTempDirectoryPrefix()}${process.pid}-${random}`;
+  return path.basename(defaultTransferTempDirectoryForSession(`${process.pid}-${random}`));
 }
 
 function isCurrentUserOwned(stats: fs.Stats): boolean {
@@ -414,19 +421,30 @@ async function openRealDirectory(directory: string): Promise<fs.Dir | undefined>
   }
 }
 
-export async function cleanupWorkspaceTransferTempFiles(options: {
+interface WorkspaceTempCleanupOptions extends BoundedCleanupOptions {
   readonly workspaceRoot: string;
   readonly maxAgeMs?: number;
-  readonly budgetMs?: number;
-  readonly maxEntries?: number;
-}): Promise<void> {
+}
+
+interface WorkspaceTempCleanupEntry {
+  readonly directory: string;
+  readonly entry: fs.Dirent;
+  readonly entryPath: string;
+  readonly cutoff: number;
+}
+
+async function cleanupWorkspaceTempFiles(
+  options: WorkspaceTempCleanupOptions,
+  label: string,
+  onEntry: (entry: WorkspaceTempCleanupEntry) => Promise<boolean>,
+): Promise<void> {
   const workspaceRoot = path.resolve(options.workspaceRoot);
   try {
     if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
       return;
     }
   } catch (error) {
-    logError(`Could not inspect workspace root for transfer temp cleanup: ${workspaceRoot}`, error);
+    logError(`Could not inspect workspace root for ${label} cleanup: ${workspaceRoot}`, error);
     return;
   }
 
@@ -456,7 +474,7 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
-        logError(`Could not inspect workspace directory for transfer cleanup: ${directory}`, error);
+        logError(`Could not inspect workspace directory for ${label} cleanup: ${directory}`, error);
       }
       continue;
     }
@@ -477,10 +495,8 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
 
         scannedEntries += 1;
         const entryPath = path.join(directory, entry.name);
-        if (!entry.isDirectory() && isTransferTempFile(entry.name)) {
-          if (await cleanupStaleTransferTempFile(entryPath, cutoff)) {
-            cleanedFiles += 1;
-          }
+        if (await onEntry({ directory, entry, entryPath, cutoff })) {
+          cleanedFiles += 1;
           continue;
         }
 
@@ -499,9 +515,28 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
 
   if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
     log(
-      `Workspace transfer temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+      `Workspace ${label} cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
     );
   }
+}
+
+export async function cleanupWorkspaceTransferTempFiles(options: {
+  readonly workspaceRoot: string;
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
+}): Promise<void> {
+  await cleanupWorkspaceTempFiles(
+    options,
+    "transfer temp",
+    async ({ entry, entryPath, cutoff }) => {
+      if (entry.isDirectory() || !isTransferTempFile(entry.name)) {
+        return false;
+      }
+
+      return cleanupStaleTransferTempFile(entryPath, cutoff);
+    },
+  );
 }
 
 async function cleanupDestinationTempEntry(
@@ -576,91 +611,12 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
   readonly budgetMs?: number;
   readonly maxEntries?: number;
 }): Promise<void> {
-  const workspaceRoot = path.resolve(options.workspaceRoot);
-  try {
-    if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
-      return;
-    }
-  } catch (error) {
-    logError(
-      `Could not inspect workspace root for destination temp cleanup: ${workspaceRoot}`,
-      error,
-    );
-    return;
-  }
-
-  const deadlineMs = Date.now() + Math.max(0, options.budgetMs ?? STALE_CLEANUP_BUDGET_MS);
-  const maxEntries = Math.max(0, options.maxEntries ?? STALE_CLEANUP_MAX_ENTRIES);
-  const cutoff = Date.now() - (options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS);
-  const stack = [workspaceRoot];
-  let scannedEntries = 0;
-  let cleanedFiles = 0;
-  let budgetHit = false;
-  let maxEntriesHit = false;
-
-  while (stack.length > 0) {
-    if (Date.now() >= deadlineMs) {
-      budgetHit = true;
-      break;
-    }
-    if (scannedEntries >= maxEntries) {
-      maxEntriesHit = true;
-      break;
-    }
-
-    const directory = stack.pop() as string;
-    let dir: fs.Dir | undefined;
-    try {
-      dir = await openRealDirectory(directory);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
-        logError(
-          `Could not inspect workspace directory for destination cleanup: ${directory}`,
-          error,
-        );
-      }
-      continue;
-    }
-    if (dir === undefined) {
-      continue;
-    }
-
-    try {
-      for await (const entry of dir) {
-        if (Date.now() >= deadlineMs) {
-          budgetHit = true;
-          break;
-        }
-        if (scannedEntries >= maxEntries) {
-          maxEntriesHit = true;
-          break;
-        }
-
-        scannedEntries += 1;
-        if (await cleanupDestinationTempEntry(directory, entry.name, cutoff)) {
-          cleanedFiles += 1;
-          continue;
-        }
-
-        if (
-          entry.isDirectory() &&
-          !entry.isSymbolicLink() &&
-          !isWorkspaceControlDirectorySegment(entry.name)
-        ) {
-          stack.push(path.join(directory, entry.name));
-        }
-      }
-    } finally {
-      await closeDirectoryBestEffort(dir);
-    }
-  }
-
-  if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
-    log(
-      `Workspace destination temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
-    );
-  }
+  await cleanupWorkspaceTempFiles(
+    options,
+    "destination temp",
+    async ({ directory, entry, cutoff }) =>
+      cleanupDestinationTempEntry(directory, entry.name, cutoff),
+  );
 }
 
 export async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {

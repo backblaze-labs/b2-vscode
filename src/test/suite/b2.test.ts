@@ -34,6 +34,7 @@ import {
 import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
+  cleanupStaleUploadSessionMarkers,
   cleanupStaleUnfinishedUploads,
   cleanupWorkspaceDestinationTempFiles,
   cleanupWorkspaceTransferTempFiles,
@@ -63,7 +64,10 @@ import {
   isPathInsideOrEqual,
   resolveWorkspaceFilePath,
 } from "../../services/pathSafety";
-import { transferTempDirectory } from "../../services/transferTempFiles";
+import {
+  defaultTransferTempDirectoryForSession,
+  transferTempDirectory,
+} from "../../services/transferTempFiles";
 import { humanSize } from "../../utils/humanSize";
 import {
   cleanupStalePrivateTempRoots,
@@ -578,6 +582,47 @@ suite("B2 transfer helpers", () => {
         [],
       );
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("stages default downloads on the destination filesystem", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-dest-temp-"));
+    const destination = path.join(dir, "nested", "file.bin");
+    const destinationTempDirectory = path.join(path.dirname(destination), TRANSFER_TEMP_DIR_NAME);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.alloc(1024, 7));
+        controller.close();
+      },
+    });
+    const originalRename = fs.promises.rename;
+    const originalCopyFile = fs.promises.copyFile;
+    let stagedPath: string | undefined;
+    let copyFileCalled = false;
+
+    fs.promises.rename = (async (oldPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      if (path.resolve(String(newPath)) === path.resolve(destination)) {
+        stagedPath = String(oldPath);
+      }
+      await originalRename(oldPath, newPath);
+    }) as typeof fs.promises.rename;
+    fs.promises.copyFile = (async (...args: Parameters<typeof fs.promises.copyFile>) => {
+      copyFileCalled = true;
+      await originalCopyFile(...args);
+    }) as typeof fs.promises.copyFile;
+
+    try {
+      const size = await downloadStreamToFile(stream, destination);
+
+      assert.strictEqual(size, 1024);
+      assert.ok(stagedPath);
+      assert.strictEqual(path.dirname(stagedPath), destinationTempDirectory);
+      assert.strictEqual(copyFileCalled, false);
+      assert.strictEqual(fs.readFileSync(destination).byteLength, 1024);
+    } finally {
+      fs.promises.rename = originalRename;
+      fs.promises.copyFile = originalCopyFile;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1730,13 +1775,8 @@ suite("B2 transfer helpers", () => {
   });
 
   test("cleans stale transfer temp files from previous default sessions", async () => {
-    const currentDefault = transferTempDirectory();
-    const currentName = path.basename(currentDefault);
-    const processMarker = `-${process.pid}-`;
-    const markerIndex = currentName.indexOf(processMarker);
-    assert.notStrictEqual(markerIndex, -1);
-    const sessionPrefix = currentName.slice(0, markerIndex + 1);
-    const previousDirectory = path.join(os.tmpdir(), `${sessionPrefix}previous-test`);
+    transferTempDirectory();
+    const previousDirectory = defaultTransferTempDirectoryForSession("previous-test");
     const staleFile = path.join(previousDirectory, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");
     fs.mkdirSync(previousDirectory, { recursive: true, mode: 0o700 });
     fs.writeFileSync(staleFile, "stale");
@@ -2151,6 +2191,60 @@ suite("B2 transfer helpers", () => {
     } finally {
       for (const filePath of [staleMarker, freshMarker, unrelatedFile]) {
         fs.rmSync(filePath, { force: true });
+      }
+    }
+  });
+
+  test("stale upload marker cleanup uses bounded opendir scans", async () => {
+    const markerDirectory = path.join(os.tmpdir(), "b2-vscode-upload-sessions");
+    fs.mkdirSync(markerDirectory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(markerDirectory, 0o700);
+    const unique = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const markerPaths = Array.from({ length: 25 }, (_, index) =>
+      path.join(markerDirectory, `session-${unique}-${index}.json`),
+    );
+    for (const markerPath of markerPaths) {
+      fs.writeFileSync(markerPath, "{}");
+      const staleTime = new Date(Date.now() - 10_000);
+      fs.utimesSync(markerPath, staleTime, staleTime);
+    }
+    const originalReaddir = fs.promises.readdir;
+    const originalOpendir = fs.promises.opendir;
+    let readdirCalled = false;
+    let closeCalls = 0;
+
+    fs.promises.readdir = (async () => {
+      readdirCalled = true;
+      throw new Error("upload marker cleanup should use opendir");
+    }) as typeof fs.promises.readdir;
+    fs.promises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      const handle = await originalOpendir(...args);
+      if (path.resolve(String(args[0])) === path.resolve(markerDirectory)) {
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          closeCalls += 1;
+          await close();
+        };
+      }
+      return handle;
+    }) as typeof fs.promises.opendir;
+
+    try {
+      await cleanupStaleUploadSessionMarkers({
+        maxAgeMs: 1_000,
+        maxEntries: 3,
+        budgetMs: 1_000,
+      });
+
+      const remaining = markerPaths.filter((markerPath) => fs.existsSync(markerPath));
+      assert.strictEqual(readdirCalled, false);
+      assert.strictEqual(closeCalls, 1);
+      assert.ok(remaining.length >= markerPaths.length - 3);
+    } finally {
+      fs.promises.readdir = originalReaddir;
+      fs.promises.opendir = originalOpendir;
+      for (const markerPath of markerPaths) {
+        fs.rmSync(markerPath, { force: true });
       }
     }
   });

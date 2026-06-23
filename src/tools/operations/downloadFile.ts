@@ -28,6 +28,8 @@ import {
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
+import { sanitizeLocalPathSegment } from "../../utils/localPaths";
+import { isWorkspaceControlDirectorySegment } from "../../utils/workspaceControlDirectories";
 import {
   resolveToolLocalPathDetails,
   safeDefaultDownloadName,
@@ -131,13 +133,49 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
 
 type DownloadDestination = ResolvedToolLocalPath;
 
+function normalizeRelativeDownloadLocalPath(requestedPath: string): string {
+  if (requestedPath.includes("\0")) {
+    throw new B2ToolInputError("localPath must not contain null bytes.");
+  }
+  if (path.isAbsolute(requestedPath) || path.win32.isAbsolute(requestedPath)) {
+    return requestedPath;
+  }
+
+  const segments = requestedPath.split(/[\\/]/);
+  const finalSegment = segments[segments.length - 1];
+  if (
+    segments.length === 0 ||
+    requestedPath.length === 0 ||
+    /[\\/]/.test(requestedPath.slice(-1)) ||
+    finalSegment === ".." ||
+    segments.some((segment) => segment.length === 0 || segment === ".")
+  ) {
+    throw new B2ToolInputError("localPath must be a file path, not a directory path.");
+  }
+  if (segments.some((segment) => segment === "..")) {
+    throw new B2ToolInputError(
+      "localPath must stay within the current workspace or extension tools temporary directory.",
+    );
+  }
+  const controlDirectory = segments.find(isWorkspaceControlDirectorySegment);
+  if (controlDirectory !== undefined) {
+    throw new B2ToolInputError(
+      `downloadFile refuses to write inside workspace control directories: ${controlDirectory}`,
+    );
+  }
+
+  return segments.map(sanitizeLocalPathSegment).join(path.sep);
+}
+
 async function workspacePath(
   remotePath: string,
   localPath?: string,
   options: { readonly createParentDirectories: boolean } = { createParentDirectories: true },
 ): Promise<DownloadDestination> {
   const destination = resolveToolLocalPathDetails(
-    localPath !== undefined ? localPath : safeDefaultDownloadName(remotePath),
+    normalizeRelativeDownloadLocalPath(
+      localPath !== undefined ? localPath : safeDefaultDownloadName(remotePath),
+    ),
     WORKSPACE_REQUIRED_MESSAGE,
   );
   try {

@@ -36,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional local file path. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected.",
+          "Optional local file path. Relative paths resolve inside the first open workspace folder and each filename segment is sanitized once for portable writes. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected.",
       },
     },
     required: ["bucket", "path"],

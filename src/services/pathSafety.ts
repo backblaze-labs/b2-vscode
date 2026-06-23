@@ -80,7 +80,7 @@ export interface EnsureRealDirectoryOptions {
 
 export function assertRealDirectory(stats: fs.Stats, directory: string, label: string): void {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(
+    throw new UnsafePathError(
       `${label} must be a real directory, not a symlink or special file: ${directory}`,
     );
   }
@@ -243,7 +243,7 @@ export async function ensureContainedDirectoryPath(
   const root = path.resolve(rootPath);
   const target = path.resolve(targetDirectory);
   if (!isPathInsideOrEqual(root, target)) {
-    throw new Error(`${label} resolves outside the allowed root: ${targetDirectory}`);
+    throw new UnsafePathError(`${label} resolves outside the allowed root: ${targetDirectory}`);
   }
 
   const rootRealPath = await fs.promises.realpath(rootPath);
@@ -254,7 +254,7 @@ export async function ensureContainedDirectoryPath(
     await ensureRealDirectory(current, label, options);
     const currentRealPath = await fs.promises.realpath(current);
     if (!isPathInsideOrEqual(rootRealPath, currentRealPath)) {
-      throw new Error(`${label} resolves outside the allowed root: ${current}`);
+      throw new UnsafePathError(`${label} resolves outside the allowed root: ${current}`);
     }
   }
 }

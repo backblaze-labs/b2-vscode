@@ -42,7 +42,7 @@ import {
   ensureTransferTempDirectory,
   moveIntoPlace,
   removeTempFile,
-  transferTempDirectory,
+  TRANSFER_TEMP_DIR_NAME,
   transferTempPath,
 } from "./transferTempFiles";
 import {
@@ -89,6 +89,8 @@ const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT = 16;
 const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const STALE_UPLOAD_SESSION_MARKER_CLEANUP_BUDGET_MS = 2_000;
+const STALE_UPLOAD_SESSION_MARKER_CLEANUP_MAX_ENTRIES = 2_000;
 const UPLOAD_OWNER_INFO_KEY = "b2-vscode-upload-owner";
 const UPLOAD_SESSION_ID_INFO_KEY = "b2-vscode-upload-session-id";
 const UPLOAD_STARTED_MS_INFO_KEY = "b2-vscode-upload-started-ms";
@@ -96,7 +98,7 @@ const UPLOAD_SESSION_MARKER_DIR_NAME = "b2-vscode-upload-sessions";
 const UPLOAD_SESSION_MARKER_PREFIX = "session-";
 const UPLOAD_SESSION_MARKER_SUFFIX = ".json";
 const NOFOLLOW_OPEN_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
-const DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS = DEFAULT_TRANSFER_STALL_TIMEOUT_MS;
 
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
 let unfinishedUploadCleanupPendingCount = 0;
@@ -160,6 +162,12 @@ export interface StaleUnfinishedUploadCleanupOptions extends Pick<
   readonly unfinishedCleanupMaxAgeMs?: number;
   readonly skipUploadSessionMarkerCleanup?: boolean;
   readonly onMissingCapability?: (description: string, error: unknown) => void;
+}
+
+export interface StaleUploadSessionMarkerCleanupOptions {
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
 }
 
 export interface StaleUnfinishedUploadCleanupResult {
@@ -365,11 +373,9 @@ async function downloadStreamToFileInternal(
     );
     await cleanupDestinationTempFilesForDownload(destinationDirectory);
 
-    const temporaryDirectory = transferTempDirectory(options.temporaryDirectory);
-    await ensureTransferTempDirectory(
-      temporaryDirectory,
-      options.temporaryDirectory !== undefined ? options.allowedRootDirectory : undefined,
-    );
+    const temporaryDirectory =
+      options.temporaryDirectory ?? path.join(destinationDirectory, TRANSFER_TEMP_DIR_NAME);
+    await ensureTransferTempDirectory(temporaryDirectory, options.allowedRootDirectory);
     await cleanupTransferTempFilesForDownload(temporaryDirectory);
 
     temporaryPath = transferTempPath(temporaryDirectory);
@@ -649,9 +655,28 @@ function uploadSessionMarkerPath(remotePath: string, uploadSessionId: string): s
   );
 }
 
+function normalizeUploadSessionMarkerCleanupOptions(
+  options: number | StaleUploadSessionMarkerCleanupOptions = {},
+): Required<StaleUploadSessionMarkerCleanupOptions> {
+  if (typeof options === "number") {
+    return {
+      maxAgeMs: options,
+      budgetMs: STALE_UPLOAD_SESSION_MARKER_CLEANUP_BUDGET_MS,
+      maxEntries: STALE_UPLOAD_SESSION_MARKER_CLEANUP_MAX_ENTRIES,
+    };
+  }
+
+  return {
+    maxAgeMs: options.maxAgeMs ?? STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS,
+    budgetMs: options.budgetMs ?? STALE_UPLOAD_SESSION_MARKER_CLEANUP_BUDGET_MS,
+    maxEntries: options.maxEntries ?? STALE_UPLOAD_SESSION_MARKER_CLEANUP_MAX_ENTRIES,
+  };
+}
+
 export async function cleanupStaleUploadSessionMarkers(
-  maxAgeMs = STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS,
+  options: number | StaleUploadSessionMarkerCleanupOptions = {},
 ): Promise<void> {
+  const cleanupOptions = normalizeUploadSessionMarkerCleanupOptions(options);
   const directory = uploadSessionMarkerDirectory();
   try {
     if (!(await pathExistsAsRealDirectory(directory, "Upload session marker directory"))) {
@@ -663,36 +688,68 @@ export async function cleanupStaleUploadSessionMarkers(
     return;
   }
 
-  const cutoff = Date.now() - maxAgeMs;
-  let entries: string[];
+  const cutoff = Date.now() - cleanupOptions.maxAgeMs;
+  const deadlineMs = Date.now() + Math.max(0, cleanupOptions.budgetMs);
+  const maxEntries = Math.max(0, cleanupOptions.maxEntries);
+  let scannedEntries = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+  let dir: fs.Dir | undefined;
   try {
-    entries = await fs.promises.readdir(directory);
+    dir = await fs.promises.opendir(directory);
   } catch (error) {
-    logError(`Could not list upload session marker directory: ${directory}`, error);
+    logError(`Could not open upload session marker directory: ${directory}`, error);
     return;
   }
 
-  for (const entry of entries) {
-    if (
-      !entry.startsWith(UPLOAD_SESSION_MARKER_PREFIX) ||
-      !entry.endsWith(UPLOAD_SESSION_MARKER_SUFFIX)
-    ) {
-      continue;
-    }
+  try {
+    while (true) {
+      if (Date.now() >= deadlineMs) {
+        budgetHit = true;
+        break;
+      }
+      if (scannedEntries >= maxEntries) {
+        maxEntriesHit = true;
+        break;
+      }
 
-    const markerPath = path.join(directory, entry);
-    try {
-      const stats = await fs.promises.lstat(markerPath);
-      if ((!stats.isFile() && !stats.isSymbolicLink()) || stats.mtimeMs > cutoff) {
+      const entry = await dir.read();
+      if (entry === null) {
+        break;
+      }
+      scannedEntries += 1;
+
+      if (
+        !entry.name.startsWith(UPLOAD_SESSION_MARKER_PREFIX) ||
+        !entry.name.endsWith(UPLOAD_SESSION_MARKER_SUFFIX)
+      ) {
         continue;
       }
 
-      await fs.promises.rm(markerPath, { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        logError(`Could not remove stale upload session marker: ${markerPath}`, error);
+      const markerPath = path.join(directory, entry.name);
+      try {
+        const stats = await fs.promises.lstat(markerPath);
+        if ((!stats.isFile() && !stats.isSymbolicLink()) || stats.mtimeMs > cutoff) {
+          continue;
+        }
+
+        await fs.promises.rm(markerPath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          logError(`Could not remove stale upload session marker: ${markerPath}`, error);
+        }
       }
     }
+  } finally {
+    await dir.close().catch((error) => {
+      logError(`Could not close upload session marker directory: ${directory}`, error);
+    });
+  }
+
+  if (budgetHit || maxEntriesHit) {
+    log(
+      `Upload session marker cleanup scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+    );
   }
 }
 
@@ -1038,7 +1095,7 @@ function uploadIndeterminateError(
   uploadSessionId: string,
 ): UploadIndeterminateError {
   return new UploadIndeterminateError(
-    `Upload of ${remotePath} timed out while B2 finalization was in progress (session ${uploadSessionId}). The upload may have completed after the timeout; check B2 before retrying to avoid duplicate file versions.`,
+    `Upload of ${remotePath} timed out while B2 finalization was in progress (session ${uploadSessionId}). The upload may still complete in B2 after the timeout; check B2 before retrying to avoid duplicate file versions.`,
   );
 }
 
@@ -1197,7 +1254,9 @@ export async function uploadFileFromDisk(
         activity,
         remotePath,
         uploadSessionId,
-        options.finalizationTimeoutMs ?? DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS,
+        options.finalizationTimeoutMs ??
+          options.stallTimeoutMs ??
+          DEFAULT_UPLOAD_FINALIZATION_TIMEOUT_MS,
       );
     });
 
