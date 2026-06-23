@@ -81,6 +81,9 @@ Large uploads tag in-progress multipart sessions so the extension can cancel its
 
 ## Development
 
+Use Node.js 22.13.0 or newer. CI runs the declared lower bound so the
+development contract stays aligned with the toolchain dependency graph.
+
 ```bash
 # Install dependencies
 npm install

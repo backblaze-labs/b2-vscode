@@ -8,6 +8,7 @@ import * as assert from "assert";
 import * as path from "path";
 
 interface ReleaseWorkflowGuard {
+  assertDependencyVsixDiffGate(workflow: unknown): void;
   assertMarketplaceSecretStepsUseIsolatedPublisher(workflow: unknown): void;
   assertMarketplaceSecretOnlyInPublish(workflow: unknown): void;
   assertMarketplacePublisherDependencyGate(workflow: unknown): void;
@@ -430,6 +431,56 @@ suite("Release workflow guard assertions", () => {
           },
         }),
       /release-workflow/i,
+    );
+  });
+
+  test("rejects build workflows that omit dependency VSIX diff gate", () => {
+    const guard = loadReleaseWorkflowGuard();
+    const paths = [
+      ".github/vsix-generated-diff-allowlist.json",
+      "package-lock.json",
+      "package.json",
+      "scripts/assert-dependency-vsix-diff.js",
+    ];
+
+    assert.throws(
+      () =>
+        guard.assertDependencyVsixDiffGate({
+          on: {
+            push: { paths },
+            pull_request: { paths },
+          },
+          jobs: {
+            build: {
+              steps: [
+                {
+                  name: "Checkout base source for artifact diff",
+                  if: "github.event_name == 'pull_request'",
+                  with: {
+                    ref: "${{ github.event.pull_request.base.sha }}",
+                    path: "base-source",
+                  },
+                },
+                {
+                  name: "Record changed files",
+                  if: "github.event_name == 'pull_request'",
+                  run: 'git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+                },
+                {
+                  name: "Package VSIX",
+                  run: "npm run vsix",
+                },
+                {
+                  name: "Package base VSIX for dependency diff",
+                  if: "github.event_name == 'pull_request'",
+                  "working-directory": "base-source",
+                  run: "npm ci --ignore-scripts\nnpm run vsix",
+                },
+              ],
+            },
+          },
+        }),
+      /generated-code diff/i,
     );
   });
 });

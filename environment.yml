@@ -2,8 +2,8 @@ name: b2-vscode
 channels:
   - conda-forge
 dependencies:
-  # Runtime required by package.json: engines.node >=22.0.0.
-  - nodejs>=22,<23
+  # Runtime required by package.json: engines.node >=22.13.0.
+  - nodejs>=22.13.0,<23
 
   # Repository and automation tooling used by local maintenance workflows.
   - git

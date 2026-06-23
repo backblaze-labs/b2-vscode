@@ -8,6 +8,7 @@ on:
       - "resources/icons/**"
       - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
+      - "scripts/assert-dependency-vsix-diff.js"
       - "scripts/assert-vsix-assets.js"
       - "scripts/assert-vsix-manifest.js"
       - "scripts/release-contract.js"
@@ -17,6 +18,7 @@ on:
       - "package-lock.json"
       - "npm-shrinkwrap.json"
       - ".npmrc"
+      - ".github/vsix-generated-diff-allowlist.json"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
   pull_request:
@@ -26,6 +28,7 @@ on:
       - "resources/icons/**"
       - "src/sql-js-runtime-assets.json"
       - "scripts/build-icons.js"
+      - "scripts/assert-dependency-vsix-diff.js"
       - "scripts/assert-vsix-assets.js"
       - "scripts/assert-vsix-manifest.js"
       - "scripts/release-contract.js"
@@ -35,6 +38,7 @@ on:
       - "package-lock.json"
       - "npm-shrinkwrap.json"
       - ".npmrc"
+      - ".github/vsix-generated-diff-allowlist.json"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
 
@@ -58,14 +62,32 @@ jobs:
           path: source
           persist-credentials: false
 
+      - name: Checkout base source for artifact diff
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-source
+          persist-credentials: false
+
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "22"
+          node-version: "22.13.0"
 
       - name: Install dependencies
         working-directory: source
         run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Record changed files
+        if: github.event_name == 'pull_request'
+        working-directory: source
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
+          cat "$RUNNER_TEMP/changed-files.txt"
 
       - name: Assert audit policy guardrails
         working-directory: source
@@ -93,6 +115,20 @@ jobs:
       - name: Package VSIX
         working-directory: source
         run: npm run vsix
+
+      - name: Package base VSIX for dependency diff
+        if: github.event_name == 'pull_request'
+        working-directory: base-source
+        run: |
+          bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+          npm run vsix
+
+      - name: Check dependency-only VSIX generated-code diff
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE_VSIX=$(node source/scripts/resolve-vsix-artifact.js base-source)
+          HEAD_VSIX=$(node source/scripts/resolve-vsix-artifact.js source)
+          node source/scripts/assert-dependency-vsix-diff.js --base "$BASE_VSIX" --head "$HEAD_VSIX" --changed-files "$RUNNER_TEMP/changed-files.txt"
 
       - name: Record VSIX checksum
         working-directory: source
@@ -128,7 +164,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "22"
+          node-version: "22.13.0"
 
       - name: Install dependencies
         working-directory: source
