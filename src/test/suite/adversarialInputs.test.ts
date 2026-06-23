@@ -1282,6 +1282,38 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("no-follow reads omit O_NOFOLLOW on Windows", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-nofollow-"));
+    const localPath = path.join(outputRoot, "upload.txt");
+    const originalOpen = fs.promises.open;
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    let openFlags: string | number | undefined;
+
+    try {
+      await fs.promises.writeFile(localPath, "safe");
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: "win32",
+      });
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async (
+        ...args: Parameters<typeof fs.promises.open>
+      ) => {
+        openFlags = args[1];
+        return originalOpen(...args);
+      }) as typeof fs.promises.open;
+
+      assert.deepStrictEqual(await readFileNoFollow(localPath), Buffer.from("safe"));
+      assert.strictEqual(typeof openFlags, "number");
+      assert.strictEqual(((openFlags as number) & fs.constants.O_NOFOLLOW) === 0, true);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      if (platformDescriptor) {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("no-follow reads recheck symlinks after opening", async () => {
     if (process.platform === "win32") {
       return;

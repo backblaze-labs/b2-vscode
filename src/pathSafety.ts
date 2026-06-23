@@ -55,6 +55,13 @@ function codedLocalError(message: string, code: string): NodeJS.ErrnoException {
   return error;
 }
 
+function noFollowOpenFlag(): number {
+  if (process.platform === "win32" || typeof fs.constants.O_NOFOLLOW !== "number") {
+    return 0;
+  }
+  return fs.constants.O_NOFOLLOW;
+}
+
 export function isAbsolutePortable(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
@@ -356,8 +363,7 @@ export async function readFileNoFollow(filePath: string): Promise<Buffer> {
     throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
   }
 
-  const noFollow = fs.constants.O_NOFOLLOW;
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (noFollow ?? 0));
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollowOpenFlag());
 
   try {
     const postOpenStat = await fs.promises.lstat(filePath);
