@@ -1314,6 +1314,62 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("no-follow reads reject non-file upload targets", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-nofollow-"));
+    const directoryPath = path.join(outputRoot, "directory");
+
+    try {
+      await fs.promises.mkdir(directoryPath);
+
+      await assert.rejects(
+        () => readFileNoFollow(directoryPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("regular file") &&
+          (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
+      );
+    } finally {
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("no-follow reads reject files swapped while opening", async () => {
+    const outputRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-nofollow-"));
+    const localPath = path.join(outputRoot, "upload.txt");
+    const replacementPath = path.join(outputRoot, "replacement.txt");
+    const originalOpen = fs.promises.open;
+    let swapped = false;
+
+    try {
+      await fs.promises.writeFile(localPath, "safe");
+      await fs.promises.writeFile(replacementPath, "different");
+
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = (async (
+        ...args: Parameters<typeof fs.promises.open>
+      ) => {
+        const handle = await originalOpen(...args);
+        if (args[0].toString() === localPath && !swapped) {
+          swapped = true;
+          await fs.promises.rm(localPath, { force: true });
+          await fs.promises.copyFile(replacementPath, localPath);
+        }
+        return handle;
+      }) as typeof fs.promises.open;
+
+      await assert.rejects(
+        () => readFileNoFollow(localPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("changed while opening") &&
+          (error as NodeJS.ErrnoException).code === "ERR_B2_TOOL_INPUT",
+      );
+      assert.strictEqual(swapped, true);
+    } finally {
+      (fs.promises as unknown as { open: typeof fs.promises.open }).open = originalOpen;
+      await fs.promises.rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
   test("no-follow reads recheck symlinks after opening", async () => {
     if (process.platform === "win32") {
       return;

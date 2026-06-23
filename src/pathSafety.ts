@@ -62,6 +62,36 @@ function noFollowOpenFlag(): number {
   return fs.constants.O_NOFOLLOW;
 }
 
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertNoFollowFile(filePath: string, stat: fs.Stats): void {
+  if (stat.isSymbolicLink()) {
+    throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
+  }
+  if (!stat.isFile()) {
+    throw new B2ToolInputError(`${filePath} must be a regular file.`);
+  }
+}
+
+function assertSameFileIdentity(filePath: string, left: fs.Stats, right: fs.Stats): void {
+  if (!sameFileIdentity(left, right)) {
+    throw new B2ToolInputError(`${filePath} changed while opening.`);
+  }
+}
+
+async function lstatAfterNoFollowOpen(filePath: string): Promise<fs.Stats> {
+  try {
+    return await fs.promises.lstat(filePath);
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      throw new B2ToolInputError(`${filePath} changed while opening.`);
+    }
+    throw error;
+  }
+}
+
 export function isAbsolutePortable(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
@@ -359,17 +389,20 @@ export async function sweepStaleAtomicTempFiles(
 
 export async function readFileNoFollow(filePath: string): Promise<Buffer> {
   const stat = await fs.promises.lstat(filePath);
-  if (stat.isSymbolicLink()) {
-    throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
-  }
+  assertNoFollowFile(filePath, stat);
 
   const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | noFollowOpenFlag());
 
   try {
-    const postOpenStat = await fs.promises.lstat(filePath);
-    if (postOpenStat.isSymbolicLink()) {
-      throw new B2ToolInputError(`${filePath} must not be a symbolic link.`);
-    }
+    const openedStat = await handle.stat();
+    assertNoFollowFile(filePath, openedStat);
+    assertSameFileIdentity(filePath, stat, openedStat);
+
+    const postOpenStat = await lstatAfterNoFollowOpen(filePath);
+    assertNoFollowFile(filePath, postOpenStat);
+    assertSameFileIdentity(filePath, stat, postOpenStat);
+    assertSameFileIdentity(filePath, openedStat, postOpenStat);
+
     return await handle.readFile();
   } finally {
     await handle.close().catch(() => undefined);
