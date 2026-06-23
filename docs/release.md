@@ -36,7 +36,9 @@ GitHub Actions workflow.
 Run the `Release` workflow manually with `publish=false` for a dry-run/preflight.
 That path runs quality, behavioral test, dependency audit, CodeQL SAST, strict
 VSIX validation, and installed-VSIX smoke without reading `VSCE_KEY`. Provenance
-attestation and Marketplace publishing only run for `v*.*.*` tag refs.
+attestation only runs for `v*.*.*` tag refs. Marketplace publishing is an
+explicit manual action on a stable tag: run the `Release` workflow on the tag ref
+with `publish=true` after Marketplace readiness is confirmed.
 
 The dependency audit gate runs through `scripts/run-npm-audit.js` with
 `audit-policy.jsonc`, currently `auditLevel=moderate` and `includeDev=true`.
@@ -54,16 +56,19 @@ For a stable release:
 2. Ensure `package.json` has the intended version.
 3. Create and push a protected `vX.Y.Z` tag that matches `package.json`.
 4. Let the `Release` workflow verify that the tag commit is reachable from
-   `origin/main`, run all gates, attest the exact checksummed VSIX, and publish
-   to the Marketplace from the protected `marketplace` environment.
+   `origin/main`, run all gates, attest the exact checksummed VSIX, and create a
+   GitHub Release with the VSIX and checksum artifacts.
 5. Confirm the GitHub Release includes the VSIX and `VSIX_SHA256SUMS.txt`.
 6. Confirm the attestation is present for the VSIX artifact.
-7. Confirm the Marketplace listing shows the new version after the publish job.
+7. When Marketplace publishing is approved, run the `Release` workflow manually
+   on the stable tag with `publish=true`, then confirm the Marketplace listing
+   shows the new version after the publish job.
 
 Prerelease tags containing `-` create prerelease GitHub Releases and skip the
-stable Marketplace publish path. Stable GitHub Releases are created only after
-the Marketplace publish job succeeds, so a publish failure blocks the GitHub
-Release and does not advertise an unpublished stable version.
+stable Marketplace publish path. Stable GitHub Releases are created when the
+Marketplace publish job either succeeds or is intentionally skipped. If a manual
+Marketplace publish is requested and fails, the GitHub Release job is blocked
+for that run.
 
 ## Rollback
 

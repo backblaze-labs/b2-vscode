@@ -183,6 +183,11 @@ function assertPublishIsReleaseOnly(workflowToCheck = loadReleaseWorkflow()) {
     "publish job must reject prerelease tag refs.",
   );
   assert(
+    publishIf.includes("github.event_name == 'workflow_dispatch'") &&
+      publishIf.includes("inputs.publish == true"),
+    "publish job must require an explicit manual publish=true dispatch.",
+  );
+  assert(
     jobs.publish.environment === "marketplace",
     "publish job must run in the marketplace environment.",
   );
@@ -433,13 +438,18 @@ function assertReleasePublishGate(workflowToCheck = loadReleaseWorkflow()) {
   assertJobExists(workflowToCheck, "release");
   assert(
     jobNeeds(workflowToCheck, "release").includes("publish"),
-    "GitHub Release creation must depend on Marketplace publish.",
+    "GitHub Release creation must wait for the Marketplace publish job outcome.",
   );
   const releaseIf = jobIf(workflowToCheck, "release");
   assert(
     releaseIf.includes("!contains(github.ref_name, '-')") &&
       releaseIf.includes("needs.publish.result == 'success'"),
-    "stable GitHub Release must require successful Marketplace publish.",
+    "stable GitHub Release must be allowed after successful Marketplace publish.",
+  );
+  assert(
+    releaseIf.includes("!contains(github.ref_name, '-')") &&
+      releaseIf.includes("needs.publish.result == 'skipped'"),
+    "stable GitHub Release must be allowed when Marketplace publish is skipped.",
   );
   assert(
     releaseIf.includes("contains(github.ref_name, '-')") &&

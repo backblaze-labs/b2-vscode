@@ -404,7 +404,8 @@ jobs:
       ${{
         startsWith(github.ref, 'refs/tags/v') &&
         !contains(github.ref_name, '-') &&
-        (github.event_name == 'push' || inputs.publish == true)
+        github.event_name == 'workflow_dispatch' &&
+        inputs.publish == true
       }}
     permissions:
       actions: read # Read marketplace environment protection rules.
@@ -540,7 +541,7 @@ jobs:
         needs.package-install-smoke.result == 'success' &&
         needs.attest.result == 'success' &&
         (
-          (!contains(github.ref_name, '-') && needs.publish.result == 'success') ||
+          (!contains(github.ref_name, '-') && (needs.publish.result == 'success' || needs.publish.result == 'skipped')) ||
           (contains(github.ref_name, '-') && needs.publish.result == 'skipped')
         )
       }}

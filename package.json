@@ -3,7 +3,7 @@
   "publisher": "backblaze",
   "displayName": "Backblaze B2",
   "description": "Browse, upload, and download files from Backblaze B2 Cloud Storage directly in VS Code.",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "icon": "resources/b2-icon.png",
   "categories": [
     "Cloud",

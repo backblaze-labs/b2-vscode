@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-23
+
 ### Changed
 
 - Replaced the hand-rolled native B2 HTTP client with the official
