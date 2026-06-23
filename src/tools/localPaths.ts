@@ -134,16 +134,6 @@ function workspaceRootCandidates(workspaceRoot: string): string[] {
   return Array.from(new Set(roots.map((root) => path.resolve(root))));
 }
 
-function isPotentialToolsTempPath(resolvedAbsolutePath: string): boolean {
-  return toolsTempRootCandidates().some((root) => isPathInside(root, resolvedAbsolutePath));
-}
-
-function isPotentialWorkspacePath(workspaceRoot: string, resolvedAbsolutePath: string): boolean {
-  return workspaceRootCandidates(workspaceRoot).some((root) =>
-    isPathInside(root, resolvedAbsolutePath),
-  );
-}
-
 function workspaceDisplayPath(workspaceRoot: string, resolvedPath: string): string {
   const roots = workspaceRootCandidates(workspaceRoot);
   for (const root of roots) {
@@ -171,32 +161,42 @@ function resolveAbsoluteToolPath(
 
   const allowedRoots = [
     workspaceRoot
-      ? { root: workspaceRoot, kind: "workspace" as const, description: "the current workspace" }
+      ? {
+          roots: workspaceRootCandidates(workspaceRoot),
+          kind: "workspace" as const,
+          description: "the current workspace",
+        }
       : undefined,
     {
-      root: EXTENSION_TEMP_ROOT,
+      roots: toolsTempRootCandidates(),
       kind: "toolsTemp" as const,
       description: "the extension tools temporary directory",
     },
   ].filter(
-    (candidate): candidate is { root: string; kind: ToolLocalPathRootKind; description: string } =>
+    (candidate): candidate is {
+      roots: string[];
+      kind: ToolLocalPathRootKind;
+      description: string;
+    } =>
       candidate !== undefined,
   );
 
   const resolvedAbsolutePath = path.resolve(absolutePath);
   for (const allowedRoot of allowedRoots) {
-    if (allowedRoot.root === EXTENSION_TEMP_ROOT) {
-      if (!isPotentialToolsTempPath(resolvedAbsolutePath)) {
-        continue;
-      }
-      ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
-    } else if (!isPotentialWorkspacePath(allowedRoot.root, resolvedAbsolutePath)) {
+    const matchedRoot = allowedRoot.roots.find((root) =>
+      isPathInside(root, resolvedAbsolutePath),
+    );
+    if (matchedRoot === undefined) {
       continue;
+    }
+
+    if (allowedRoot.kind === "toolsTemp") {
+      ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
     }
 
     try {
       const contained = resolvePathInsideReal(
-        allowedRoot.root,
+        matchedRoot,
         absolutePath,
         "localPath",
         allowedRoot.description,
@@ -207,7 +207,7 @@ function resolveAbsoluteToolPath(
       }
       return {
         path: resolved,
-        allowedRoot: path.resolve(allowedRoot.root),
+        allowedRoot: path.resolve(matchedRoot),
         rootKind: allowedRoot.kind,
         displayPath:
           allowedRoot.kind === "workspace" && workspaceRoot

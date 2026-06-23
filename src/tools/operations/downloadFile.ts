@@ -92,6 +92,10 @@ function sanitizeWorkspaceDownloadError(error: unknown, destination: DownloadDes
     return error;
   }
 
+  if (destination.rootKind !== "workspace") {
+    return error;
+  }
+
   const destinationDirectory = path.dirname(destination.path);
   const relativeDirectory = path.dirname(destination.displayPath);
   const replacements: PathMessageReplacement[] = [

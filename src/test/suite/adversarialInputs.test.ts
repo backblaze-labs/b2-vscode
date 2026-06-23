@@ -33,6 +33,7 @@ import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits
 import {
   resolveWorkspaceRelativePath,
   resolveToolLocalPath,
+  resolveToolLocalPathDetails,
   safeDefaultDownloadName,
 } from "../../tools/localPaths";
 import {
@@ -702,6 +703,60 @@ suite("Adversarial untrusted input fuzzing", () => {
     assert.strictEqual(resolved, allowedPath);
   });
 
+  test("absolute tools temp aliases keep matched roots for containment", () => {
+    const lexicalToolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const realToolRoot = path.join(
+      fs.realpathSync.native(os.tmpdir()),
+      TEMP_DIR_NAME,
+      TEMP_TOOLS_DIR_NAME,
+    );
+    if (path.resolve(lexicalToolRoot) === path.resolve(realToolRoot)) {
+      return;
+    }
+
+    const allowedPath = path.join(realToolRoot, "tool-output.bin");
+
+    try {
+      fs.rmSync(lexicalToolRoot, { recursive: true, force: true });
+      const resolved = resolveToolLocalPathDetails(allowedPath, "workspace required");
+
+      assert.strictEqual(resolved.path, allowedPath);
+      assert.strictEqual(resolved.allowedRoot, path.resolve(realToolRoot));
+      assert.strictEqual(resolved.rootKind, "toolsTemp");
+      assert.strictEqual(resolved.displayPath, allowedPath);
+    } finally {
+      fs.rmSync(lexicalToolRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("absolute workspace aliases keep matched roots for containment", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const realWorkspaceRoot = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "b2-vscode-real-ws-"),
+    );
+    const linkParent = await fs.promises.mkdtemp(path.join(os.tmpdir(), "b2-vscode-link-ws-"));
+    const workspaceLink = path.join(linkParent, "workspace-link");
+    const requestedPath = path.join(realWorkspaceRoot, "nested", "download.bin");
+
+    try {
+      await fs.promises.symlink(realWorkspaceRoot, workspaceLink, "dir");
+      const resolved = await withWorkspaceFolder(workspaceLink, async () =>
+        resolveToolLocalPathDetails(requestedPath, "workspace required"),
+      );
+
+      assert.strictEqual(resolved.path, requestedPath);
+      assert.strictEqual(resolved.allowedRoot, path.resolve(realWorkspaceRoot));
+      assert.strictEqual(resolved.rootKind, "workspace");
+      assert.strictEqual(resolved.displayPath, path.join("nested", "download.bin"));
+    } finally {
+      await fs.promises.rm(linkParent, { recursive: true, force: true });
+      await fs.promises.rm(realWorkspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("absolute local path resolution preserves non-containment errors", () => {
     const tooLongPath = path.join(
       os.tmpdir(),
@@ -851,6 +906,39 @@ suite("Adversarial untrusted input fuzzing", () => {
       } finally {
         await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
       }
+    }
+  });
+
+  test("download tools temp errors preserve absolute local paths", async () => {
+    const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const destinationPath = path.join(toolRoot, "existing-download.bin");
+    const client = {
+      async getBucket(): Promise<Bucket | undefined> {
+        throw new Error("download should not reach B2 for an existing localPath");
+      },
+    } as unknown as B2Client;
+
+    try {
+      await fs.promises.rm(toolRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(toolRoot, { recursive: true, mode: 0o700 });
+      await fs.promises.writeFile(destinationPath, "already here");
+      const escapedDestinationPath = destinationPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      await assert.rejects(
+        () =>
+          downloadFileOperation.execute(
+            { bucket: "bucket", path: "payload.bin", localPath: destinationPath },
+            { getClient: () => client },
+          ),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, new RegExp(escapedDestinationPath));
+          assert.doesNotMatch(error.message, /\.\/existing-download\.bin/);
+          return true;
+        },
+      );
+    } finally {
+      await fs.promises.rm(toolRoot, { recursive: true, force: true });
     }
   });
 
