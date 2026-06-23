@@ -434,6 +434,14 @@ function assertAttestIsReleaseOnly(workflowToCheck = loadReleaseWorkflow()) {
   );
 }
 
+function assertReleaseCodeqlDoesNotUploadSarif(workflowToCheck = loadReleaseWorkflow()) {
+  const analyzeStep = stepByName(workflowToCheck, "sast", "Analyze with CodeQL");
+  assert(
+    analyzeStep.with?.upload === "never",
+    "release CodeQL SAST must not upload SARIF while repository CodeQL default setup is enabled.",
+  );
+}
+
 function assertReleasePublishGate(workflowToCheck = loadReleaseWorkflow()) {
   assertJobExists(workflowToCheck, "release");
   assert(
@@ -613,6 +621,7 @@ function main() {
   assertMarketplaceSecretStepsUseIsolatedPublisher(workflow);
   assertReleaseSourceGate(workflow);
   assertAttestIsReleaseOnly(workflow);
+  assertReleaseCodeqlDoesNotUploadSarif(workflow);
   assertReleasePublishGate(workflow);
   assertPublishVerifiesAttestation(workflow);
   assertArtifactResolverUsage(workflow);
@@ -640,6 +649,7 @@ module.exports = {
   assertPublishUsesIsolatedPublisher,
   assertPublishPreflightIgnoresLifecycleScripts,
   assertReleaseInstallsIgnoreLifecycleScripts,
+  assertReleaseCodeqlDoesNotUploadSarif,
   assertReleasePublishGate,
   assertWorkflowInstallsIgnoreLifecycleScripts,
   assertGithubWorkflowInstallsIgnoreLifecycleScripts,

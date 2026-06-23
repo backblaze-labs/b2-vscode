@@ -35,10 +35,12 @@ GitHub Actions workflow.
 
 Run the `Release` workflow manually with `publish=false` for a dry-run/preflight.
 That path runs quality, behavioral test, dependency audit, CodeQL SAST, strict
-VSIX validation, and installed-VSIX smoke without reading `VSCE_KEY`. Provenance
-attestation only runs for `v*.*.*` tag refs. Marketplace publishing is an
-explicit manual action on a stable tag: run the `Release` workflow on the tag ref
-with `publish=true` after Marketplace readiness is confirmed.
+VSIX validation, and installed-VSIX smoke without reading `VSCE_KEY`. The release
+workflow's CodeQL SAST job does not upload SARIF because repository code
+scanning is handled by GitHub CodeQL default setup. Provenance attestation only
+runs for `v*.*.*` tag refs. Marketplace publishing is an explicit manual action
+on a stable tag: run the `Release` workflow on the tag ref with `publish=true`
+after Marketplace readiness is confirmed.
 
 The dependency audit gate runs through `scripts/run-npm-audit.js` with
 `audit-policy.jsonc`, currently `auditLevel=moderate` and `includeDev=true`.
