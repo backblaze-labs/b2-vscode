@@ -677,7 +677,7 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
-  test("download tool rejects trailing localPath separators before downloading", async () => {
+  test("download tool rejects directory-like localPath before downloading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-directory-path-"));
     let downloadWasCalled = false;
     let bucketLookupWasCalled = false;
@@ -696,14 +696,16 @@ suite("B2 LM tool failure handling", () => {
 
     try {
       await withWorkspaceFolder(dir, async () => {
-        await assert.rejects(
-          () =>
-            downloadFileOperation.execute(
-              { bucket: "b", path: "payload.txt", localPath: "downloads/" },
-              { getClient: () => client },
-            ),
-          /file path, not a directory path/i,
-        );
+        for (const localPath of ["downloads/", "", ".", ".."] as const) {
+          await assert.rejects(
+            () =>
+              downloadFileOperation.execute(
+                { bucket: "b", path: "payload.txt", localPath },
+                { getClient: () => client },
+              ),
+            /file path, not a directory path/i,
+          );
+        }
       });
       assert.strictEqual(bucketLookupWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
@@ -1209,6 +1211,32 @@ suite("B2 LM tool failure handling", () => {
             ),
           /control director(?:y|ies)/i,
         );
+      });
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload tool rejects directory-like localPath before B2 lookup", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-upload-directory-"));
+    const client = {
+      async getBucket() {
+        assert.fail("Expected localPath validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        for (const localPath of ["", ".", "..", "payloads/"] as const) {
+          await assert.rejects(
+            () =>
+              uploadFileOperation.execute(
+                { bucket: "b", localPath },
+                { getClient: () => client },
+              ),
+            /file path, not a directory path/i,
+          );
+        }
       });
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });

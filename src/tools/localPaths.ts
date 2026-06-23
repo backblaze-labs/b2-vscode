@@ -41,7 +41,12 @@ function rejectNullByte(value: string, parameterName: string): void {
 }
 
 function rejectDirectoryLikePath(value: string, parameterName: string): void {
+  const portableSegments = value.split(/[\\/]+/).filter(Boolean);
+  const finalSegment = portableSegments[portableSegments.length - 1];
   if (/[\\/]/.test(value.slice(-1))) {
+    throw new B2ToolInputError(`${parameterName} must be a file path, not a directory path.`);
+  }
+  if (value.length === 0 || finalSegment === "." || finalSegment === "..") {
     throw new B2ToolInputError(`${parameterName} must be a file path, not a directory path.`);
   }
 }

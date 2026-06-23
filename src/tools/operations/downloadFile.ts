@@ -132,7 +132,7 @@ type DownloadDestination = ResolvedToolLocalPath;
 
 async function workspacePath(remotePath: string, localPath?: string): Promise<DownloadDestination> {
   const destination = resolveToolLocalPathDetails(
-    localPath && localPath.length > 0 ? localPath : safeDefaultDownloadName(remotePath),
+    localPath !== undefined ? localPath : safeDefaultDownloadName(remotePath),
     WORKSPACE_REQUIRED_MESSAGE,
   );
   try {

@@ -654,6 +654,15 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("tool local path resolution rejects directory aliases", () => {
+    for (const directoryAlias of ["", ".", "..", "nested/.", "nested/..", "nested/"] as const) {
+      assert.throws(
+        () => resolveToolLocalPath(directoryAlias, "workspace required"),
+        /localPath must be a file path, not a directory path/,
+      );
+    }
+  });
+
   test("absolute workspace local paths do not initialize the tools temp root", async () => {
     const workspaceRoot = await fs.promises.mkdtemp(
       path.join(os.tmpdir(), "b2-vscode-absolute-workspace-"),
