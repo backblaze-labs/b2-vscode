@@ -39,15 +39,15 @@ import {
 import {
   encodeUrlComponent,
   encodeUrlPathSegment,
-  ensurePrivateDirectory,
-  isPathInside,
+  ensureToolPrivateDirectory,
+  isToolPathInside,
   readFileNoFollow,
-  sanitizeLocalPathSegment,
+  sanitizeToolLocalPathSegment,
   sweepStaleAtomicTempFiles,
   toWellFormedUnicode,
   writeBufferAtomically,
   writeReadableStreamAtomically,
-} from "../../pathSafety";
+} from "../../toolPathSafety";
 import type { ToolExtras } from "../../tools/types";
 import { withWorkspaceFolder } from "../../testSupport/workspace";
 
@@ -155,7 +155,7 @@ function realPathForContainment(candidatePath: string): string {
 function assertInside(parentPath: string, candidatePath: string): void {
   const parent = realPathForContainment(parentPath);
   const candidate = realPathForContainment(candidatePath);
-  assert.ok(isPathInside(parent, candidate), `${candidatePath} should remain under ${parent}`);
+  assert.ok(isToolPathInside(parent, candidate), `${candidatePath} should remain under ${parent}`);
 }
 
 function tempRootFor(manager: TempFileManager): string {
@@ -395,7 +395,7 @@ suite("Adversarial untrusted input fuzzing", () => {
 
   test("temp cache cleanup does not remove extension tool outputs", async () => {
     const toolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-    await ensurePrivateDirectory(toolRoot);
+    await ensureToolPrivateDirectory(toolRoot);
     const toolOutputDir = await fs.promises.mkdtemp(path.join(toolRoot, "persist-"));
     const toolOutput = path.join(toolOutputDir, "output.txt");
     const manager = new TempFileManager();
@@ -432,7 +432,7 @@ suite("Adversarial untrusted input fuzzing", () => {
       await fs.promises.symlink(targetDir, linkPath, "dir");
 
       await assert.rejects(
-        () => ensurePrivateDirectory(linkPath),
+        () => ensureToolPrivateDirectory(linkPath),
         (error: unknown) =>
           error instanceof Error &&
           error.message.includes("must be a directory") &&
@@ -475,7 +475,7 @@ suite("Adversarial untrusted input fuzzing", () => {
             assert.ok(error instanceof Error);
             assert.match(
               error.message,
-              /localPath (must (not contain null bytes|not target workspace control directories|be workspace-relative|stay within)|is too long)/,
+              /localPath (must (not be empty|not contain (null bytes|path traversal segments)|not target workspace control directories|be workspace-relative|stay within)|is too long)/,
             );
           }
         }),
@@ -849,19 +849,19 @@ suite("Adversarial untrusted input fuzzing", () => {
 
   test("local filename fitting cannot reintroduce Windows reserved basenames", () => {
     for (const fileName of [
-      sanitizeLocalPathSegment("CON", {
+      sanitizeToolLocalPathSegment("CON", {
         fallback: "download",
         maxBytes: 180,
       }),
-      sanitizeLocalPathSegment("", {
+      sanitizeToolLocalPathSegment("", {
         fallback: "NUL.txt",
         maxBytes: 180,
       }),
-      sanitizeLocalPathSegment("", {
+      sanitizeToolLocalPathSegment("", {
         fallback: "CON",
         maxBytes: 3,
       }),
-      sanitizeLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
+      sanitizeToolLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
         fallback: "download",
         maxBytes: 24,
         preserveExtension: true,
@@ -872,7 +872,7 @@ suite("Adversarial untrusted input fuzzing", () => {
 
     assert.ok(
       Buffer.byteLength(
-        sanitizeLocalPathSegment("", {
+        sanitizeToolLocalPathSegment("", {
           fallback: "CON",
           maxBytes: 3,
         }),
@@ -881,7 +881,7 @@ suite("Adversarial untrusted input fuzzing", () => {
     );
     assert.ok(
       Buffer.byteLength(
-        sanitizeLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
+        sanitizeToolLocalPathSegment(`${"conspiracy".repeat(20)}.txt`, {
           fallback: "download",
           maxBytes: 24,
           preserveExtension: true,
@@ -1006,7 +1006,7 @@ suite("Adversarial untrusted input fuzzing", () => {
     } as unknown as B2Client;
 
     fs.promises.lstat = (async (target: fs.PathLike, ...args: unknown[]) => {
-      if (isPathInside(outsideRoot, path.resolve(String(target)))) {
+      if (isToolPathInside(outsideRoot, path.resolve(String(target)))) {
         probedOutside = true;
         throw new Error("outside path was probed");
       }
@@ -1024,7 +1024,7 @@ suite("Adversarial untrusted input fuzzing", () => {
               { bucket: "bucket", localPath: outsidePath, remotePath: "remote/secret.txt" },
               { getClient: () => client },
             ),
-          /current workspace or extension tools temporary directory/i,
+          /current workspace/i,
         );
       });
       assert.strictEqual(probedOutside, false);
@@ -1490,7 +1490,7 @@ suite("Adversarial untrusted input fuzzing", () => {
 
   test("explicit downloads do not overwrite existing local files", async () => {
     const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-    await ensurePrivateDirectory(tempRoot);
+    await ensureToolPrivateDirectory(tempRoot);
     const outputRoot = await fs.promises.mkdtemp(path.join(tempRoot, "explicit-"));
     const targetPath = path.join(outputRoot, "file.txt");
     let downloadCalled = false;
@@ -1528,7 +1528,7 @@ suite("Adversarial untrusted input fuzzing", () => {
 
   test("tool operations tolerate hostile bucket and path strings", async () => {
     const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-    await ensurePrivateDirectory(tempRoot);
+    await ensureToolPrivateDirectory(tempRoot);
     const outputRoot = await fs.promises.mkdtemp(path.join(tempRoot, "tools-"));
     let downloadIndex = 0;
 

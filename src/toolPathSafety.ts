@@ -1,8 +1,12 @@
 /**
- * Shared helpers for deriving local paths and URL components from untrusted B2
- * object names and language model tool inputs.
+ * Tool-scoped helpers for deriving local paths and URL components from
+ * untrusted B2 object names and language model tool inputs.
  *
- * @module pathSafety
+ * These helpers are intentionally separate from services/pathSafety, which owns
+ * transfer and service filesystem containment, and utils/localPaths, which owns
+ * B2 object-name to workspace filename encoding.
+ *
+ * @module toolPathSafety
  */
 
 import * as crypto from "crypto";
@@ -20,7 +24,7 @@ const WINDOWS_RESERVED_BASENAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/
 
 type StreamReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
 
-export interface SafePathSegmentOptions {
+export interface ToolSafePathSegmentOptions {
   fallback: string;
   maxBytes: number;
   hashInput?: string;
@@ -28,18 +32,18 @@ export interface SafePathSegmentOptions {
   preserveExtension?: boolean;
 }
 
-export interface AtomicWriteOptions {
+export interface ToolAtomicWriteOptions {
   overwrite?: boolean;
   idleTimeoutMs?: number;
   signal?: AbortSignal;
 }
 
-export class PathContainmentError extends Error {
+export class ToolPathContainmentError extends Error {
   readonly code = "ERR_PATH_CONTAINMENT";
 
   constructor(parameterName: string, allowedDescription: string) {
     super(`${parameterName} must stay within ${allowedDescription}.`);
-    this.name = "PathContainmentError";
+    this.name = "ToolPathContainmentError";
   }
 }
 
@@ -93,7 +97,7 @@ async function lstatAfterNoFollowOpen(filePath: string): Promise<fs.Stats> {
   }
 }
 
-export function isAbsolutePortable(value: string): boolean {
+export function isToolAbsolutePath(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
@@ -210,7 +214,10 @@ function avoidWindowsReservedBasename(segment: string, maxBytes: number): string
   return truncateUtf8(portable, maxBytes) || "_";
 }
 
-export function sanitizeLocalPathSegment(value: string, options: SafePathSegmentOptions): string {
+export function sanitizeToolLocalPathSegment(
+  value: string,
+  options: ToolSafePathSegmentOptions,
+): string {
   const wellFormed = toWellFormedUnicode(value);
   const trimmed = wellFormed.trim();
   let sanitized = trimmed
@@ -247,12 +254,12 @@ export function sanitizeLocalPathSegment(value: string, options: SafePathSegment
   return !fitted || /^\.+$/.test(fitted) ? `${options.fallback}-${contentHash(value)}` : fitted;
 }
 
-export function safeLocalBasename(value: string, options: SafePathSegmentOptions): string {
+export function safeToolLocalBasename(value: string, options: ToolSafePathSegmentOptions): string {
   const basename = path.posix.basename(value.replace(/\\/g, "/"));
-  return sanitizeLocalPathSegment(basename, options);
+  return sanitizeToolLocalPathSegment(basename, options);
 }
 
-export function isPathInside(parentPath: string, candidatePath: string): boolean {
+export function isToolPathInside(parentPath: string, candidatePath: string): boolean {
   const parent = path.resolve(parentPath);
   const candidate = path.resolve(candidatePath);
   const relative = path.relative(parent, candidate);
@@ -288,7 +295,7 @@ function nearestExistingAncestor(candidatePath: string): string {
   }
 }
 
-export function resolvePathInsideReal(
+export function resolveToolPathInsideRealRoot(
   parentPath: string,
   candidatePath: string,
   parameterName = "localPath",
@@ -309,8 +316,8 @@ export function resolvePathInsideReal(
   const remainder = path.relative(existingAncestor, resolvedCandidate);
   const effectiveCandidate = path.resolve(ancestorReal, remainder);
 
-  if (!isPathInside(parentReal, effectiveCandidate)) {
-    throw new PathContainmentError(parameterName, allowedDescription);
+  if (!isToolPathInside(parentReal, effectiveCandidate)) {
+    throw new ToolPathContainmentError(parameterName, allowedDescription);
   }
 
   return effectiveCandidate;
@@ -330,7 +337,7 @@ function validatePrivateDirectoryStat(directoryPath: string, stat: fs.Stats): vo
   }
 }
 
-export async function ensurePrivateDirectory(directoryPath: string): Promise<void> {
+export async function ensureToolPrivateDirectory(directoryPath: string): Promise<void> {
   await fs.promises.mkdir(directoryPath, { recursive: true, mode: 0o700 });
   const stat = await fs.promises.lstat(directoryPath);
   validatePrivateDirectoryStat(directoryPath, stat);
@@ -340,7 +347,7 @@ export async function ensurePrivateDirectory(directoryPath: string): Promise<voi
   }
 }
 
-export function ensurePrivateDirectorySync(directoryPath: string): void {
+export function ensureToolPrivateDirectorySync(directoryPath: string): void {
   fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(directoryPath);
   validatePrivateDirectoryStat(directoryPath, stat);
@@ -463,7 +470,7 @@ async function writeChunkFully(handle: fs.promises.FileHandle, chunk: Uint8Array
 export async function writeBufferAtomically(
   destinationPath: string,
   content: Buffer,
-  options: AtomicWriteOptions = {},
+  options: ToolAtomicWriteOptions = {},
 ): Promise<void> {
   const overwrite = options.overwrite !== false;
   await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
@@ -520,7 +527,7 @@ async function readWithTimeout(
 export async function writeReadableStreamAtomically(
   destinationPath: string,
   stream: ReadableStream<Uint8Array>,
-  options: AtomicWriteOptions = {},
+  options: ToolAtomicWriteOptions = {},
 ): Promise<number> {
   const overwrite = options.overwrite !== false;
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;

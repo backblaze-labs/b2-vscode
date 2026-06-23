@@ -117,21 +117,23 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("uploadFile accepts absolute paths inside the extension tools temp root", async () => {
+  test("uploadFile treats backslashes as workspace-relative separators", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, `upload-${Date.now()}.txt`);
+    const localPath = path.join(workspaceRoot, "nested", "source.txt");
     const { client } = await createSimulatorBucket();
 
     try {
-      fs.mkdirSync(workspaceRoot, { recursive: true });
-      fs.mkdirSync(TOOLS_TEMP_ROOT, { recursive: true, mode: 0o700 });
-      fs.chmodSync(TOOLS_TEMP_ROOT, 0o700);
-      fs.writeFileSync(toolsSourcePath, CONTENT);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, CONTENT);
 
       const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
         uploadFileOperation.execute(
-          { localPath: toolsSourcePath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          {
+            localPath: String.raw`nested\source.txt`,
+            bucket: SIMULATOR_BUCKET_NAME,
+            remotePath: REMOTE_PATH,
+          },
           { getClient: () => client },
         ),
       );
@@ -139,7 +141,37 @@ suite("B2 LM tool operations with simulator", () => {
       assert.strictEqual(uploaded.fileName, REMOTE_PATH);
       assert.strictEqual(uploaded.size, Buffer.byteLength(CONTENT));
     } finally {
-      fs.rmSync(toolsSourcePath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile rejects files under another tools temp session", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, "other-session", "secret.txt");
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(path.dirname(toolsSourcePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(toolsSourcePath, CONTENT);
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              {
+                localPath: toolsSourcePath,
+                bucket: SIMULATOR_BUCKET_NAME,
+                remotePath: REMOTE_PATH,
+              },
+              { getClient: () => client },
+            ),
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
+        ),
+      );
+    } finally {
+      fs.rmSync(TOOLS_TEMP_ROOT, { recursive: true, force: true });
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -163,7 +195,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot/secret.txt" },
               { getClient: () => client },
             ),
-          /localPath must stay within the current workspace or extension tools temporary directory/i,
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
         ),
       );
     } finally {
@@ -188,7 +220,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: "../secret.txt", bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath must stay within the current workspace/i,
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
         ),
       );
     } finally {

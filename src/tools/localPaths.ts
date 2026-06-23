@@ -12,13 +12,13 @@ import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../constants";
 import { B2ToolInputError } from "../errors";
 import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 import {
-  ensurePrivateDirectorySync,
-  isAbsolutePortable,
-  isPathInside,
-  PathContainmentError,
-  resolvePathInsideReal,
-  safeLocalBasename,
-} from "../pathSafety";
+  ensureToolPrivateDirectorySync,
+  isToolAbsolutePath,
+  isToolPathInside,
+  resolveToolPathInsideRealRoot,
+  safeToolLocalBasename,
+  ToolPathContainmentError,
+} from "../toolPathSafety";
 
 // Leaves enough room under common 255-byte segment limits for atomic temp suffixes.
 const DEFAULT_DOWNLOAD_NAME_MAX_BYTES = 180;
@@ -32,6 +32,10 @@ export interface ResolvedToolLocalPath {
   readonly rootKind: ToolLocalPathRootKind;
   readonly displayPath: string;
   readonly workspaceRoot?: string;
+}
+
+export interface ResolveToolLocalPathOptions {
+  readonly allowToolsTemp?: boolean;
 }
 
 function rejectNullByte(value: string, parameterName: string): void {
@@ -51,19 +55,36 @@ function rejectDirectoryLikePath(value: string, parameterName: string): void {
   }
 }
 
+function portableRelativePathSegments(relativePath: string, parameterName: string): string[] {
+  rejectNullByte(relativePath, parameterName);
+
+  if (isToolAbsolutePath(relativePath)) {
+    throw new B2ToolInputError(`${parameterName} must be workspace-relative.`);
+  }
+
+  const rawSegments = relativePath.split(/[\\/]+/).filter(Boolean);
+  if (rawSegments.some((segment) => segment === "..")) {
+    throw new B2ToolInputError(`${parameterName} must not contain path traversal segments.`);
+  }
+
+  const segments = rawSegments.filter((segment) => segment !== ".");
+  if (segments.length === 0) {
+    throw new B2ToolInputError(`${parameterName} must not be empty.`);
+  }
+
+  return segments;
+}
+
 export function resolveWorkspaceRelativePath(
   workspaceRoot: string,
   relativePath: string,
   parameterName = "localPath",
 ): string {
-  rejectNullByte(relativePath, parameterName);
-
-  if (isAbsolutePortable(relativePath)) {
-    throw new B2ToolInputError(`${parameterName} must be workspace-relative.`);
-  }
-
-  const resolved = path.resolve(workspaceRoot, relativePath);
-  const contained = resolvePathInsideReal(
+  const resolved = path.resolve(
+    workspaceRoot,
+    ...portableRelativePathSegments(relativePath, parameterName),
+  );
+  const contained = resolveToolPathInsideRealRoot(
     workspaceRoot,
     resolved,
     parameterName,
@@ -88,7 +109,7 @@ function currentWorkspaceRoot(): string | undefined {
 
 function rejectSensitiveWorkspacePath(workspaceRoot: string, candidatePath: string): void {
   const workspaceBase = fs.realpathSync.native(workspaceRoot);
-  if (!isPathInside(workspaceBase, candidatePath)) {
+  if (!isToolPathInside(workspaceBase, candidatePath)) {
     return;
   }
 
@@ -119,7 +140,7 @@ function workspaceRootCandidates(workspaceRoot: string): string[] {
     roots.push(workspaceRealPath);
     try {
       const tempRealPath = fs.realpathSync.native(os.tmpdir());
-      if (isPathInside(tempRealPath, workspaceRealPath)) {
+      if (isToolPathInside(tempRealPath, workspaceRealPath)) {
         roots.push(
           path.join(path.resolve(os.tmpdir()), path.relative(tempRealPath, workspaceRealPath)),
         );
@@ -153,11 +174,14 @@ function workspaceDisplayPath(workspaceRoot: string, resolvedPath: string): stri
 function resolveAbsoluteToolPath(
   absolutePath: string,
   workspaceRoot: string | undefined,
+  options: Required<ResolveToolLocalPathOptions>,
 ): ResolvedToolLocalPath {
+  const allowedScope = options.allowToolsTemp
+    ? "the current workspace or extension tools temporary directory"
+    : "the current workspace";
+
   if (!path.isAbsolute(absolutePath)) {
-    throw new B2ToolInputError(
-      "localPath must stay within the current workspace or extension tools temporary directory.",
-    );
+    throw new B2ToolInputError(`localPath must stay within ${allowedScope}.`);
   }
 
   const allowedRoots = [
@@ -168,11 +192,13 @@ function resolveAbsoluteToolPath(
           description: "the current workspace",
         }
       : undefined,
-    {
-      roots: toolsTempRootCandidates(),
-      kind: "toolsTemp" as const,
-      description: "the extension tools temporary directory",
-    },
+    options.allowToolsTemp
+      ? {
+          roots: toolsTempRootCandidates(),
+          kind: "toolsTemp" as const,
+          description: "the extension tools temporary directory",
+        }
+      : undefined,
   ].filter(
     (
       candidate,
@@ -185,18 +211,20 @@ function resolveAbsoluteToolPath(
 
   const resolvedAbsolutePath = path.resolve(absolutePath);
   for (const allowedRoot of allowedRoots) {
-    const matchedRoot = allowedRoot.roots.find((root) => isPathInside(root, resolvedAbsolutePath));
+    const matchedRoot = allowedRoot.roots.find((root) =>
+      isToolPathInside(root, resolvedAbsolutePath),
+    );
     if (matchedRoot === undefined) {
       continue;
     }
 
     if (allowedRoot.kind === "toolsTemp") {
-      ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
-      ensurePrivateDirectorySync(matchedRoot);
+      ensureToolPrivateDirectorySync(EXTENSION_TEMP_ROOT);
+      ensureToolPrivateDirectorySync(matchedRoot);
     }
 
     try {
-      const contained = resolvePathInsideReal(
+      const contained = resolveToolPathInsideRealRoot(
         matchedRoot,
         absolutePath,
         "localPath",
@@ -217,27 +245,27 @@ function resolveAbsoluteToolPath(
         ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
       };
     } catch (error) {
-      if (!(error instanceof PathContainmentError)) {
+      if (!(error instanceof ToolPathContainmentError)) {
         throw error;
       }
     }
   }
 
-  throw new B2ToolInputError(
-    "localPath must stay within the current workspace or extension tools temporary directory.",
-  );
+  throw new B2ToolInputError(`localPath must stay within ${allowedScope}.`);
 }
 
 export function resolveToolLocalPathDetails(
   requestedPath: string,
   missingWorkspaceMessage: string,
+  options: ResolveToolLocalPathOptions = {},
 ): ResolvedToolLocalPath {
   rejectNullByte(requestedPath, "localPath");
   rejectDirectoryLikePath(requestedPath, "localPath");
+  const resolvedOptions = { allowToolsTemp: options.allowToolsTemp !== false };
 
   const workspaceRoot = currentWorkspaceRoot();
-  if (isAbsolutePortable(requestedPath)) {
-    return resolveAbsoluteToolPath(requestedPath, workspaceRoot);
+  if (isToolAbsolutePath(requestedPath)) {
+    return resolveAbsoluteToolPath(requestedPath, workspaceRoot, resolvedOptions);
   }
 
   if (!workspaceRoot) {
@@ -262,7 +290,7 @@ export function resolveToolLocalPath(
 }
 
 export function safeDefaultDownloadName(remotePath: string): string {
-  return safeLocalBasename(remotePath, {
+  return safeToolLocalBasename(remotePath, {
     fallback: "download",
     maxBytes: DEFAULT_DOWNLOAD_NAME_MAX_BYTES,
     hashInput: remotePath,
@@ -271,4 +299,4 @@ export function safeDefaultDownloadName(remotePath: string): string {
   });
 }
 
-export { isPathInside };
+export { isToolPathInside };

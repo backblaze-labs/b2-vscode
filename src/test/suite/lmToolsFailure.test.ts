@@ -11,7 +11,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { B2Client, classifyError } from "@backblaze-labs/b2-sdk";
 import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
-import { ensurePrivateDirectorySync } from "../../pathSafety";
+import { ensureToolPrivateDirectorySync } from "../../toolPathSafety";
 import { B2ToolAdapter } from "../../tools/b2ToolAdapter";
 import type { B2ToolOperation, ToolExtras } from "../../tools/types";
 import { deleteFileTool } from "../../tools/definitions/deleteFile";
@@ -164,7 +164,7 @@ function createFileSymlink(target: string, linkPath: string): boolean {
 suite("B2 LM tool failure handling", () => {
   function extensionTempFixture(prefix: string): string {
     const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-    ensurePrivateDirectorySync(tempRoot);
+    ensureToolPrivateDirectorySync(tempRoot);
     return fs.mkdtempSync(path.join(tempRoot, prefix));
   }
 
@@ -455,7 +455,7 @@ suite("B2 LM tool failure handling", () => {
                 }>,
                 token,
               ),
-            /B2: Upload File failed: localPath must stay within the current workspace or extension tools temporary directory/i,
+            /B2: Upload File failed: localPath must stay within the current workspace/i,
           ),
         ),
       );
@@ -708,7 +708,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "../outside.txt" },
               { getClient: () => client },
             ),
-          /must stay within the current workspace/i,
+          /must (stay within the current workspace|not contain path traversal segments)/i,
         );
       });
       assert.strictEqual(bucketLookupWasCalled, false);
@@ -1227,7 +1227,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "../secret.txt" },
               { getClient: () => client },
             ),
-          /must stay within the current workspace/i,
+          /must (stay within the current workspace|not contain path traversal segments)/i,
         );
       });
     } finally {
@@ -1352,7 +1352,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: requestedPath },
               { getClient: () => client },
             ),
-          /current workspace or extension tools temporary directory/i,
+          /current workspace/i,
         );
       });
     } finally {
