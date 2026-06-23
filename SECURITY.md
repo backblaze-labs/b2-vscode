@@ -61,6 +61,7 @@ documented cap before writing them into the audit workspace.
 | `audit-policy.jsonc`                    |  64 KiB |
 | `package.json`                          | 256 KiB |
 | `package-lock.json`                     |   5 MiB |
+| `SECURITY.md`                           | 256 KiB |
 
 `npm-shrinkwrap.json` and `.npmrc` remain unsupported PR metadata because they
 can change the audited dependency tree or npm configuration.

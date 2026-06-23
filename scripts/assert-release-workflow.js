@@ -570,6 +570,28 @@ function assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, workflowN
   }
 }
 
+function assertSetupNodeCacheDisabled(workflowToCheck, workflowName = "workflow") {
+  for (const [jobName, job] of Object.entries(workflowToCheck.jobs ?? {})) {
+    for (const step of job.steps ?? []) {
+      if (!String(step.uses ?? "").startsWith("actions/setup-node@")) {
+        continue;
+      }
+      assert(
+        step.with?.cache === undefined &&
+          step.with?.["cache-dependency-path"] === undefined &&
+          step.with?.["package-manager-cache"] === false,
+        `${workflowName} ${jobName} step ${step.name ?? "<unnamed>"} must explicitly disable setup-node dependency caching.`,
+      );
+    }
+  }
+}
+
+function assertGithubWorkflowSetupNodeCacheDisabled(workflows = loadGithubWorkflows()) {
+  for (const { name, workflow: workflowToCheck } of workflows) {
+    assertSetupNodeCacheDisabled(workflowToCheck, name);
+  }
+}
+
 function assertGithubWorkflowInstallsIgnoreLifecycleScripts(workflows = loadGithubWorkflows()) {
   for (const { name, workflow: workflowToCheck } of workflows) {
     assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, name);
@@ -800,6 +822,7 @@ function main() {
   assertPublishPreflightIgnoresLifecycleScripts(workflow);
   assertDependencyVsixDiffGate(buildExtensionWorkflow);
   assertCodeQualityRunsReleaseGuard(codeQualityWorkflow);
+  assertGithubWorkflowSetupNodeCacheDisabled();
   assertGithubWorkflowInstallsIgnoreLifecycleScripts();
 }
 
@@ -826,8 +849,10 @@ module.exports = {
   assertReleasePublishGate,
   assertWorkflowInstallsIgnoreLifecycleScripts,
   assertGithubWorkflowInstallsIgnoreLifecycleScripts,
+  assertGithubWorkflowSetupNodeCacheDisabled,
   assertCodeQualityRunsReleaseGuard,
   assertDependencyVsixDiffGate,
+  assertSetupNodeCacheDisabled,
   loadBuildExtensionWorkflow,
   loadReleaseWorkflow,
   main,

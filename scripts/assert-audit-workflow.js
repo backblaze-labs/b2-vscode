@@ -425,8 +425,10 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
 
 function assertSetupNodeDoesNotCache(label, step) {
   assert(
-    step.with?.cache === undefined && step.with?.["cache-dependency-path"] === undefined,
-    `${label} must not enable dependency caching.`,
+    step.with?.cache === undefined &&
+      step.with?.["cache-dependency-path"] === undefined &&
+      step.with?.["package-manager-cache"] === false,
+    `${label} must explicitly disable dependency caching.`,
   );
 }
 
