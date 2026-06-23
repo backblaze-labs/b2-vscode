@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { B2ToolInputError } from "./errors";
+import { encodeUrlComponent as encodeRfc3986UrlComponent } from "./utils/urlEncoding";
 
 const HASH_LENGTH = 16;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -129,12 +130,10 @@ export function toWellFormedUnicode(value: string): string {
   return result;
 }
 
-export function encodeUrlComponent(value: string): string {
-  return encodeURIComponent(toWellFormedUnicode(value));
-}
+export { encodeRfc3986UrlComponent as encodeUrlComponent };
 
 export function encodeUrlPathSegment(value: string): string {
-  return encodeUrlComponent(value);
+  return encodeRfc3986UrlComponent(value);
 }
 
 function byteLength(value: string): number {

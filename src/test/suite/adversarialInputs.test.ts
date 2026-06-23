@@ -22,6 +22,7 @@ import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
 import { FileTreeItem } from "../../models/fileTreeItem";
 import { FolderTreeItem } from "../../models/folderTreeItem";
 import { TempFileManager } from "../../services/tempFileManager";
+import { encodeUrlComponent as encodeSharedUrlComponent } from "../../utils/urlEncoding";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
 import { downloadFileOperation } from "../../tools/operations/downloadFile";
@@ -36,6 +37,8 @@ import {
   safeDefaultDownloadName,
 } from "../../tools/localPaths";
 import {
+  encodeUrlComponent,
+  encodeUrlPathSegment,
   ensurePrivateDirectory,
   isPathInside,
   readFileNoFollow,
@@ -1584,6 +1587,14 @@ suite("Adversarial untrusted input fuzzing", () => {
     } finally {
       await fs.promises.rm(outputRoot, { recursive: true, force: true });
     }
+  });
+
+  test("path safety URL encoding matches the shared RFC3986 encoder", () => {
+    const value = "report !'()* /雪.pdf";
+
+    assert.strictEqual(encodeUrlComponent(value), encodeSharedUrlComponent(value));
+    assert.strictEqual(encodeUrlPathSegment(value), encodeSharedUrlComponent(value));
+    assert.match(encodeUrlComponent(value), /%21%27%28%29%2A/);
   });
 
   test("pre-signed URLs encode hostile bucket, path, and token strings", async () => {
