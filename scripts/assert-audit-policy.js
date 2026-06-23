@@ -161,8 +161,11 @@ function assertCodeOwnerProtection() {
     "/scripts/run-npm-audit.js",
     "/scripts/retry.sh",
     "/scripts/npm-command.js",
+    "/scripts/pr-audit-metadata.js",
     "/scripts/assert-audit-policy.js",
     "/scripts/assert-audit-workflow.js",
+    "/scripts/assert-ignore-scripts-install.js",
+    "/scripts/assert-audit-gate-fixture.js",
     "/.github/workflows/pr-tests.yml",
   ]) {
     if (!protectedPaths.has(requiredPath)) {

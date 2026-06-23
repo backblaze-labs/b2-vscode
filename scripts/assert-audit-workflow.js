@@ -12,6 +12,13 @@
 const fs = require("fs");
 const path = require("path");
 const yaml = require("js-yaml");
+const {
+  PR_AUDIT_METADATA_FILES,
+  RETRYABLE_GITHUB_API_STATUSES,
+  UNSUPPORTED_PR_AUDIT_METADATA_FILES,
+  metadataFileLimit,
+  readPrMetadataFileContent,
+} = require("./pr-audit-metadata");
 
 function parseArgs(argv) {
   const args = {
@@ -408,41 +415,11 @@ function assertPrMetadataDownload(jobConfig, workflowName) {
     `${workflowName} PR metadata download must run only for pull_request_target.`,
   );
   assert(
-    script.includes("getContentWithRetry") && script.includes("retryableStatuses"),
-    `${workflowName} PR metadata download must retry transient GitHub API failures.`,
+    script.includes("trusted-source") &&
+      script.includes("pr-audit-metadata.js") &&
+      script.includes("downloadPrAuditMetadata"),
+    `${workflowName} PR metadata download must delegate to the trusted metadata downloader.`,
   );
-  assert(
-    script.includes("getBlobWithRetry") &&
-      script.includes("github.rest.git.getBlob") &&
-      script.includes("data.encoding === 'none' || !data.content"),
-    `${workflowName} PR metadata download must fall back to git blobs for large metadata files.`,
-  );
-  assert(
-    script.includes("'npm-shrinkwrap.json'") &&
-      script.includes("npm-shrinkwrap.json is not supported"),
-    `${workflowName} PR metadata download must reject npm-shrinkwrap.json.`,
-  );
-  assert(
-    script.includes("'.npmrc'") && script.includes(".npmrc is not supported"),
-    `${workflowName} PR metadata download must reject .npmrc.`,
-  );
-  for (const requiredFile of [
-    ".github/CODEOWNERS",
-    ".github/workflows/build-extension.yml",
-    ".github/workflows/code-quality.yml",
-    ".github/workflows/docs.yml",
-    ".github/workflows/pr-tests.yml",
-    ".github/workflows/release.yml",
-    ".github/workflows/test.yml",
-    "audit-policy.jsonc",
-    "package.json",
-    "package-lock.json",
-  ]) {
-    assert(
-      script.includes(`'${requiredFile}'`),
-      `${workflowName} PR metadata download must include ${requiredFile}.`,
-    );
-  }
   return downloadIndex;
 }
 
@@ -496,6 +473,11 @@ function assertTestWorkflow(testWorkflow) {
     "scripts/run-npm-audit.js",
     "scripts/retry.sh",
     "scripts/npm-command.js",
+    "scripts/pr-audit-metadata.js",
+    "scripts/assert-audit-policy.js",
+    "scripts/assert-audit-workflow.js",
+    "scripts/assert-ignore-scripts-install.js",
+    "scripts/assert-audit-gate-fixture.js",
     ".github/workflows/build-extension.yml",
     ".github/workflows/code-quality.yml",
     ".github/workflows/docs.yml",
@@ -910,23 +892,152 @@ function expectGuardFailure(name, run) {
   throw new Error(`negative workflow case unexpectedly passed: ${name}`);
 }
 
+async function expectAsyncFailure(name, run, messagePattern) {
+  try {
+    await run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(messagePattern.test(message), `${name} failed with unexpected message: ${message}`);
+    return;
+  }
+
+  throw new Error(`negative async workflow case unexpectedly passed: ${name}`);
+}
+
+function humanBytes(bytes) {
+  if (bytes % (1024 * 1024) === 0) {
+    return `${bytes / (1024 * 1024)} MiB`;
+  }
+  if (bytes % 1024 === 0) {
+    return `${bytes / 1024} KiB`;
+  }
+  return `${bytes} bytes`;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function assertPrAuditMetadataPolicy() {
+  const requiredFiles = new Set(PR_AUDIT_METADATA_FILES.map((file) => file.path));
+  for (const requiredFile of [
+    ".github/CODEOWNERS",
+    ".github/workflows/build-extension.yml",
+    ".github/workflows/code-quality.yml",
+    ".github/workflows/docs.yml",
+    ".github/workflows/pr-tests.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/test.yml",
+    "audit-policy.jsonc",
+    "package.json",
+    "package-lock.json",
+  ]) {
+    assert(requiredFiles.has(requiredFile), `PR audit metadata must include ${requiredFile}.`);
+    assert(
+      Number.isSafeInteger(metadataFileLimit(requiredFile)) && metadataFileLimit(requiredFile) > 0,
+      `PR audit metadata must cap ${requiredFile}.`,
+    );
+  }
+
+  assert(
+    UNSUPPORTED_PR_AUDIT_METADATA_FILES.some((file) => file.path === "npm-shrinkwrap.json"),
+    "PR audit metadata must reject npm-shrinkwrap.json.",
+  );
+  assert(
+    UNSUPPORTED_PR_AUDIT_METADATA_FILES.some((file) => file.path === ".npmrc"),
+    "PR audit metadata must reject .npmrc.",
+  );
+  for (const status of [403, 408, 429, 500, 502, 503, 504]) {
+    assert(
+      RETRYABLE_GITHUB_API_STATUSES.has(status),
+      `PR audit metadata must retry GitHub API status ${status}.`,
+    );
+  }
+
+  const lockfileLimit = metadataFileLimit("package-lock.json");
+  let blobFetchCount = 0;
+  await expectAsyncFailure(
+    "oversized declared lockfile metadata",
+    () =>
+      readPrMetadataFileContent(
+        "package-lock.json",
+        {
+          type: "file",
+          sha: "oversized",
+          size: lockfileLimit + 1,
+          encoding: "none",
+        },
+        async () => {
+          blobFetchCount += 1;
+          return {
+            data: {
+              content: Buffer.from("{}").toString("base64"),
+              encoding: "base64",
+              size: 2,
+            },
+          };
+        },
+      ),
+    /exceeds the \d+ byte audit metadata cap/,
+  );
+  assert(blobFetchCount === 0, "oversized lockfile metadata must be rejected before blob fetch.");
+
+  await expectAsyncFailure(
+    "oversized decoded lockfile metadata",
+    () =>
+      readPrMetadataFileContent(
+        "package-lock.json",
+        {
+          type: "file",
+          sha: "decoded-oversized",
+          size: 1,
+          encoding: "base64",
+          content: Buffer.alloc(lockfileLimit + 1).toString("base64"),
+        },
+        async () => {
+          throw new Error("inline content should not fetch blobs");
+        },
+      ),
+    /decoded size .* exceeds the \d+ byte audit metadata cap/,
+  );
+}
+
 function assertDependencyGateDocs() {
   const security = fs.readFileSync(path.join(repoRoot, "SECURITY.md"), "utf8");
+  const headings = new Set(
+    [...security.matchAll(/^##+ ([^\n]+)$/gmu)].map((match) => match[1].trim()),
+  );
+  for (const heading of [
+    "Dependency Audit Policy",
+    "Required Check Rollout",
+    "PR Audit Metadata Limits",
+    "Accepted Advisories And Break-Glass",
+    "Unfinished Large File Cleanup",
+  ]) {
+    assert(headings.has(heading), `SECURITY.md must keep the ${heading} heading.`);
+  }
   assert(
-    security.includes("signature verification runs on release and unprivileged build workflows"),
+    /signature verification[\s\S]+release[\s\S]+unprivileged build workflows/u.test(security),
     "SECURITY.md must document that privileged PR metadata audits do not run signature verification.",
   );
-  assert(
-    security.includes("Branch protection must require the exact `Dependency Audit Gate`") &&
-      security.includes("Pull requests that were opened before this") &&
-      security.includes(".github/workflows/pr-tests.yml") &&
-      security.includes("must be rebased onto"),
-    "SECURITY.md must document required-check rollout and in-flight PR handling.",
-  );
-  assert(
-    security.includes("npm-shrinkwrap.json") && security.includes("is not supported"),
-    "SECURITY.md must document npm-shrinkwrap.json rejection.",
-  );
+  for (const file of PR_AUDIT_METADATA_FILES) {
+    const capRowPattern = new RegExp(
+      `\\|\\s+\`${escapeRegExp(file.path)}\`\\s+\\|\\s+${escapeRegExp(
+        humanBytes(file.maxBytes),
+      )}\\s+\\|`,
+      "u",
+    );
+    assert(
+      capRowPattern.test(security),
+      `SECURITY.md must document the ${file.path} PR metadata cap.`,
+    );
+  }
+  for (const file of UNSUPPORTED_PR_AUDIT_METADATA_FILES) {
+    assert(
+      security.includes(`\`${file.path}\``),
+      `SECURITY.md must document ${file.path} rejection.`,
+    );
+  }
 }
 
 function runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildWorkflow) {
@@ -996,7 +1107,7 @@ function runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildWorkflow) 
   );
 }
 
-function runGuardrails() {
+async function runGuardrails() {
   const { workflow: testWorkflow } = readWorkflow(".github/workflows/test.yml");
   const { workflow: prTestsWorkflow } = readWorkflow(".github/workflows/pr-tests.yml");
   const { workflow: releaseWorkflow } = readWorkflow(".github/workflows/release.yml");
@@ -1015,6 +1126,7 @@ function runGuardrails() {
     ["docs workflow", docsWorkflow],
   ];
 
+  await assertPrAuditMetadataPolicy();
   runNegativeWorkflowTests(testWorkflow, prTestsWorkflow, buildExtensionWorkflow);
   for (const [workflowName, workflow] of workflows) {
     assertNoAuditCi(workflow, workflowName);
@@ -1032,8 +1144,16 @@ function runGuardrails() {
 }
 
 try {
-  runGuardrails();
-  console.log("Audit workflow guardrails verified.");
+  runGuardrails()
+    .then(() => {
+      console.log("Audit workflow guardrails verified.");
+    })
+    .catch((error) => {
+      console.error(
+        `Audit workflow guardrail failed: ${error instanceof Error ? error.message : error}`,
+      );
+      process.exit(1);
+    });
 } catch (error) {
   console.error(
     `Audit workflow guardrail failed: ${error instanceof Error ? error.message : error}`,

@@ -43,6 +43,28 @@ over `package-lock.json`, so a shrinkwrap-only dependency tree could differ
 from the audited lockfile. Pull-request metadata download, policy guardrails,
 and `scripts/run-npm-audit.js` reject shrinkwrap files fail-closed.
 
+## PR Audit Metadata Limits
+
+The privileged pull-request audit downloads only the metadata files below from
+the PR head, and it rejects files whose declared or decoded size exceeds the
+documented cap before writing them into the audit workspace.
+
+| Metadata file                           |     Cap |
+| --------------------------------------- | ------: |
+| `.github/CODEOWNERS`                    |  64 KiB |
+| `.github/workflows/build-extension.yml` | 256 KiB |
+| `.github/workflows/code-quality.yml`    | 256 KiB |
+| `.github/workflows/docs.yml`            | 256 KiB |
+| `.github/workflows/pr-tests.yml`        | 256 KiB |
+| `.github/workflows/release.yml`         | 256 KiB |
+| `.github/workflows/test.yml`            | 256 KiB |
+| `audit-policy.jsonc`                    |  64 KiB |
+| `package.json`                          | 256 KiB |
+| `package-lock.json`                     |   5 MiB |
+
+`npm-shrinkwrap.json` and `.npmrc` remain unsupported PR metadata because they
+can change the audited dependency tree or npm configuration.
+
 The gate fails on moderate, high, or critical advisories because tooling
 dependencies participate in building, packaging, and testing the VSIX.
 Low-severity advisories are triaged through Dependabot updates and can be

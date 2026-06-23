@@ -68,112 +68,18 @@ jobs:
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
-            const fs = require('fs/promises');
             const path = require('path');
-
-            const pr = context.payload.pull_request;
-            if (!pr) {
-              throw new Error('pull_request payload is required.');
-            }
-
-            const owner = pr.head.repo.owner.login;
-            const repo = pr.head.repo.name;
-            const ref = pr.head.sha;
-            const retryableStatuses = new Set([403, 408, 429, 500, 502, 503, 504]);
-
-            function sleep(ms) {
-              return new Promise((resolve) => setTimeout(resolve, ms));
-            }
-
-            async function getContentWithRetry(file) {
-              let attempt = 0;
-              while (true) {
-                try {
-                  return await github.rest.repos.getContent({
-                    owner,
-                    repo,
-                    path: file,
-                    ref,
-                  });
-                } catch (error) {
-                  attempt += 1;
-                  if (!retryableStatuses.has(error.status) || attempt >= 3) {
-                    throw error;
-                  }
-                  await sleep(attempt * 1000);
-                }
-              }
-            }
-
-            async function getBlobWithRetry(sha) {
-              let attempt = 0;
-              while (true) {
-                try {
-                  return await github.rest.git.getBlob({
-                    owner,
-                    repo,
-                    file_sha: sha,
-                  });
-                } catch (error) {
-                  attempt += 1;
-                  if (!retryableStatuses.has(error.status) || attempt >= 3) {
-                    throw error;
-                  }
-                  await sleep(attempt * 1000);
-                }
-              }
-            }
-
-            async function rejectUnsupportedMetadataFile(file, message) {
-              try {
-                await getContentWithRetry(file);
-                throw new Error(message);
-              } catch (error) {
-                if (error.status !== 404) {
-                  throw error;
-                }
-              }
-            }
-
-            await rejectUnsupportedMetadataFile(
-              'npm-shrinkwrap.json',
-              'npm-shrinkwrap.json is not supported by the audit gate; use package-lock.json.',
-            );
-            await rejectUnsupportedMetadataFile(
-              '.npmrc',
-              '.npmrc is not supported by the audit gate; npm config must not be controlled by PR metadata.',
-            );
-
-            const files = [
-              '.github/CODEOWNERS',
-              '.github/workflows/build-extension.yml',
-              '.github/workflows/code-quality.yml',
-              '.github/workflows/docs.yml',
-              '.github/workflows/pr-tests.yml',
-              '.github/workflows/release.yml',
-              '.github/workflows/test.yml',
-              'audit-policy.jsonc',
-              'package.json',
-              'package-lock.json',
-            ];
-
-            for (const file of files) {
-              const response = await getContentWithRetry(file);
-              const data = response.data;
-              if (Array.isArray(data) || data.type !== 'file' || !data.sha) {
-                throw new Error(`${file} is not a readable file in the PR head.`);
-              }
-              let content;
-              if (data.encoding === 'none' || !data.content) {
-                const blob = await getBlobWithRetry(data.sha);
-                content = Buffer.from(blob.data.content, blob.data.encoding || 'base64');
-              } else {
-                content = Buffer.from(data.content, data.encoding || 'base64');
-              }
-              const destination = path.join(process.env.GITHUB_WORKSPACE, 'source', file);
-              await fs.mkdir(path.dirname(destination), { recursive: true });
-              await fs.writeFile(destination, content);
-            }
+            const { downloadPrAuditMetadata } = require(path.join(
+              process.env.GITHUB_WORKSPACE,
+              'trusted-source',
+              'scripts',
+              'pr-audit-metadata.js',
+            ));
+            await downloadPrAuditMetadata({
+              github,
+              context,
+              workspace: process.env.GITHUB_WORKSPACE,
+            });
 
       - name: Setup Node.js
         timeout-minutes: 10
