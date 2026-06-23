@@ -79,6 +79,12 @@ interface DependencyVsixDiffGuard {
   ): GeneratedEntryDiff[];
   diffSha256(generatedEntriesDiff: GeneratedEntryDiff[]): string;
   generatedEntries(vsixPath: string): Promise<Map<string, GeneratedEntryMetadata>>;
+  parseArgs(argv: string[]): {
+    allowlistPath: string;
+    baseVsixPath: string;
+    changedFilesPath: string;
+    headVsixPath: string;
+  };
 }
 
 interface FakeRequest extends EventEmitter {
@@ -284,6 +290,18 @@ suite("VSIX runtime asset assertions", () => {
       assert.match(result.reason, /runtime source changed/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dependency VSIX diff CLI rejects option flags without values", () => {
+    const guard = loadDependencyVsixDiffGuard();
+
+    for (const option of ["--allowlist", "--base", "--changed-files", "--head"]) {
+      assert.throws(() => guard.parseArgs([option]), new RegExp(`Missing value for ${option}`));
+      assert.throws(
+        () => guard.parseArgs([option, "--base"]),
+        new RegExp(`Missing value for ${option}`),
+      );
     }
   });
 

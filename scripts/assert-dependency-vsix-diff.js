@@ -237,6 +237,15 @@ function readChangedFiles(changedFilesPath) {
   return fs.readFileSync(changedFilesPath, "utf8").split(/\r?\n/u).filter(Boolean);
 }
 
+function readOptionValue(argv, index, optionName) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`Missing value for ${optionName}`);
+  }
+
+  return value;
+}
+
 function parseArgs(argv) {
   const parsed = {
     allowlistPath: DEFAULT_ALLOWLIST_PATH,
@@ -248,19 +257,23 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--allowlist") {
-      parsed.allowlistPath = argv[++index];
+      parsed.allowlistPath = readOptionValue(argv, index, arg);
+      index += 1;
       continue;
     }
     if (arg === "--base") {
-      parsed.baseVsixPath = argv[++index];
+      parsed.baseVsixPath = readOptionValue(argv, index, arg);
+      index += 1;
       continue;
     }
     if (arg === "--changed-files") {
-      parsed.changedFilesPath = argv[++index];
+      parsed.changedFilesPath = readOptionValue(argv, index, arg);
+      index += 1;
       continue;
     }
     if (arg === "--head") {
-      parsed.headVsixPath = argv[++index];
+      parsed.headVsixPath = readOptionValue(argv, index, arg);
+      index += 1;
       continue;
     }
 
