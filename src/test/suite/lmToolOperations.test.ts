@@ -818,6 +818,33 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("downloadFile normalizes dot segments in relative localPath", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const expectedPath = path.join(workspaceRoot, "downloads", "payload.txt");
+    const { extras } = await createUploadedToolFixture();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: "./downloads/./payload.txt",
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, path.join("downloads", "payload.txt"));
+      assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("presignUrl returns an encoded object URL with an authorization query parameter", async () => {
     const { extras } = await createUploadedToolFixture();
 

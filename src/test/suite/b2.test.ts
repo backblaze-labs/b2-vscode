@@ -4121,7 +4121,7 @@ suite("B2 transfer helpers", () => {
 
   test("ignores transfer temp ENOENT races during stale cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-race-"));
-    const stale = path.join(dir, "b2-transfer-1-race.tmp");
+    const stale = path.join(dir, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");
     fs.writeFileSync(stale, "stale");
     const oldTime = new Date(Date.now() - 10_000);
     fs.utimesSync(stale, oldTime, oldTime);
@@ -4479,20 +4479,18 @@ suite("B2 transfer helpers", () => {
     fs.writeFileSync(orphanedBackup, "original");
     const oldTime = new Date(Date.now() - 10_000);
     fs.utimesSync(orphanedBackup, oldTime, oldTime);
-    const originalRename = fs.promises.rename;
+    const originalLstat = fs.promises.lstat;
 
     try {
-      fs.promises.rename = (async (oldPath: fs.PathLike, newPath: fs.PathLike) => {
-        if (path.resolve(String(oldPath)) === path.resolve(orphanedBackup)) {
+      fs.promises.lstat = (async (
+        target: fs.PathLike,
+        options?: Parameters<typeof fs.promises.lstat>[1],
+      ) => {
+        if (path.resolve(String(target)) === path.resolve(orphanedBackup)) {
           fs.rmSync(orphanedBackup, { force: true });
-          const error = new Error(
-            `ENOENT: no such file or directory, rename '${oldPath}'`,
-          ) as NodeJS.ErrnoException;
-          error.code = "ENOENT";
-          throw error;
         }
-        return originalRename(oldPath, newPath);
-      }) as typeof fs.promises.rename;
+        return originalLstat(target, options);
+      }) as typeof fs.promises.lstat;
 
       const errors = await captureConsoleErrors(() =>
         cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 }),
@@ -4502,7 +4500,7 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
       assert.strictEqual(fs.existsSync(restoredDestination), false);
     } finally {
-      fs.promises.rename = originalRename;
+      fs.promises.lstat = originalLstat;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

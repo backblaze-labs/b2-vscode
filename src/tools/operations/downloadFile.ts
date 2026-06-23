@@ -141,22 +141,23 @@ function normalizeRelativeDownloadLocalPath(requestedPath: string): string {
     return requestedPath;
   }
 
-  const segments = requestedPath.split(/[\\/]/);
-  const finalSegment = segments[segments.length - 1];
+  const rawSegments = requestedPath.split(/[\\/]+/).filter(Boolean);
+  const finalSegment = rawSegments[rawSegments.length - 1];
   if (
-    segments.length === 0 ||
+    rawSegments.length === 0 ||
     requestedPath.length === 0 ||
     /[\\/]/.test(requestedPath.slice(-1)) ||
-    finalSegment === ".." ||
-    segments.some((segment) => segment.length === 0 || segment === ".")
+    finalSegment === "." ||
+    finalSegment === ".."
   ) {
     throw new B2ToolInputError("localPath must be a file path, not a directory path.");
   }
-  if (segments.some((segment) => segment === "..")) {
+  if (rawSegments.some((segment) => segment === "..")) {
     throw new B2ToolInputError(
       "localPath must stay within the current workspace or extension tools temporary directory.",
     );
   }
+  const segments = rawSegments.filter((segment) => segment !== ".");
   const controlDirectory = segments.find(isWorkspaceControlDirectorySegment);
   if (controlDirectory !== undefined) {
     throw new B2ToolInputError(

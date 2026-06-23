@@ -384,7 +384,11 @@ suite("B2 LM tool failure handling", () => {
           },
           { getClient: () => client },
         ),
-      /No workspace folder open/i,
+      (error: unknown) => {
+        assert.match((error as Error).message, /No workspace folder open/i);
+        assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+        return true;
+      },
     );
   });
 
@@ -402,7 +406,14 @@ suite("B2 LM tool failure handling", () => {
             { bucket: "b", localPath: path.join(os.tmpdir(), "payload.txt") },
             { getClient: () => client },
           ),
-        /requires an open workspace folder for localPath inputs/i,
+        (error: unknown) => {
+          assert.match(
+            (error as Error).message,
+            /requires an open workspace folder for localPath inputs/i,
+          );
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          return true;
+        },
       );
     });
   });

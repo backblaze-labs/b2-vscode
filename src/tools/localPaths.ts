@@ -265,7 +265,7 @@ export function resolveToolLocalPathDetails(
 
   const workspaceRoot = currentWorkspaceRoot();
   if (!workspaceRoot && !resolvedOptions.allowToolsTemp) {
-    throw new Error(missingWorkspaceMessage);
+    throw new B2ToolInputError(missingWorkspaceMessage);
   }
 
   if (isToolAbsolutePath(requestedPath)) {
@@ -273,7 +273,7 @@ export function resolveToolLocalPathDetails(
   }
 
   if (!workspaceRoot) {
-    throw new Error(missingWorkspaceMessage);
+    throw new B2ToolInputError(missingWorkspaceMessage);
   }
 
   const resolved = resolveWorkspaceRelativePath(workspaceRoot, requestedPath);

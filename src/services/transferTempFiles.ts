@@ -309,7 +309,9 @@ async function cleanupStaleTransferTempFile(filePath: string, cutoff: number): P
       return true;
     }
   } catch (error) {
-    logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+    }
   }
 
   return false;
@@ -583,7 +585,9 @@ async function cleanupDestinationTempEntry(
     await fs.promises.rm(filePath, { force: true });
     return true;
   } catch (error) {
-    logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logError(`Could not clean stale destination temp file: ${filePath}`, error);
+    }
   }
 
   return false;
