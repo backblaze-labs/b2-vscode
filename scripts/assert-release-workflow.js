@@ -453,8 +453,9 @@ function assertPostBuildReleaseJobsGuardSkippedNeeds(workflowToCheck = loadRelea
   assert(
     preflightIf.includes("always()") &&
       preflightIf.includes("needs.build.result == 'success'") &&
-      preflightIf.includes("needs.package-install-smoke.result == 'success'"),
-    "publish-preflight must explicitly guard build and installed-smoke success.",
+      preflightIf.includes("needs.package-install-smoke.result == 'success'") &&
+      preflightIf.includes("github.event_name == 'workflow_dispatch'"),
+    "publish-preflight must explicitly guard build and installed-smoke success, and only run for manual dispatch.",
   );
 
   const attestIf = jobIf(workflowToCheck, "attest");

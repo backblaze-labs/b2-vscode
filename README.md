@@ -94,6 +94,9 @@ npm run watch
 # Run all quality checks
 npm run check
 
+# Install versioned Git hooks
+npm run install:hooks
+
 # Run Node unit/property tests and VS Code extension tests
 npm test
 
@@ -116,6 +119,7 @@ npm run vsix:install
 Release and Marketplace publishing ownership, preflight, secret scope, artifact
 provenance, and rollback are documented in
 [`docs/release.md`](docs/release.md).
+Local Git hook setup is documented in [`docs/development.md`](docs/development.md).
 
 Expected test output includes the discovery guard and a nonzero Mocha summary, for example
 `Discovered N compiled test file(s) for M source test file(s).` followed by a nonzero
