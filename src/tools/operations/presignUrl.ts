@@ -8,6 +8,7 @@ import type { CancellationToken } from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
 import { B2ResourceNotFoundError } from "../../errors";
 import { withTimeout } from "../../services/transferTimeout";
+import { isMissingCapabilityError } from "../../utils/b2Errors";
 import { buildB2DownloadUrl } from "../../utils/urlEncoding";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
@@ -28,7 +29,29 @@ interface PresignUrlResult {
   message: string;
 }
 
+type PresignUrlLateAuthorizationLogger = (message: string, error?: unknown) => void;
+
 const PRESIGN_URL_OPERATION_TIMEOUT_MS = 30_000;
+
+let presignUrlLateAuthorizationLogger: PresignUrlLateAuthorizationLogger = (message, error) => {
+  const detail =
+    error instanceof Error
+      ? ` - ${error.name}: ${error.message}`
+      : error === undefined
+        ? ""
+        : ` - ${String(error)}`;
+  console.error(`[B2] ${message}${detail}`);
+};
+
+export function setPresignUrlLateAuthorizationLoggerForTest(
+  logger: PresignUrlLateAuthorizationLogger,
+): () => void {
+  const previousLogger = presignUrlLateAuthorizationLogger;
+  presignUrlLateAuthorizationLogger = logger;
+  return () => {
+    presignUrlLateAuthorizationLogger = previousLogger;
+  };
+}
 
 function createCancellationError(): Error {
   try {
@@ -37,6 +60,10 @@ function createCancellationError(): Error {
   } catch {
     return new DOMException("Aborted", "AbortError");
   }
+}
+
+function logPresignUrlLateAuthorization(message: string, error?: unknown): void {
+  presignUrlLateAuthorizationLogger(message, error);
 }
 
 export function normalizePresignUrlExpiration(expiresIn: number | undefined): number {
@@ -101,15 +128,6 @@ function isCurrentDownloadableFile(file: { action?: string }): boolean {
   return file.action !== "folder" && file.action !== "hide";
 }
 
-function isMissingListFilesCapabilityError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const details = error as Error & { code?: string };
-  return String(details.code ?? "").toLowerCase() === "missing_capability";
-}
-
 async function assertExactCurrentObjectWithoutAdjacentPrefix(
   bucket: PresignableBucket,
   filePath: string,
@@ -126,7 +144,7 @@ async function assertExactCurrentObjectWithoutAdjacentPrefix(
     page = await bucket.listFileNames({ prefix: filePath, pageSize: 2 });
     throwIfAborted(signal);
   } catch (error) {
-    if (isMissingListFilesCapabilityError(error)) {
+    if (isMissingCapabilityError(error)) {
       throw new Error(
         "presignUrl requires the listFiles capability to verify the object before issuing B2's prefix-scoped download authorization.",
       );
@@ -149,6 +167,35 @@ async function assertExactCurrentObjectWithoutAdjacentPrefix(
   }
 }
 
+async function getDownloadAuthorizationWithAbortLogging(
+  bucket: PresignableBucket,
+  filePath: string,
+  expiresIn: number,
+  signal: AbortSignal,
+): Promise<{ authorizationToken: string }> {
+  const authorizationPromise = bucket.getDownloadAuthorization(filePath, expiresIn);
+  void authorizationPromise.then(
+    () => {
+      if (signal.aborted) {
+        logPresignUrlLateAuthorization(
+          `presignUrl download authorization completed after timeout or cancellation for prefix ${filePath}; the discarded B2 token may remain valid until expiry.`,
+          signal.reason,
+        );
+      }
+    },
+    (error) => {
+      if (signal.aborted) {
+        logPresignUrlLateAuthorization(
+          `presignUrl download authorization failed after timeout or cancellation for prefix ${filePath}`,
+          error,
+        );
+      }
+    },
+  );
+
+  return authorizationPromise;
+}
+
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {
   async execute(
     params: PresignUrlParams,
@@ -162,6 +209,20 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
 
     const filePath = normalizeB2ObjectNameInput(params.path);
     const expiresIn = normalizePresignUrlExpiration(params.expiresIn);
+    let authorizationInFlight = false;
+    let authorizationCancellationLogged = false;
+    const logAuthorizationCancellation = () => {
+      if (authorizationInFlight && !authorizationCancellationLogged) {
+        authorizationCancellationLogged = true;
+        logPresignUrlLateAuthorization(
+          `presignUrl download authorization may complete after timeout or cancellation for prefix ${filePath}; an in-flight B2 token request cannot be cancelled by the SDK.`,
+          createCancellationError(),
+        );
+      }
+    };
+    const authorizationCancellationSubscription = token?.onCancellationRequested(
+      logAuthorizationCancellation,
+    );
     const cancellation = signalFromCancellationToken(token);
     try {
       return await withTimeout(
@@ -175,7 +236,15 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
 
           await assertExactCurrentObjectWithoutAdjacentPrefix(bucket, filePath, signal);
           throwIfAborted(signal);
-          const { authorizationToken } = await bucket.getDownloadAuthorization(filePath, expiresIn);
+          authorizationInFlight = true;
+          const { authorizationToken } = await getDownloadAuthorizationWithAbortLogging(
+            bucket,
+            filePath,
+            expiresIn,
+            signal,
+          ).finally(() => {
+            authorizationInFlight = false;
+          });
           throwIfAborted(signal);
           const downloadUrl = client.accountInfo.getDownloadUrl();
           const url = buildB2DownloadUrl(downloadUrl, params.bucket, filePath, authorizationToken);
@@ -196,6 +265,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
         { signal: cancellation.signal },
       );
     } finally {
+      authorizationCancellationSubscription?.dispose();
       cancellation.dispose();
     }
   },

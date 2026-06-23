@@ -14,7 +14,10 @@ import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
-import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import {
+  presignUrlOperation,
+  setPresignUrlLateAuthorizationLoggerForTest,
+} from "../../tools/operations/presignUrl";
 import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import type { ToolExtras } from "../../tools/types";
@@ -879,6 +882,75 @@ suite("B2 LM tool operations with simulator", () => {
       );
       assert.strictEqual(authorizationRequested, false);
     } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("presignUrl logs authorization that completes after cancellation", async () => {
+    const tokenSource = new vscode.CancellationTokenSource();
+    let resolveAuthorization:
+      | ((
+          value: { authorizationToken: string } | PromiseLike<{ authorizationToken: string }>,
+        ) => void)
+      | undefined;
+    let authorizationStarted: (() => void) | undefined;
+    const authorizationStartedPromise = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorizationPromise = new Promise<{ authorizationToken: string }>((resolve) => {
+      resolveAuthorization = resolve;
+    });
+    const bucket = {
+      async listFileNames(options: { prefix: string; pageSize: number }) {
+        assert.deepStrictEqual(options, { prefix: REMOTE_PATH, pageSize: 2 });
+        return { files: [{ fileName: REMOTE_PATH }], nextFileName: null };
+      },
+      async getDownloadAuthorization() {
+        authorizationStarted?.();
+        return authorizationPromise;
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+    const errorLines: string[] = [];
+    const restoreLogger = setPresignUrlLateAuthorizationLoggerForTest((message, error) => {
+      errorLines.push(`${message} ${String(error)}`);
+    });
+
+    try {
+      const operation = presignUrlOperation.execute(
+        { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+        { getClient: () => client as never },
+        tokenSource.token,
+      );
+      await authorizationStartedPromise;
+      tokenSource.cancel();
+
+      await assert.rejects(
+        () => operation,
+        (error) => {
+          assert.ok(error instanceof vscode.CancellationError);
+          return true;
+        },
+      );
+
+      resolveAuthorization?.({ authorizationToken: "late-token" });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      const logged = errorLines.join("\n");
+      assert.match(
+        logged,
+        /download authorization (?:completed|may complete) after timeout or cancellation/i,
+      );
+      assert.doesNotMatch(logged, /late-token/);
+    } finally {
+      restoreLogger();
       tokenSource.dispose();
     }
   });

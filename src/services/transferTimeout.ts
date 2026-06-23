@@ -18,6 +18,11 @@ export interface TransferTimeoutOptions {
   readonly stallTimeoutMs?: number;
 }
 
+export interface FixedTimeoutOptions {
+  readonly signal?: AbortSignal;
+  readonly createTimeoutError?: (description: string, timeoutMs: number) => Error;
+}
+
 export interface ActivityAbortSignal {
   readonly signal: AbortSignal;
   markActivity(): void;
@@ -156,7 +161,7 @@ export async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   description: string,
-  options: { signal?: AbortSignal } = {},
+  options: FixedTimeoutOptions = {},
 ): Promise<T> {
   const parentSignal = options.signal;
   const linkedAbort = linkParentAbort(parentSignal);
@@ -174,7 +179,9 @@ export async function withTimeout<T>(
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      const timeoutError = new Error(`${description} timed out after ${timeoutMs} ms.`);
+      const timeoutError =
+        options.createTimeoutError?.(description, timeoutMs) ??
+        new Error(`${description} timed out after ${timeoutMs} ms.`);
       if (!controller.signal.aborted) {
         controller.abort(timeoutError);
       }

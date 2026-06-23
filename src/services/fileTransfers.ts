@@ -24,6 +24,7 @@ import {
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
 import { log, logError } from "../logger";
+import { isMissingCapabilityError } from "../utils/b2Errors";
 import { humanSize } from "../utils/humanSize";
 import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 import {
@@ -41,6 +42,7 @@ import {
   abortPromise,
   createActivityAbortSignal,
   normalizeTransferError,
+  withTimeout,
   type TransferTimeoutOptions,
 } from "./transferTimeout";
 
@@ -541,11 +543,12 @@ async function cleanupDestinationTempEntry(
       return false;
     }
 
+    // A stale replace backup may be the only surviving copy after a crash
+    // between overwrite renames. Do not restore workspace files from name-only
+    // state: forged backups are untrusted workspace content.
     if (entry.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) {
-      await fs.promises.rm(filePath, { force: true });
-      return true;
+      log(`Discarding stale destination backup temp file without automatic restore: ${filePath}`);
     }
-
     await fs.promises.rm(filePath, { force: true });
     return true;
   } catch (error) {
@@ -582,8 +585,16 @@ export async function cleanupStaleDestinationTempFiles(options: {
 
   const cutoff = Date.now() - maxAgeMs;
   try {
+    const beforeOpenStats = await fs.promises.lstat(directory);
+    if (beforeOpenStats.isSymbolicLink() || !beforeOpenStats.isDirectory()) {
+      return;
+    }
     const dir = await fs.promises.opendir(directory);
     try {
+      const afterOpenStats = await fs.promises.lstat(directory);
+      if (afterOpenStats.isSymbolicLink() || !afterOpenStats.isDirectory()) {
+        return;
+      }
       for await (const entry of dir) {
         await cleanupDestinationTempEntry(directory, entry.name, cutoff);
       }
@@ -724,15 +735,10 @@ async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
-async function cancelUnconsumedDownloadStream(
-  stream: ReadableStream<Uint8Array>,
-  error: unknown,
-): Promise<void> {
-  try {
-    await stream.cancel(error);
-  } catch (cancelError) {
+function cancelUnconsumedDownloadStream(stream: ReadableStream<Uint8Array>, error: unknown): void {
+  void stream.cancel(error).catch((cancelError) => {
     logError("Could not cancel rejected download stream", cancelError);
-  }
+  });
 }
 
 export function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
@@ -755,6 +761,8 @@ async function copyIntoPlaceNoFollow(
       (error as NodeJS.ErrnoException).code = "EEXIST";
       throw error;
     }
+    // Re-check after the existence probe so a parent swap between validation and
+    // no-overwrite publish is caught before opening the final path.
     await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
     await publishNewFileNoOverwrite(sourcePath, destinationPath, {
       allowedRootDirectory,
@@ -1069,7 +1077,7 @@ async function downloadStreamToFileInternal(
     return stats.size;
   } catch (error) {
     if (!sourceStreamOwnedByPipeline) {
-      await cancelUnconsumedDownloadStream(stream, error);
+      cancelUnconsumedDownloadStream(stream, error);
     }
     if (temporaryPath) {
       await removeTempFile(temporaryPath);
@@ -1210,30 +1218,12 @@ async function withAbortableTimeout<T>(
   timeoutMs: number,
   description: string,
 ): Promise<T> {
-  if (timeoutMs <= 0) {
-    return operation(new AbortController().signal);
-  }
-
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new CleanupOperationTimeoutError(
-        `${description} timed out after ${timeoutMs} ms.`,
-      );
-      controller.abort(error);
-      reject(error);
-    }, timeoutMs);
-    timer.unref?.();
+  return withTimeout(operation, timeoutMs, description, {
+    createTimeoutError: (timeoutDescription, timeoutMsValue) =>
+      new CleanupOperationTimeoutError(
+        `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+      ),
   });
-
-  try {
-    return await Promise.race([operation(controller.signal), timeout]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
 }
 
 function recordUnfinishedUploadCleanupTimeout(description: string, error: unknown): void {
@@ -1242,15 +1232,6 @@ function recordUnfinishedUploadCleanupTimeout(description: string, error: unknow
     `${description} timed out; unfinished-upload cleanup will continue to be retried`,
     error,
   );
-}
-
-function isMissingCapabilityError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const details = error as Error & { code?: string };
-  return String(details.code ?? "").toLowerCase() === "missing_capability";
 }
 
 function recordUnfinishedUploadCleanupMissingCapability(

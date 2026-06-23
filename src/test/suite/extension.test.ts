@@ -129,17 +129,20 @@ suite("B2 Extension Test Suite", () => {
   test("authenticated client setter schedules stale unfinished-upload cleanup", () => {
     const client = new B2Client({ applicationKeyId: "key-id", applicationKey: "app-key" });
     const scheduledClients: B2Client[] = [];
-    const setClient = createAuthenticatedClientSetter((scheduledClient) => {
-      scheduledClients.push(scheduledClient);
-    });
+    const assignedClients: Array<B2Client | null> = [];
+    const setClient = createAuthenticatedClientSetter(
+      (scheduledClient) => {
+        scheduledClients.push(scheduledClient);
+      },
+      (assignedClient) => {
+        assignedClients.push(assignedClient);
+      },
+    );
 
-    try {
-      setClient(client);
-      setClient(null);
+    setClient(client);
+    setClient(null);
 
-      assert.deepStrictEqual(scheduledClients, [client]);
-    } finally {
-      setClient(null);
-    }
+    assert.deepStrictEqual(scheduledClients, [client]);
+    assert.deepStrictEqual(assignedClients, [client, null]);
   });
 });

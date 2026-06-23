@@ -547,6 +547,39 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects known oversized downloads without waiting for stream cancel", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-known-limit-"));
+    const destination = path.join(dir, "known-limited.bin");
+    let cancelCalled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+        return new Promise(() => undefined);
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          withTimeout(
+            () =>
+              downloadStreamToFile(stream, destination, {
+                knownBytes: 9,
+                maxBytes: 8,
+              }),
+            100,
+            "known oversized download rejection",
+          ),
+        DownloadSizeLimitError,
+      );
+
+      assert.strictEqual(cancelCalled, true);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("documents the default download size cap", () => {
     assert.strictEqual(DEFAULT_DOWNLOAD_MAX_BYTES, 1024 * 1024 * 1024);
   });
@@ -748,6 +781,62 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(swapped, true);
       assert.strictEqual(fs.readFileSync(outsideTarget, "utf8"), "outside");
+    } finally {
+      mutablePromises.open = originalOpen;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("removes root-bound files opened through parent symlink races", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-open-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-open-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpen = fs.promises.open;
+    const mutablePromises = fs.promises as unknown as {
+      open: typeof fs.promises.open;
+    };
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (!swapped && path.resolve(openedPath) === path.resolve(destination)) {
+        swapped = true;
+        fs.renameSync(downloadDir, movedDownloadDir);
+        fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /outside the allowed root|changed while it was being opened|real directory|symlink/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
     } finally {
       mutablePromises.open = originalOpen;
       fs.rmSync(workspaceDir, { recursive: true, force: true });
@@ -3271,6 +3360,53 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(userLikeBackup, "utf8"), "user backup");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips destination cleanup directory swapped to a symlink during open", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-open-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-destination-open-outside-"),
+    );
+    const outsideTemp = path.join(
+      outsideDir,
+      ".b2-cross-device-escape.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const probeLink = path.join(path.dirname(dir), `probe-${path.basename(dir)}`);
+    fs.writeFileSync(outsideTemp, "outside");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(outsideTemp, oldTime, oldTime);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpendir = fs.promises.opendir;
+    const mutablePromises = fs.promises as unknown as {
+      opendir: typeof fs.promises.opendir;
+    };
+    let swapped = false;
+
+    mutablePromises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(dir)) {
+        swapped = true;
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.symlinkSync(outsideDir, dir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalOpendir(...args);
+    }) as typeof fs.promises.opendir;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTemp, "utf8"), "outside");
+    } finally {
+      mutablePromises.opendir = originalOpendir;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      fs.rmSync(probeLink, { recursive: true, force: true });
     }
   });
 

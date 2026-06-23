@@ -183,9 +183,12 @@ function scheduleAuthenticatedCleanups(client: B2Client): void {
 
 export function createAuthenticatedClientSetter(
   scheduleCleanups: (client: B2Client) => void = scheduleAuthenticatedCleanups,
+  assignClient: (client: B2Client | null) => void = (client) => {
+    currentClient = client;
+  },
 ): (client: B2Client | null) => void {
   return (client) => {
-    currentClient = client;
+    assignClient(client);
     if (client) {
       scheduleCleanups(client);
     }

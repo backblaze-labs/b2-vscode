@@ -17,7 +17,7 @@ import {
   TRANSFER_TEMP_DIR_NAME,
   type DownloadStreamToFileOptions,
 } from "./fileTransfers";
-import { log } from "../logger";
+import { log, logError } from "../logger";
 import {
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
@@ -63,6 +63,12 @@ function assertNoPathTraversalSegments(value: string, label: string): void {
   if (value.split(/[\\/]/).some((segment) => segment === "..")) {
     throw new UnsafePathError(`${label} must not contain path traversal segments.`);
   }
+}
+
+function cancelUnusedCacheStream(stream: ReadableStream<Uint8Array>): void {
+  void stream.cancel().catch((error) => {
+    logError("Could not cancel unused temp-cache download stream", error);
+  });
 }
 
 function shouldStopCleanup(
@@ -250,13 +256,13 @@ export class TempFileManager implements vscode.Disposable {
     const key = `${bucketName}/${fileName}`;
     const cachedPath = this.getCachedPath(bucketName, fileName);
     if (cachedPath) {
-      await stream.cancel().catch(() => undefined);
+      cancelUnusedCacheStream(stream);
       return cachedPath;
     }
 
     const inFlight = this.inFlight.get(key);
     if (inFlight) {
-      await stream.cancel().catch(() => undefined);
+      cancelUnusedCacheStream(stream);
       return inFlight.promise;
     }
 
