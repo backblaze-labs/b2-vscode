@@ -65,10 +65,6 @@ function dependencyManifestChanged(changedFiles) {
   return changedFiles.some((filePath) => PACKAGE_MANIFEST_FILES.has(filePath));
 }
 
-function runtimeSourceChanged(changedFiles) {
-  return changedFiles.some(isRuntimeSourceFile);
-}
-
 function shouldCheckDependencyVsixDiff(changedFiles) {
   const normalizedFiles = changedFiles.map(normalizeChangedFile).filter(Boolean);
   if (!dependencyManifestChanged(normalizedFiles)) {
