@@ -718,6 +718,44 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
+  test("absolute tools temp aliases create the matched root before containment", () => {
+    const lexicalToolRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const fakeTempParent = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-real-temp-"));
+    const fakeOsTempRoot = path.join(fakeTempParent, "real-tmp");
+    const fakeToolRoot = path.join(fakeOsTempRoot, TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
+    const allowedPath = path.join(fakeToolRoot, "tool-output.bin");
+    const originalNativeRealpath = fs.realpathSync.native;
+    const callNativeRealpath = originalNativeRealpath as (input: string | Buffer | URL) => string;
+
+    try {
+      (
+        fs.realpathSync as typeof fs.realpathSync & {
+          native: typeof fs.realpathSync.native;
+        }
+      ).native = ((input: string | Buffer | URL) => {
+        if (path.resolve(input.toString()) === path.resolve(os.tmpdir())) {
+          return fakeOsTempRoot;
+        }
+        return callNativeRealpath(input);
+      }) as typeof fs.realpathSync.native;
+
+      fs.rmSync(lexicalToolRoot, { recursive: true, force: true });
+      const resolved = resolveToolLocalPathDetails(allowedPath, "workspace required");
+
+      assert.strictEqual(resolved.path, allowedPath);
+      assert.strictEqual(resolved.allowedRoot, path.resolve(fakeToolRoot));
+      assert.strictEqual(fs.existsSync(fakeToolRoot), true);
+    } finally {
+      (
+        fs.realpathSync as typeof fs.realpathSync & {
+          native: typeof fs.realpathSync.native;
+        }
+      ).native = originalNativeRealpath;
+      fs.rmSync(lexicalToolRoot, { recursive: true, force: true });
+      fs.rmSync(fakeTempParent, { recursive: true, force: true });
+    }
+  });
+
   test("absolute workspace aliases keep matched roots for containment", async () => {
     if (process.platform === "win32") {
       return;

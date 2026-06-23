@@ -192,6 +192,7 @@ function resolveAbsoluteToolPath(
 
     if (allowedRoot.kind === "toolsTemp") {
       ensurePrivateDirectorySync(EXTENSION_TEMP_ROOT);
+      ensurePrivateDirectorySync(matchedRoot);
     }
 
     try {
