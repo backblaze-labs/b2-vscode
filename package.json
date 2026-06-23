@@ -573,7 +573,7 @@
     "jszip": "3.10.1",
     "prettier": "^3.5.3",
     "svg2ttf": "^6.1.0",
-    "svgicons2svgfont": "^15.0.1",
+    "svgicons2svgfont": "^16.0.0",
     "ts-loader": "^9.5.2",
     "ttf2woff": "^3.0.0",
     "typedoc": "^0.28.18",
