@@ -82,6 +82,7 @@ const UNFINISHED_UPLOAD_CLEANUP_MAX_CANCELS = 10;
 const UNFINISHED_UPLOAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNFINISHED_UPLOAD_CLEANUP_BUDGET_MS = 30_000;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_IN_FLIGHT = 16;
+const STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS = 1_000;
 const UNFINISHED_UPLOAD_STALE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const STALE_UNFINISHED_UPLOAD_MAX_AGE_MS = UNFINISHED_UPLOAD_STALE_MIN_AGE_MS;
 const STALE_UPLOAD_SESSION_MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -97,6 +98,7 @@ const lastCleanupByDirectory = new Map<string, number>();
 let unfinishedUploadCleanupChain: Promise<void> = Promise.resolve();
 let unfinishedUploadCleanupPendingCount = 0;
 let unfinishedUploadCleanupInFlightCount = 0;
+const preUploadCleanupInFlightByBucket = new WeakMap<UploadBucketHandle, Set<string>>();
 
 export interface UnfinishedUploadCleanupDiagnostics {
   readonly queuedOwnedCleanupCount: number;
@@ -1209,6 +1211,18 @@ class CleanupOperationTimeoutError extends Error {
   }
 }
 
+export class UploadFinalizationIndeterminateError extends Error {
+  readonly originalError?: unknown;
+
+  constructor(remotePath: string, originalError?: unknown) {
+    super(
+      `B2 upload finalization for ${remotePath} did not finish before timeout or cancellation. The local upload stream closed, so the upload may still complete in B2; check the bucket before retrying.`,
+    );
+    this.name = "UploadFinalizationIndeterminateError";
+    this.originalError = originalError;
+  }
+}
+
 async function observeImmediateUploadDoneError(
   done: Promise<FileVersion> | undefined,
 ): Promise<unknown | undefined> {
@@ -1226,6 +1240,21 @@ async function observeImmediateUploadDoneError(
       timer.unref?.();
     }),
   ]);
+}
+
+async function waitForUploadFinalization(
+  done: Promise<FileVersion>,
+  signal: AbortSignal,
+  remotePath: string,
+): Promise<FileVersion> {
+  try {
+    return await Promise.race([done, abortPromise(signal)]);
+  } catch (error) {
+    if (signal.aborted) {
+      throw new UploadFinalizationIndeterminateError(remotePath, error);
+    }
+    throw error;
+  }
 }
 
 async function withAbortableTimeout<T>(
@@ -1249,7 +1278,7 @@ async function withAbortableTimeout<T>(
   }
 
   unfinishedUploadCleanupInFlightCount += 1;
-  let timedOut = false;
+  let timeoutReturned = false;
   let inFlightReleased = false;
   const releaseInFlight = () => {
     if (!inFlightReleased) {
@@ -1270,15 +1299,14 @@ async function withAbortableTimeout<T>(
     description,
     {
       createTimeoutError: (timeoutDescription, timeoutMsValue) => {
-        timedOut = true;
-        releaseInFlight();
+        timeoutReturned = true;
         return new CleanupOperationTimeoutError(
           `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
         );
       },
     },
   ).finally(() => {
-    if (!timedOut) {
+    if (!timeoutReturned) {
       releaseInFlight();
     }
   });
@@ -1600,6 +1628,66 @@ async function cleanupStaleSameKeyUnfinishedUploads(
   }
 }
 
+function preUploadCleanupOptions(
+  options: Pick<
+    UploadFileFromDiskOptions,
+    | "unfinishedCleanupMaxPages"
+    | "unfinishedCleanupMaxCancels"
+    | "unfinishedCleanupTimeoutMs"
+    | "unfinishedCleanupBudgetMs"
+    | "unfinishedCleanupMinAgeMs"
+  >,
+): Pick<
+  UploadFileFromDiskOptions,
+  | "unfinishedCleanupMaxPages"
+  | "unfinishedCleanupMaxCancels"
+  | "unfinishedCleanupTimeoutMs"
+  | "unfinishedCleanupBudgetMs"
+  | "unfinishedCleanupMinAgeMs"
+> {
+  const requestedBudget =
+    options.unfinishedCleanupBudgetMs ?? STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS;
+  const budgetMs = Math.min(requestedBudget, STALE_SAME_KEY_PREUPLOAD_CLEANUP_BUDGET_MS);
+  const requestedTimeout = options.unfinishedCleanupTimeoutMs ?? budgetMs;
+
+  return {
+    ...options,
+    unfinishedCleanupBudgetMs: budgetMs,
+    unfinishedCleanupTimeoutMs: Math.min(requestedTimeout, budgetMs),
+  };
+}
+
+function scheduleStaleSameKeyUnfinishedUploadCleanup(
+  bucket: UploadBucketHandle,
+  remotePath: string,
+  options: Pick<
+    UploadFileFromDiskOptions,
+    | "unfinishedCleanupMaxPages"
+    | "unfinishedCleanupMaxCancels"
+    | "unfinishedCleanupTimeoutMs"
+    | "unfinishedCleanupBudgetMs"
+    | "unfinishedCleanupMinAgeMs"
+  > = {},
+): void {
+  let inFlight = preUploadCleanupInFlightByBucket.get(bucket);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    preUploadCleanupInFlightByBucket.set(bucket, inFlight);
+  }
+  if (inFlight.has(remotePath)) {
+    return;
+  }
+
+  inFlight.add(remotePath);
+  void cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, preUploadCleanupOptions(options))
+    .catch((error) => {
+      logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
+    })
+    .finally(() => {
+      inFlight.delete(remotePath);
+    });
+}
+
 async function runSerializedUnfinishedUploadCleanup<T>(cleanup: () => Promise<T>): Promise<T> {
   if (unfinishedUploadCleanupPendingCount > 0) {
     unfinishedUploadCleanupDiagnostics.queuedOwnedCleanupCount += 1;
@@ -1783,9 +1871,7 @@ export async function uploadFileFromDisk(
       ]);
     }
 
-    await cleanupStaleSameKeyUnfinishedUploads(bucket, remotePath, options).catch((error) => {
-      logError(`Could not clean stale unfinished uploads for ${remotePath}`, error);
-    });
+    scheduleStaleSameKeyUnfinishedUploadCleanup(bucket, remotePath, options);
     try {
       await writeUploadSessionMarker({ remotePath, uploadSessionId, startedMs: uploadStartedMs });
       uploadSessionMarkerWritten = true;
@@ -1818,7 +1904,7 @@ export async function uploadFileFromDisk(
     const readable = Readable.toWeb(readableStream) as ReadableStream<Uint8Array>;
 
     await readable.pipeTo(writable, { signal: activity.signal });
-    const result = await done;
+    const result = await waitForUploadFinalization(done, activity.signal, remotePath);
     if (uploadSessionMarkerWritten) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
@@ -1839,10 +1925,12 @@ export async function uploadFileFromDisk(
     if (uploadSessionMarkerWritten && (!uploadStreamWasCreated || canceledCount > 0)) {
       await removeUploadSessionMarker(remotePath, uploadSessionId);
     }
-    normalizeTransferError(
-      uploadDoneError ?? (await observeImmediateUploadDoneError(uploadDone)) ?? error,
-      activity,
-    );
+    const transferError =
+      uploadDoneError ?? (await observeImmediateUploadDoneError(uploadDone)) ?? error;
+    if (transferError instanceof UploadFinalizationIndeterminateError) {
+      throw transferError;
+    }
+    normalizeTransferError(transferError, activity);
   } finally {
     activity.dispose();
     await closeUploadSource(source);

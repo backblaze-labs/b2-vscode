@@ -161,8 +161,17 @@ function fitSegmentToBytes(
   return `${truncateUtf8(fallback, fallbackStemBytes) || "file"}${fallbackSuffix}`;
 }
 
-function avoidWindowsReservedBasename(segment: string): string {
-  return WINDOWS_RESERVED_BASENAME.test(segment) ? `_${segment}` : segment;
+function avoidWindowsReservedBasename(segment: string, maxBytes: number): string {
+  if (!WINDOWS_RESERVED_BASENAME.test(segment)) {
+    return segment;
+  }
+
+  const portable = `_${segment}`;
+  if (byteLength(portable) <= maxBytes) {
+    return portable;
+  }
+
+  return truncateUtf8(portable, maxBytes) || "_";
 }
 
 export function sanitizeLocalPathSegment(value: string, options: SafePathSegmentOptions): string {
@@ -170,20 +179,21 @@ export function sanitizeLocalPathSegment(value: string, options: SafePathSegment
   const trimmed = wellFormed.trim();
   let sanitized = trimmed
     .replace(/[\0-\x1f\x7f]/g, "_")
+    .replace(/[\u202a-\u202e\u2066-\u2069]/gi, "_")
     .replace(/[<>:"|?*]/g, "_")
     .replace(/[\\/]+/g, "_")
     .replace(/[. ]+$/g, "")
     .trim();
 
   let changed = sanitized !== value;
-  const portable = avoidWindowsReservedBasename(sanitized);
-  if (portable !== sanitized) {
-    sanitized = portable;
+  if (!sanitized || /^\.+$/.test(sanitized)) {
+    sanitized = options.fallback;
     changed = true;
   }
 
-  if (!sanitized || /^\.+$/.test(sanitized)) {
-    sanitized = options.fallback;
+  const portable = avoidWindowsReservedBasename(sanitized, options.maxBytes);
+  if (portable !== sanitized) {
+    sanitized = portable;
     changed = true;
   }
 

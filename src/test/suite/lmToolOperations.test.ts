@@ -6,9 +6,11 @@
 
 import * as assert from "assert";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { BufferSource, type FileVersion } from "@backblaze-labs/b2-sdk";
+import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
 import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
@@ -32,6 +34,7 @@ import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/wor
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";
+const TOOLS_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
 
 interface UploadedToolFixture extends SimulatorBucketFixture {
   readonly extras: ToolExtras;
@@ -89,6 +92,57 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("uploadFile accepts absolute paths inside the first workspace", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { client } = await createSimulatorBucket();
+    const localPath = path.join(workspaceRoot, "source file.txt");
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.writeFileSync(localPath, CONTENT);
+
+      const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
+        uploadFileOperation.execute(
+          { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          { getClient: () => client },
+        ),
+      );
+
+      assert.strictEqual(uploaded.fileName, REMOTE_PATH);
+      assert.strictEqual(uploaded.size, Buffer.byteLength(CONTENT));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile accepts absolute paths inside the extension tools temp root", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, `upload-${Date.now()}.txt`);
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(TOOLS_TEMP_ROOT, { recursive: true, mode: 0o700 });
+      fs.chmodSync(TOOLS_TEMP_ROOT, 0o700);
+      fs.writeFileSync(toolsSourcePath, CONTENT);
+
+      const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
+        uploadFileOperation.execute(
+          { localPath: toolsSourcePath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          { getClient: () => client },
+        ),
+      );
+
+      assert.strictEqual(uploaded.fileName, REMOTE_PATH);
+      assert.strictEqual(uploaded.size, Buffer.byteLength(CONTENT));
+    } finally {
+      fs.rmSync(toolsSourcePath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("uploadFile rejects absolute paths outside the workspace", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
@@ -108,7 +162,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot/secret.txt" },
               { getClient: () => client },
             ),
-          /localPath must be a relative path inside the allowed directory/i,
+          /localPath must stay within the current workspace or extension tools temporary directory/i,
         ),
       );
     } finally {
@@ -133,7 +187,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: "../secret.txt", bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath must not contain path traversal segments/i,
+          /localPath must stay within the current workspace/i,
         ),
       );
     } finally {
@@ -164,7 +218,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: path.join("link", "secret.txt"), bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath resolves outside the open workspace/i,
+          /localPath must stay within the current workspace|localPath resolves outside the open workspace/i,
         ),
       );
     } finally {
@@ -281,6 +335,65 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
+  test("downloadFile accepts absolute paths inside the first workspace", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { extras } = await createUploadedToolFixture();
+    const downloadPath = path.join(workspaceRoot, "downloads", "source file.txt");
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: downloadPath,
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, path.join("downloads", "source file.txt"));
+      assert.strictEqual(downloaded.size, Buffer.byteLength(CONTENT));
+      assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile accepts absolute paths inside the extension tools temp root", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { extras } = await createUploadedToolFixture();
+    const downloadPath = path.join(TOOLS_TEMP_ROOT, `download-${Date.now()}.txt`);
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(TOOLS_TEMP_ROOT, { recursive: true, mode: 0o700 });
+      fs.chmodSync(TOOLS_TEMP_ROOT, 0o700);
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: downloadPath,
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, downloadPath);
+      assert.strictEqual(downloaded.size, Buffer.byteLength(CONTENT));
+      assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(downloadPath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("downloadFile rejects control characters in remote object names before B2 calls", async () => {
     let bucketLookupRequested = false;
     const client = {
@@ -299,6 +412,77 @@ suite("B2 LM tool operations with simulator", () => {
       /control characters/i,
     );
     assert.strictEqual(bucketLookupRequested, false);
+  });
+
+  test("downloadFile rejects sensitive workspace destinations before B2 calls", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    let bucketLookupRequested = false;
+    const client = {
+      async getBucket() {
+        bucketLookupRequested = true;
+        throw new Error("bucket lookup should not run");
+      },
+    };
+    const cases: Array<{ remotePath: string; localPath?: string; expectedPath: string }> = [
+      { remotePath: "updates/.npmrc", expectedPath: path.join(workspaceRoot, ".npmrc") },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: ".env",
+        expectedPath: path.join(workspaceRoot, ".env"),
+      },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: ".b2_account_info",
+        expectedPath: path.join(workspaceRoot, ".b2_account_info"),
+      },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: path.join(".config", "b2", "account_info"),
+        expectedPath: path.join(workspaceRoot, ".config", "b2", "account_info"),
+      },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: "id_ed25519",
+        expectedPath: path.join(workspaceRoot, "id_ed25519"),
+      },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: "client.pem",
+        expectedPath: path.join(workspaceRoot, "client.pem"),
+      },
+      {
+        remotePath: REMOTE_PATH,
+        localPath: "client.key",
+        expectedPath: path.join(workspaceRoot, "client.key"),
+      },
+    ];
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      for (const entry of cases) {
+        await withWorkspaceFolder(workspaceRoot, () =>
+          assert.rejects(
+            () =>
+              downloadFileOperation.execute(
+                {
+                  bucket: SIMULATOR_BUCKET_NAME,
+                  path: entry.remotePath,
+                  ...(entry.localPath !== undefined ? { localPath: entry.localPath } : {}),
+                },
+                { getClient: () => client as never },
+              ),
+            /sensitive workspace path/i,
+          ),
+        );
+        assert.strictEqual(fs.existsSync(entry.expectedPath), false);
+      }
+
+      assert.strictEqual(bucketLookupRequested, false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("downloadFile rejects known objects over the LM byte limit before streaming", async () => {
@@ -371,7 +555,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must be a relative path inside the allowed directory/i,
+          /localPath must stay within the current workspace or extension tools temporary directory/i,
         ),
       );
 
@@ -399,7 +583,7 @@ suite("B2 LM tool operations with simulator", () => {
               { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, localPath: downloadPath },
               extras,
             ),
-          /localPath must be a relative path inside the allowed directory/i,
+          /localPath must stay within the current workspace or extension tools temporary directory/i,
         ),
       );
 
@@ -430,7 +614,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /localPath must not contain path traversal segments/i,
+          /localPath must stay within the current workspace/i,
         ),
       );
 
@@ -466,7 +650,7 @@ suite("B2 LM tool operations with simulator", () => {
               },
               extras,
             ),
-          /Workspace download directory must be a real directory|symlink/i,
+          /localPath must stay within the current workspace|Workspace download directory must be a real directory|symlink/i,
         ),
       );
 
@@ -949,6 +1133,74 @@ suite("B2 LM tool operations with simulator", () => {
         /download authorization (?:completed|may complete) after timeout or cancellation/i,
       );
       assert.doesNotMatch(logged, /late-token/);
+    } finally {
+      restoreLogger();
+      tokenSource.dispose();
+    }
+  });
+
+  test("presignUrl late authorization logger redacts secret-looking text", async () => {
+    const tokenSource = new vscode.CancellationTokenSource();
+    const secretPath = `${REMOTE_PATH}?Authorization=secret-token`;
+    let resolveAuthorization:
+      | ((
+          value: { authorizationToken: string } | PromiseLike<{ authorizationToken: string }>,
+        ) => void)
+      | undefined;
+    let authorizationStarted: (() => void) | undefined;
+    const authorizationStartedPromise = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorizationPromise = new Promise<{ authorizationToken: string }>((resolve) => {
+      resolveAuthorization = resolve;
+    });
+    const bucket = {
+      async listFileNames(options: { prefix: string; pageSize: number }) {
+        assert.deepStrictEqual(options, { prefix: secretPath, pageSize: 2 });
+        return { files: [{ fileName: secretPath }], nextFileName: null };
+      },
+      async getDownloadAuthorization() {
+        authorizationStarted?.();
+        return authorizationPromise;
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    const errorLines: string[] = [];
+    const restoreLogger = setPresignUrlLateAuthorizationLoggerForTest((message, error) => {
+      errorLines.push(`${message} ${String(error)}`);
+    });
+
+    try {
+      const operation = presignUrlOperation.execute(
+        { bucket: SIMULATOR_BUCKET_NAME, path: secretPath, expiresIn: 123 },
+        { getClient: () => client as never },
+        tokenSource.token,
+      );
+      await authorizationStartedPromise;
+      tokenSource.cancel();
+
+      await assert.rejects(
+        () => operation,
+        (error) => {
+          assert.ok(error instanceof vscode.CancellationError);
+          return true;
+        },
+      );
+
+      resolveAuthorization?.({ authorizationToken: "late-token" });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      const logged = errorLines.join("\n");
+      assert.match(logged, /<redacted>/);
+      assert.doesNotMatch(logged, /secret-token|late-token/);
     } finally {
       restoreLogger();
       tokenSource.dispose();

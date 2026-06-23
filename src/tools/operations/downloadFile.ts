@@ -12,8 +12,11 @@ import {
   downloadStreamToNewFileWithinRoot,
   withTransferStallTimeout,
 } from "../../services/fileTransfers";
-import { findWorkspaceControlDirectory, prepareSafeFileWritePath } from "../../services/pathSafety";
-import { resolveDownloadSavePath } from "../../utils/localPaths";
+import {
+  findWorkspaceControlDirectory,
+  findWorkspaceSecretPath,
+  prepareSafeFileWritePath,
+} from "../../services/pathSafety";
 import {
   sanitizePathError,
   type PathMessageReplacement,
@@ -24,6 +27,11 @@ import {
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
+import {
+  resolveToolLocalPathDetails,
+  safeDefaultDownloadName,
+  type ResolvedToolLocalPath,
+} from "../localPaths";
 
 interface DownloadFileParams {
   bucket: string;
@@ -38,7 +46,7 @@ interface DownloadFileResult {
 }
 
 const WORKSPACE_REQUIRED_MESSAGE =
-  "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
+  "No workspace folder open. The downloadFile tool requires an open workspace folder when localPath is omitted or relative.";
 const LM_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
 
 function existingDestinationError(savePath: string): Error {
@@ -49,12 +57,21 @@ function existingDestinationError(savePath: string): Error {
   return error;
 }
 
-function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
-  const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
+function assertNoSensitiveWorkspaceTarget(destination: DownloadDestination): void {
+  if (destination.rootKind !== "workspace") {
+    return;
+  }
+
+  const blocked = findWorkspaceControlDirectory(destination.allowedRoot, destination.path);
   if (blocked) {
     throw new B2ToolInputError(
       `downloadFile refuses to write inside workspace control directories: ${blocked}`,
     );
+  }
+
+  const secret = findWorkspaceSecretPath(destination.allowedRoot, destination.path);
+  if (secret) {
+    throw new B2ToolInputError(`downloadFile refuses to write sensitive workspace path: ${secret}`);
   }
 }
 
@@ -70,27 +87,27 @@ function relativeDisplayPath(
   return relativePath;
 }
 
-function sanitizeWorkspaceDownloadError(
-  error: unknown,
-  destination: WorkspaceDestination,
-): unknown {
+function sanitizeWorkspaceDownloadError(error: unknown, destination: DownloadDestination): unknown {
   if (!(error instanceof Error)) {
     return error;
   }
 
   const destinationDirectory = path.dirname(destination.path);
-  const relativeDirectory = path.dirname(destination.relativePath);
+  const relativeDirectory = path.dirname(destination.displayPath);
   const replacements: PathMessageReplacement[] = [
-    { search: destination.path, replacement: destination.relativePath },
+    { search: destination.path, replacement: destination.displayPath },
     {
       search: destinationDirectory,
       replacement: relativeDirectory === "." ? "." : relativeDirectory,
     },
-    { search: destination.workspaceRoot, replacement: "." },
+    { search: destination.allowedRoot, replacement: "." },
   ];
+  if (destination.workspaceRoot) {
+    replacements.push({ search: destination.workspaceRoot, replacement: "." });
+  }
 
   return sanitizePathError(error, replacements, (pathValue) =>
-    relativeDisplayPath(destination.workspaceRoot, pathValue, destination.relativePath),
+    relativeDisplayPath(destination.allowedRoot, pathValue, destination.displayPath),
   );
 }
 
@@ -107,35 +124,24 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
   throw existingDestinationError(destinationPath);
 }
 
-interface WorkspaceDestination {
-  readonly path: string;
-  readonly relativePath: string;
-  readonly workspaceRoot: string;
-}
+type DownloadDestination = ResolvedToolLocalPath;
 
-async function workspacePath(
-  remotePath: string,
-  localPath?: string,
-): Promise<WorkspaceDestination> {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    throw new Error(WORKSPACE_REQUIRED_MESSAGE);
-  }
-
-  const workspaceRoot = workspaceFolder.uri.fsPath;
-  const destinationPath = await resolveDownloadSavePath(workspaceRoot, remotePath, localPath);
-  const destination = {
-    path: destinationPath,
-    relativePath: path.relative(workspaceRoot, destinationPath),
-    workspaceRoot,
-  };
+async function workspacePath(remotePath: string, localPath?: string): Promise<DownloadDestination> {
+  const destination = resolveToolLocalPathDetails(
+    localPath && localPath.length > 0 ? localPath : safeDefaultDownloadName(remotePath),
+    WORKSPACE_REQUIRED_MESSAGE,
+  );
   try {
-    assertNoControlDirectoryTarget(workspaceRoot, destinationPath);
-    await assertDestinationDoesNotExist(destinationPath);
-    await prepareSafeFileWritePath(workspaceRoot, destinationPath, "downloadFile target");
+    assertNoSensitiveWorkspaceTarget(destination);
+    await assertDestinationDoesNotExist(destination.path);
+    await prepareSafeFileWritePath(
+      destination.allowedRoot,
+      destination.path,
+      "downloadFile target",
+    );
     // Re-check after creating parent directories to avoid overwriting a target
     // that appeared while validation was in progress.
-    await assertDestinationDoesNotExist(destinationPath);
+    await assertDestinationDoesNotExist(destination.path);
     return destination;
   } catch (error) {
     throw sanitizeWorkspaceDownloadError(error, destination);
@@ -186,7 +192,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
           return downloadStreamToNewFileWithinRoot(
             download.body,
             savePath,
-            destination.workspaceRoot,
+            destination.allowedRoot,
             {
               signal,
               maxBytes: LM_DOWNLOAD_MAX_BYTES,
@@ -200,9 +206,9 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     }
 
     return {
-      localPath: destination.relativePath,
+      localPath: destination.displayPath,
       size,
-      message: `Downloaded ${remotePath} from ${params.bucket} to ${destination.relativePath} (${size} bytes)`,
+      message: `Downloaded ${remotePath} from ${params.bucket} to ${destination.displayPath} (${size} bytes)`,
     };
   },
 };

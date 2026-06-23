@@ -19,7 +19,7 @@ import {
   type Bucket,
   type FileVersion,
 } from "@backblaze-labs/b2-sdk";
-import { TEMP_CACHE_DIR_NAME, TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
+import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
 import { FileTreeItem } from "../../models/fileTreeItem";
 import { FolderTreeItem } from "../../models/folderTreeItem";
 import { TempFileManager } from "../../services/tempFileManager";
@@ -154,12 +154,28 @@ function assertInside(parentPath: string, candidatePath: string): void {
   assert.ok(isPathInside(parent, candidate), `${candidatePath} should remain under ${parent}`);
 }
 
+function tempRootFor(manager: TempFileManager): string {
+  return (manager as unknown as { readonly tempRoot: string }).tempRoot;
+}
+
 function hasUrlDotSegment(value: string): boolean {
   return value.split("/").some((segment) => segment === "." || segment === "..");
 }
 
+function isInvalidB2ObjectNameInput(value: string): boolean {
+  return !value || /\p{Cc}/u.test(value) || value.endsWith("/");
+}
+
+function hasPathTraversalSegment(value: string): boolean {
+  return value.split(/[\\/]/).some((segment) => segment === "..");
+}
+
 function presignExtras(authorizationToken: string): ToolExtras {
   const testBucket = {
+    async listFileNames(options: { prefix: string; pageSize: number }) {
+      assert.strictEqual(options.pageSize, 2);
+      return { files: [file(options.prefix)], nextFileName: null };
+    },
     async getDownloadAuthorization(fileNamePrefix: string, validDurationInSeconds: number) {
       assert.ok(validDurationInSeconds >= 1);
       assert.ok(validDurationInSeconds <= MAX_PRESIGN_URL_EXPIRES_IN_SECONDS);
@@ -271,12 +287,19 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("temp file cache never writes outside the extension cache root", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
-
     await fc.assert(
       fc.asyncProperty(hostileString, hostilePath, async (bucketName, fileName) => {
         const manager = new TempFileManager();
         try {
+          if (hasPathTraversalSegment(bucketName) || hasPathTraversalSegment(fileName)) {
+            await assert.rejects(
+              () => manager.saveStream(bucketName, fileName, streamFromBytes(Buffer.from("ok"))),
+              /path traversal/i,
+            );
+            return;
+          }
+
+          const tempRoot = tempRootFor(manager);
           const savedPath = await manager.saveStream(
             bucketName,
             fileName,
@@ -294,12 +317,20 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("temp cache handles dot-only and padded dot segments as files under temp root", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const dotNames = [" . ", " .. ", ".", ".."];
     const manager = new TempFileManager();
+    const tempRoot = tempRootFor(manager);
 
     try {
       for (const name of dotNames) {
+        if (name === "..") {
+          await assert.rejects(
+            () => manager.saveStream(name, name, streamFromBytes(Buffer.from(name))),
+            /path traversal/i,
+          );
+          continue;
+        }
+
         const savedPath = await manager.saveStream(name, name, streamFromBytes(Buffer.from(name)));
         assertInside(tempRoot, savedPath);
         assert.strictEqual((await fs.promises.stat(savedPath)).isFile(), true);
@@ -320,8 +351,8 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("temp cache sanitized filenames preserve extensions after truncation", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const manager = new TempFileManager();
+    const tempRoot = tempRootFor(manager);
 
     try {
       const savedPath = await manager.saveStream(
@@ -338,8 +369,8 @@ suite("Adversarial untrusted input fuzzing", () => {
   });
 
   test("sanitized temp and default download names strip trailing dots", async () => {
-    const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_CACHE_DIR_NAME);
     const manager = new TempFileManager();
+    const tempRoot = tempRootFor(manager);
 
     try {
       const defaultName = safeDefaultDownloadName("folder/file.");
@@ -367,12 +398,8 @@ suite("Adversarial untrusted input fuzzing", () => {
       return;
     }
 
-    const tempBase = path.join(os.tmpdir(), TEMP_DIR_NAME);
-    const tempRoot = path.join(tempBase, TEMP_CACHE_DIR_NAME);
-    await fs.promises.rm(tempBase, { recursive: true, force: true });
-    await fs.promises.mkdir(tempBase, { mode: 0o777 });
-    await fs.promises.chmod(tempBase, 0o777);
     const manager = new TempFileManager();
+    const tempRoot = tempRootFor(manager);
 
     try {
       const savedPath = await manager.saveStream(
@@ -387,7 +414,6 @@ suite("Adversarial untrusted input fuzzing", () => {
       assert.strictEqual(await fs.promises.readFile(savedPath, "utf8"), "secret");
     } finally {
       manager.cleanup();
-      await fs.promises.rm(tempBase, { recursive: true, force: true });
     }
   });
 
@@ -519,7 +545,7 @@ suite("Adversarial untrusted input fuzzing", () => {
     }
   });
 
-  test("workspace containment returns the symlink-resolved local path", async () => {
+  test("workspace containment validates symlinks while preserving lexical local paths", async () => {
     if (process.platform === "win32") {
       return;
     }
@@ -534,7 +560,7 @@ suite("Adversarial untrusted input fuzzing", () => {
 
       assert.strictEqual(
         resolveWorkspaceRelativePath(workspaceRoot, "link/file.txt"),
-        path.join(fs.realpathSync.native(realRoot), "file.txt"),
+        path.join(linkPath, "file.txt"),
       );
     } finally {
       await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
@@ -660,10 +686,7 @@ suite("Adversarial untrusted input fuzzing", () => {
         resolveToolLocalPath(workspacePath, "workspace required"),
       );
 
-      assert.strictEqual(
-        resolved,
-        path.join(fs.realpathSync.native(workspaceRoot), "download.bin"),
-      );
+      assert.strictEqual(resolved, path.join(workspaceRoot, "download.bin"));
       assert.strictEqual(fs.existsSync(toolRoot), false);
     } finally {
       await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
@@ -676,7 +699,7 @@ suite("Adversarial untrusted input fuzzing", () => {
     const allowedPath = path.join(toolRoot, "tool-output.bin");
     const resolved = resolveToolLocalPath(allowedPath, "workspace required");
 
-    assert.strictEqual(resolved, path.join(fs.realpathSync.native(toolRoot), "tool-output.bin"));
+    assert.strictEqual(resolved, allowedPath);
   });
 
   test("absolute local path resolution preserves non-containment errors", () => {
@@ -814,9 +837,15 @@ suite("Adversarial untrusted input fuzzing", () => {
           ),
         );
 
-        assert.strictEqual(path.basename(result.localPath), safeDefaultDownloadName(remotePath));
+        const basename = path.basename(result.localPath);
+        assert.strictEqual(result.localPath, basename);
+        assert.ok(basename.length > 0);
+        assert.ok(Buffer.byteLength(basename, "utf8") <= 180);
+        assert.doesNotMatch(basename, /[\0-\x1f\x7f<>:"|?*\\/]/);
+        assert.doesNotMatch(basename, /[. ]$/);
+        assert.doesNotMatch(basename, /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i);
         assert.deepStrictEqual(
-          await fs.promises.readFile(result.localPath),
+          await fs.promises.readFile(path.join(workspaceRoot, result.localPath)),
           Buffer.from([1, 2, 3]),
         );
       } finally {
@@ -877,7 +906,7 @@ suite("Adversarial untrusted input fuzzing", () => {
               { bucket: "bucket", localPath: outsidePath, remotePath: "remote/secret.txt" },
               { getClient: () => client },
             ),
-          /relative path inside the allowed directory/i,
+          /current workspace or extension tools temporary directory/i,
         );
       });
       assert.strictEqual(probedOutside, false);
@@ -1320,13 +1349,26 @@ suite("Adversarial untrusted input fuzzing", () => {
           );
           assert.strictEqual(listed.files[0]?.name, filePath);
 
-          const downloaded = await withWorkspaceFolder(outputRoot, () =>
-            downloadFileOperation.execute(
-              { bucket: bucketName, path: filePath, localPath },
-              extras,
-            ),
-          );
-          assertInside(outputRoot, downloaded.localPath);
+          if (isInvalidB2ObjectNameInput(filePath)) {
+            await withWorkspaceFolder(outputRoot, () =>
+              assert.rejects(
+                () =>
+                  downloadFileOperation.execute(
+                    { bucket: bucketName, path: filePath, localPath },
+                    extras,
+                  ),
+                /path must/i,
+              ),
+            );
+          } else {
+            const downloaded = await withWorkspaceFolder(outputRoot, () =>
+              downloadFileOperation.execute(
+                { bucket: bucketName, path: filePath, localPath },
+                extras,
+              ),
+            );
+            assertInside(outputRoot, path.join(outputRoot, downloaded.localPath));
+          }
 
           const deleted = await deleteFileOperation.execute(
             { bucket: bucketName, path: filePath },
@@ -1349,6 +1391,18 @@ suite("Adversarial untrusted input fuzzing", () => {
         hostileString,
         validExpiresIn,
         async (bucketName, filePath, authorizationToken, expiresIn) => {
+          if (isInvalidB2ObjectNameInput(filePath)) {
+            await assert.rejects(
+              () =>
+                presignUrlOperation.execute(
+                  { bucket: bucketName, path: filePath, expiresIn },
+                  presignExtrasThatFailsBeforeSdkCalls(),
+                ),
+              /path must/i,
+            );
+            return;
+          }
+
           if (hasUrlDotSegment(bucketName) || hasUrlDotSegment(filePath)) {
             await assert.rejects(
               () =>

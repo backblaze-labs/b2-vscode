@@ -24,9 +24,25 @@ const DEFAULT_DOWNLOAD_NAME_MAX_BYTES = 180;
 const EXTENSION_TEMP_ROOT = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
 const SENSITIVE_WORKSPACE_DIRECTORIES = new Set([".git", ".hg", ".svn", ".vscode", ".idea"]);
 
+export type ToolLocalPathRootKind = "workspace" | "toolsTemp";
+
+export interface ResolvedToolLocalPath {
+  readonly path: string;
+  readonly allowedRoot: string;
+  readonly rootKind: ToolLocalPathRootKind;
+  readonly displayPath: string;
+  readonly workspaceRoot?: string;
+}
+
 function rejectNullByte(value: string, parameterName: string): void {
   if (value.includes("\0")) {
     throw new B2ToolInputError(`${parameterName} must not contain null bytes.`);
+  }
+}
+
+function rejectDirectoryLikePath(value: string, parameterName: string): void {
+  if (/[\\/]/.test(value.slice(-1))) {
+    throw new B2ToolInputError(`${parameterName} must be a file path, not a directory path.`);
   }
 }
 
@@ -49,7 +65,7 @@ export function resolveWorkspaceRelativePath(
     "the current workspace",
   );
   rejectSensitiveWorkspacePath(workspaceRoot, contained);
-  return contained;
+  return resolved;
 }
 
 function currentWorkspaceRoot(): string | undefined {
@@ -96,7 +112,7 @@ function toolsTempRootCandidates(): string[] {
 }
 
 function workspaceRootCandidates(workspaceRoot: string): string[] {
-  const roots = [workspaceRoot];
+  const roots: string[] = [];
   try {
     const workspaceRealPath = fs.realpathSync.native(workspaceRoot);
     roots.push(workspaceRealPath);
@@ -113,6 +129,7 @@ function workspaceRootCandidates(workspaceRoot: string): string[] {
   } catch {
     // The later realpath containment check will surface workspace root errors.
   }
+  roots.push(workspaceRoot);
 
   return Array.from(new Set(roots.map((root) => path.resolve(root))));
 }
@@ -127,7 +144,25 @@ function isPotentialWorkspacePath(workspaceRoot: string, resolvedAbsolutePath: s
   );
 }
 
-function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | undefined): string {
+function workspaceDisplayPath(workspaceRoot: string, resolvedPath: string): string {
+  const roots = workspaceRootCandidates(workspaceRoot);
+  for (const root of roots) {
+    const relativePath = path.relative(root, resolvedPath);
+    if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+      return relativePath;
+    }
+    if (relativePath === "") {
+      return ".";
+    }
+  }
+
+  return path.relative(workspaceRoot, resolvedPath) || ".";
+}
+
+function resolveAbsoluteToolPath(
+  absolutePath: string,
+  workspaceRoot: string | undefined,
+): ResolvedToolLocalPath {
   if (!path.isAbsolute(absolutePath)) {
     throw new B2ToolInputError(
       "localPath must stay within the current workspace or extension tools temporary directory.",
@@ -135,10 +170,17 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
   }
 
   const allowedRoots = [
-    workspaceRoot ? { root: workspaceRoot, description: "the current workspace" } : undefined,
-    { root: EXTENSION_TEMP_ROOT, description: "the extension tools temporary directory" },
+    workspaceRoot
+      ? { root: workspaceRoot, kind: "workspace" as const, description: "the current workspace" }
+      : undefined,
+    {
+      root: EXTENSION_TEMP_ROOT,
+      kind: "toolsTemp" as const,
+      description: "the extension tools temporary directory",
+    },
   ].filter(
-    (candidate): candidate is { root: string; description: string } => candidate !== undefined,
+    (candidate): candidate is { root: string; kind: ToolLocalPathRootKind; description: string } =>
+      candidate !== undefined,
   );
 
   const resolvedAbsolutePath = path.resolve(absolutePath);
@@ -153,16 +195,26 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
     }
 
     try {
-      const resolved = resolvePathInsideReal(
+      const contained = resolvePathInsideReal(
         allowedRoot.root,
         absolutePath,
         "localPath",
         allowedRoot.description,
       );
-      if (workspaceRoot && allowedRoot.root === workspaceRoot) {
-        rejectSensitiveWorkspacePath(workspaceRoot, resolved);
+      const resolved = path.resolve(absolutePath);
+      if (workspaceRoot && allowedRoot.kind === "workspace") {
+        rejectSensitiveWorkspacePath(workspaceRoot, contained);
       }
-      return resolved;
+      return {
+        path: resolved,
+        allowedRoot: path.resolve(allowedRoot.root),
+        rootKind: allowedRoot.kind,
+        displayPath:
+          allowedRoot.kind === "workspace" && workspaceRoot
+            ? workspaceDisplayPath(workspaceRoot, resolved)
+            : path.resolve(absolutePath),
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+      };
     } catch (error) {
       if (!(error instanceof PathContainmentError)) {
         throw error;
@@ -175,11 +227,12 @@ function resolveAbsoluteToolPath(absolutePath: string, workspaceRoot: string | u
   );
 }
 
-export function resolveToolLocalPath(
+export function resolveToolLocalPathDetails(
   requestedPath: string,
   missingWorkspaceMessage: string,
-): string {
+): ResolvedToolLocalPath {
   rejectNullByte(requestedPath, "localPath");
+  rejectDirectoryLikePath(requestedPath, "localPath");
 
   const workspaceRoot = currentWorkspaceRoot();
   if (isAbsolutePortable(requestedPath)) {
@@ -190,7 +243,21 @@ export function resolveToolLocalPath(
     throw new Error(missingWorkspaceMessage);
   }
 
-  return resolveWorkspaceRelativePath(workspaceRoot, requestedPath);
+  const resolved = resolveWorkspaceRelativePath(workspaceRoot, requestedPath);
+  return {
+    path: resolved,
+    allowedRoot: path.resolve(workspaceRoot),
+    rootKind: "workspace",
+    displayPath: workspaceDisplayPath(workspaceRoot, resolved),
+    workspaceRoot,
+  };
+}
+
+export function resolveToolLocalPath(
+  requestedPath: string,
+  missingWorkspaceMessage: string,
+): string {
+  return resolveToolLocalPathDetails(requestedPath, missingWorkspaceMessage).path;
 }
 
 export function safeDefaultDownloadName(remotePath: string): string {

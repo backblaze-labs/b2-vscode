@@ -13,7 +13,7 @@ function localDestinationFor(input: Record<string, unknown>): string {
     return "your local workspace";
   }
   return path.isAbsolute(input.localPath) || path.win32.isAbsolute(input.localPath)
-    ? `absolute path ${input.localPath} (rejected by this tool)`
+    ? `absolute path ${input.localPath} (must be inside the first workspace or extension tools temporary directory)`
     : `workspace-relative path ${input.localPath}`;
 }
 
@@ -21,7 +21,7 @@ export const downloadFileTool: B2ToolDefinition = {
   name: "b2_downloadFile",
   displayName: "B2: Download File",
   description:
-    "Downloads a file from a B2 bucket to the first open workspace folder without overwriting existing files. Returns the local file path where the file was saved.",
+    "Downloads a file from a B2 bucket to the first open workspace folder or the extension tools temporary directory without overwriting existing files. Returns the local file path where the file was saved.",
   parameters: {
     type: "object",
     properties: {
@@ -36,7 +36,7 @@ export const downloadFileTool: B2ToolDefinition = {
       localPath: {
         type: "string",
         description:
-          "Optional workspace-relative local path inside the first open workspace folder. Absolute paths are rejected. Defaults to that workspace root with the same file name. Existing files are not overwritten.",
+          "Optional local file path. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected.",
       },
     },
     required: ["bucket", "path"],

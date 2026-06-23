@@ -6,7 +6,12 @@
 
 import type { CancellationToken } from "vscode";
 import type { B2ToolOperation, ToolExtras } from "../types";
-import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
+import {
+  B2ResourceNotFoundError,
+  B2ToolInputError,
+  formatB2DiagnosticMessage,
+  redactSensitiveText,
+} from "../../errors";
 import { withTimeout } from "../../services/transferTimeout";
 import { isMissingCapabilityError } from "../../utils/b2Errors";
 import { buildB2DownloadUrl } from "../../utils/urlEncoding";
@@ -34,13 +39,9 @@ type PresignUrlLateAuthorizationLogger = (message: string, error?: unknown) => v
 const PRESIGN_URL_OPERATION_TIMEOUT_MS = 30_000;
 
 let presignUrlLateAuthorizationLogger: PresignUrlLateAuthorizationLogger = (message, error) => {
-  const detail =
-    error instanceof Error
-      ? ` - ${error.name}: ${error.message}`
-      : error === undefined
-        ? ""
-        : ` - ${String(error)}`;
-  console.error(`[B2] ${message}${detail}`);
+  const safeMessage = redactSensitiveText(message);
+  const detail = error === undefined ? "" : ` - ${formatB2DiagnosticMessage(error)}`;
+  console.error(`[B2] ${safeMessage}${detail}`);
 };
 
 export function setPresignUrlLateAuthorizationLoggerForTest(
@@ -62,8 +63,20 @@ function createCancellationError(): Error {
   }
 }
 
+function redactedLateAuthorizationError(error: unknown): unknown {
+  if (error instanceof Error) {
+    const redactedError = new Error(redactSensitiveText(error.message));
+    redactedError.name = error.name;
+    return redactedError;
+  }
+  return error === undefined ? undefined : redactSensitiveText(String(error));
+}
+
 function logPresignUrlLateAuthorization(message: string, error?: unknown): void {
-  presignUrlLateAuthorizationLogger(message, error);
+  presignUrlLateAuthorizationLogger(
+    redactSensitiveText(message),
+    redactedLateAuthorizationError(error),
+  );
 }
 
 export function normalizePresignUrlExpiration(expiresIn: number | undefined): number {

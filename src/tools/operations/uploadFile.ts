@@ -21,13 +21,13 @@ import {
   findWorkspaceControlDirectory,
   findWorkspaceSecretPath,
   isPathInsideOrEqual,
-  resolveContainedRelativePath,
 } from "../../services/pathSafety";
 import { sanitizePathError } from "../../services/pathErrorSanitization";
 import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../../services/transferProgress";
+import { resolveToolLocalPathDetails, type ResolvedToolLocalPath } from "../localPaths";
 
 interface UploadFileParams {
   localPath: string;
@@ -57,55 +57,74 @@ function assertNoControlDirectoryRead(workspaceRoot: string, localPath: string):
 
 function sanitizeWorkspaceLocalError(
   error: unknown,
-  relativePath: string,
+  displayPath: string,
   absolutePaths: ReadonlyArray<string | undefined>,
 ): unknown {
-  const displayPath = relativePath || ".";
+  const replacementPath = displayPath || ".";
   return sanitizePathError(
     error,
-    absolutePaths.map((absolutePath) => ({ search: absolutePath, replacement: displayPath })),
-    () => displayPath,
+    absolutePaths.map((absolutePath) => ({ search: absolutePath, replacement: replacementPath })),
+    () => replacementPath,
   );
 }
 
-async function workspaceUploadSource(relativePath: string): Promise<UploadSourceFile> {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    throw new Error("No workspace folder open. The uploadFile tool only reads workspace files.");
+interface ResolvedUploadSource {
+  readonly source: UploadSourceFile;
+  readonly displayPath: string;
+}
+
+function allowedRootDescription(resolvedPath: ResolvedToolLocalPath): string {
+  return resolvedPath.rootKind === "workspace"
+    ? "the open workspace"
+    : "the extension tools temporary directory";
+}
+
+async function workspaceUploadSource(requestedPath: string): Promise<ResolvedUploadSource> {
+  const resolvedPath = resolveToolLocalPathDetails(
+    requestedPath,
+    "No workspace folder open. The uploadFile tool requires an open workspace folder for relative localPath inputs.",
+  );
+  if (resolvedPath.rootKind === "workspace") {
+    assertNoControlDirectoryRead(resolvedPath.allowedRoot, resolvedPath.path);
   }
 
-  const workspaceRoot = workspaceFolder.uri.fsPath;
-  const lexicalPath = resolveContainedRelativePath(workspaceRoot, relativePath, "localPath");
-  assertNoControlDirectoryRead(workspaceRoot, lexicalPath);
-
-  let workspaceRealPath: string | undefined;
+  let allowedRootRealPath: string | undefined;
   let localRealPath: string | undefined;
   let source: UploadSourceFile | undefined;
   try {
-    [workspaceRealPath, localRealPath] = await Promise.all([
-      fs.promises.realpath(workspaceRoot),
-      fs.promises.realpath(lexicalPath),
+    [allowedRootRealPath, localRealPath] = await Promise.all([
+      fs.promises.realpath(resolvedPath.allowedRoot),
+      fs.promises.realpath(resolvedPath.path),
     ]);
-    if (!isPathInsideOrEqual(workspaceRealPath, localRealPath)) {
-      throw new B2ToolInputError(`localPath resolves outside the open workspace: ${relativePath}`);
+    if (!isPathInsideOrEqual(allowedRootRealPath, localRealPath)) {
+      throw new B2ToolInputError(
+        `localPath resolves outside ${allowedRootDescription(resolvedPath)}: ${
+          resolvedPath.displayPath
+        }`,
+      );
     }
-    assertNoControlDirectoryRead(workspaceRealPath, localRealPath);
+    if (resolvedPath.rootKind === "workspace") {
+      assertNoControlDirectoryRead(allowedRootRealPath, localRealPath);
+    }
     const localRealStats = await fs.promises.stat(localRealPath);
-    source = await openUploadSourceFile(lexicalPath);
+    source = await openUploadSourceFile(resolvedPath.path);
     if (!sameFileIdentity(source.stats, localRealStats)) {
-      throw new B2ToolInputError(`localPath changed while opening upload source: ${relativePath}`);
+      throw new B2ToolInputError(
+        `localPath changed while opening upload source: ${resolvedPath.displayPath}`,
+      );
     }
 
-    return source;
+    return { source, displayPath: resolvedPath.displayPath };
   } catch (error) {
     if (source) {
       await closeUploadSource(source);
     }
-    throw sanitizeWorkspaceLocalError(error, relativePath, [
-      lexicalPath,
+    throw sanitizeWorkspaceLocalError(error, resolvedPath.displayPath, [
+      resolvedPath.path,
       localRealPath,
-      workspaceRealPath,
-      workspaceRoot,
+      allowedRootRealPath,
+      resolvedPath.allowedRoot,
+      resolvedPath.workspaceRoot,
     ]);
   }
 }
@@ -121,7 +140,8 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
       throw new Error("Not authenticated. Please run the B2: Authenticate command first.");
     }
 
-    const source = await workspaceUploadSource(params.localPath);
+    const uploadSource = await workspaceUploadSource(params.localPath);
+    const { source } = uploadSource;
     let sourceConsumed = false;
 
     try {
@@ -152,7 +172,7 @@ export const uploadFileOperation: B2ToolOperation<UploadFileParams, UploadFileRe
         fileId: result.fileId,
         fileName: result.fileName,
         size: result.contentLength,
-        message: `Uploaded ${params.localPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
+        message: `Uploaded ${uploadSource.displayPath} to b2://${params.bucket}/${remotePath} (${result.contentLength} bytes, ID: ${result.fileId})`,
       };
     } finally {
       if (!sourceConsumed) {
