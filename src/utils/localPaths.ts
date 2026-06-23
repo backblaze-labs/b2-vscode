@@ -89,7 +89,7 @@ function safeLocalPathInputSegments(localPath: string): string[] {
   }
 
   const segments = localPath.split(/[\\/]/);
-  if (segments.length === 0 || segments.some((segment) => segment === "..")) {
+  if (segments.some((segment) => segment === "..")) {
     throw new UnsafePathError("localPath must not contain path traversal segments.");
   }
   if (segments.some((segment) => segment.length === 0 || segment === ".")) {

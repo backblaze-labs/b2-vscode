@@ -94,7 +94,7 @@ npm run watch
 # Run all quality checks
 npm run check
 
-# Run VS Code extension tests
+# Run Node unit/property tests and VS Code extension tests
 npm test
 
 # Fix formatting and lint issues

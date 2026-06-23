@@ -672,7 +672,7 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
 
   if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
     log(
-      `Workspace destination temp cleanup scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+      `Workspace destination temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
     );
   }
 }
