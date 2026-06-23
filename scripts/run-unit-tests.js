@@ -8,13 +8,17 @@ const repoRoot = path.join(__dirname, "..");
 const sourceRoot = path.join("src", "test", "unit");
 const compiledRoot = path.join("out", "src", "test", "unit");
 
+function toGlobPath(filePath) {
+  return filePath.split(path.sep).join(path.posix.sep);
+}
+
 function findTests(root, extension) {
   if (typeof fs.globSync !== "function") {
     throw new Error("Unit test discovery requires Node.js 22 or newer.");
   }
 
   return fs
-    .globSync(`${root}/**/*.test.${extension}`, { cwd: repoRoot })
+    .globSync(`${toGlobPath(root)}/**/*.test.${extension}`, { cwd: repoRoot })
     .filter((fileName) => fs.statSync(path.join(repoRoot, fileName)).isFile())
     .map((fileName) => path.normalize(fileName))
     .sort();
