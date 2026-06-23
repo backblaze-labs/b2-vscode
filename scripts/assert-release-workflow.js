@@ -442,6 +442,30 @@ function assertReleaseCodeqlDoesNotUploadSarif(workflowToCheck = loadReleaseWork
   );
 }
 
+function assertPostBuildReleaseJobsGuardSkippedNeeds(workflowToCheck = loadReleaseWorkflow()) {
+  const smokeIf = jobIf(workflowToCheck, "package-install-smoke");
+  assert(
+    smokeIf.includes("always()") && smokeIf.includes("needs.build.result == 'success'"),
+    "package-install-smoke must explicitly run after a successful build even when optional upstream jobs were skipped.",
+  );
+
+  const preflightIf = jobIf(workflowToCheck, "publish-preflight");
+  assert(
+    preflightIf.includes("always()") &&
+      preflightIf.includes("needs.build.result == 'success'") &&
+      preflightIf.includes("needs.package-install-smoke.result == 'success'"),
+    "publish-preflight must explicitly guard build and installed-smoke success.",
+  );
+
+  const attestIf = jobIf(workflowToCheck, "attest");
+  assert(
+    attestIf.includes("always()") &&
+      attestIf.includes("needs.build.result == 'success'") &&
+      attestIf.includes("needs.package-install-smoke.result == 'success'"),
+    "attest must explicitly guard build and installed-smoke success.",
+  );
+}
+
 function assertReleasePublishGate(workflowToCheck = loadReleaseWorkflow()) {
   assertJobExists(workflowToCheck, "release");
   assert(
@@ -622,6 +646,7 @@ function main() {
   assertReleaseSourceGate(workflow);
   assertAttestIsReleaseOnly(workflow);
   assertReleaseCodeqlDoesNotUploadSarif(workflow);
+  assertPostBuildReleaseJobsGuardSkippedNeeds(workflow);
   assertReleasePublishGate(workflow);
   assertPublishVerifiesAttestation(workflow);
   assertArtifactResolverUsage(workflow);
@@ -650,6 +675,7 @@ module.exports = {
   assertPublishPreflightIgnoresLifecycleScripts,
   assertReleaseInstallsIgnoreLifecycleScripts,
   assertReleaseCodeqlDoesNotUploadSarif,
+  assertPostBuildReleaseJobsGuardSkippedNeeds,
   assertReleasePublishGate,
   assertWorkflowInstallsIgnoreLifecycleScripts,
   assertGithubWorkflowInstallsIgnoreLifecycleScripts,

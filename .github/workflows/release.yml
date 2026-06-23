@@ -292,6 +292,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: ${{ always() && needs.build.result == 'success' }}
     permissions:
       contents: read
 
@@ -327,7 +328,13 @@ jobs:
     needs: [build, package-install-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')) }}
+    if: >-
+      ${{
+        always() &&
+        needs.build.result == 'success' &&
+        needs.package-install-smoke.result == 'success' &&
+        (github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')))
+      }}
     permissions:
       contents: read
 
@@ -363,7 +370,13 @@ jobs:
     needs: [build, package-install-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      ${{
+        always() &&
+        needs.build.result == 'success' &&
+        needs.package-install-smoke.result == 'success' &&
+        startsWith(github.ref, 'refs/tags/v')
+      }}
     permissions:
       contents: read
       id-token: write # Mint build provenance attestations.
@@ -406,7 +419,9 @@ jobs:
         startsWith(github.ref, 'refs/tags/v') &&
         !contains(github.ref_name, '-') &&
         github.event_name == 'workflow_dispatch' &&
-        inputs.publish == true
+        inputs.publish == true &&
+        needs.publish-preflight.result == 'success' &&
+        needs.attest.result == 'success'
       }}
     permissions:
       actions: read # Read marketplace environment protection rules.
