@@ -264,6 +264,10 @@ export function resolveToolLocalPathDetails(
   const resolvedOptions = { allowToolsTemp: options.allowToolsTemp !== false };
 
   const workspaceRoot = currentWorkspaceRoot();
+  if (!workspaceRoot && !resolvedOptions.allowToolsTemp) {
+    throw new Error(missingWorkspaceMessage);
+  }
+
   if (isToolAbsolutePath(requestedPath)) {
     return resolveAbsoluteToolPath(requestedPath, workspaceRoot, resolvedOptions);
   }

@@ -729,6 +729,57 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("skips chmod for private workspace transfer temp directories", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-temp-mode-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const temporaryDirectory = path.join(downloadDir, ".b2-vscode-transfers");
+    const destination = path.join(downloadDir, "payload.bin");
+    fs.mkdirSync(temporaryDirectory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(temporaryDirectory, 0o700);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+    const originalChmod = fs.promises.chmod;
+    const originalConsoleError = console.error;
+    let loggedPermissionWarning = false;
+    fs.promises.chmod = (async (...args: Parameters<typeof fs.promises.chmod>) => {
+      if (path.resolve(String(args[0])) === path.resolve(temporaryDirectory)) {
+        throw Object.assign(new Error("chmod unsupported"), { code: "ENOTSUP" });
+      }
+
+      await originalChmod(...args);
+    }) as typeof fs.promises.chmod;
+    console.error = ((...args: unknown[]) => {
+      if (
+        String(args[0]).includes("Could not set private permissions on transfer temp directory")
+      ) {
+        loggedPermissionWarning = true;
+      }
+      originalConsoleError(...args);
+    }) as typeof console.error;
+
+    try {
+      await downloadStreamToFile(stream, destination, {
+        allowedRootDirectory: workspaceDir,
+        temporaryDirectory,
+      });
+
+      assert.strictEqual(loggedPermissionWarning, false);
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 2, 3]);
+    } finally {
+      fs.promises.chmod = originalChmod;
+      console.error = originalConsoleError;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("refuses existing destinations when overwrite is disabled", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-no-overwrite-"));
     const destination = path.join(dir, "file.bin");

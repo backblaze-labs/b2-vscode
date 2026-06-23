@@ -104,6 +104,20 @@ export async function ensurePrivateDirectory(directory: string): Promise<void> {
 }
 
 async function setPrivateDirectoryPermissions(directory: string): Promise<void> {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  let stats: fs.Stats;
+  try {
+    stats = await fs.promises.lstat(directory);
+  } catch {
+    return;
+  }
+  if (!stats.isDirectory() || (stats.mode & 0o077) === 0) {
+    return;
+  }
+
   await fs.promises.chmod(directory, 0o700).catch((error) => {
     logError(`Could not set private permissions on transfer temp directory: ${directory}`, error);
   });

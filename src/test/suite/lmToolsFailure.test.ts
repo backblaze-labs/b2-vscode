@@ -388,6 +388,25 @@ suite("B2 LM tool failure handling", () => {
     );
   });
 
+  test("upload tool requires a workspace for absolute local paths", async () => {
+    const client = {
+      async getBucket() {
+        assert.fail("Expected workspace validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    await withoutWorkspaceFolder(async () => {
+      await assert.rejects(
+        () =>
+          uploadFileOperation.execute(
+            { bucket: "b", localPath: path.join(os.tmpdir(), "payload.txt") },
+            { getClient: () => client },
+          ),
+        /requires an open workspace folder for localPath inputs/i,
+      );
+    });
+  });
+
   test("download tool surfaces existing destination feedback", async () => {
     const dir = extensionTempFixture("download-exists-");
     const targetPath = path.join(dir, "existing.txt");
