@@ -21,6 +21,7 @@ import { log, logError } from "../logger";
 import {
   ensureContainedDirectoryPath,
   ensurePrivateDirectorySync,
+  assertPrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
@@ -212,6 +213,15 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
+    try {
+      assertPrivateDirectorySync(this.tempRoot, "Temp file cache root");
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
     ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
       recursive: true,
       mode: 0o700,

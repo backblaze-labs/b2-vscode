@@ -9,15 +9,23 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { log, logError } from "../logger";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 import {
   ensureContainedDirectoryPath,
   ensurePrivateDirectory as ensurePrivateDirectoryPath,
   pathExistsAsRealDirectory,
+  prepareSafeFileWritePath,
+  writeNewFileNoFollow,
+  writeNewFileNoFollowWithinRoot,
 } from "./pathSafety";
 
 export const TRANSFER_TEMP_DIR_NAME = "b2-vscode-transfers";
 const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
+const TRANSFER_TEMP_RANDOM_BYTES = 12;
+const TRANSFER_TEMP_RANDOM_HEX_LENGTH = TRANSFER_TEMP_RANDOM_BYTES * 2;
+const DESTINATION_TEMP_RANDOM_BYTES = 12;
+const DESTINATION_TEMP_RANDOM_HEX_LENGTH = DESTINATION_TEMP_RANDOM_BYTES * 2;
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -28,6 +36,19 @@ const MAX_CLEANUP_THROTTLE_ENTRIES = 256;
 
 const lastCleanupByDirectory = new Map<string, number>();
 let defaultTransferTempDirectory: string | undefined;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const TRANSFER_TEMP_FILE_PATTERN = new RegExp(
+  `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
+  "u",
+);
+const DESTINATION_TEMP_PAYLOAD_PATTERN = new RegExp(
+  `^[\\s\\S]+-\\d+-[a-f0-9]{${DESTINATION_TEMP_RANDOM_HEX_LENGTH}}$`,
+  "u",
+);
 
 function defaultTransferTempDirectoryUserPart(): string {
   return typeof process.getuid === "function" ? `uid-${process.getuid()}` : "user";
@@ -62,7 +83,9 @@ export function transferTempDirectory(directory?: string): string {
     return directory;
   }
 
-  defaultTransferTempDirectory ??= path.join(os.tmpdir(), defaultTransferTempDirectoryName());
+  if (defaultTransferTempDirectory === undefined) {
+    defaultTransferTempDirectory = path.join(os.tmpdir(), defaultTransferTempDirectoryName());
+  }
   return defaultTransferTempDirectory;
 }
 
@@ -99,7 +122,7 @@ export async function ensureTransferTempDirectory(
 }
 
 export function transferTempPath(directory: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(TRANSFER_TEMP_RANDOM_BYTES).toString("hex");
   return path.join(
     directory,
     `${TRANSFER_TEMP_PREFIX}${process.pid}-${random}${TRANSFER_TEMP_SUFFIX}`,
@@ -107,7 +130,7 @@ export function transferTempPath(directory: string): string {
 }
 
 function destinationMoveTempPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -116,7 +139,7 @@ function destinationMoveTempPath(destinationPath: string): string {
 }
 
 function destinationReplaceBackupPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -125,19 +148,28 @@ function destinationReplaceBackupPath(destinationPath: string): string {
 }
 
 function isTransferTempFile(name: string): boolean {
-  return name.startsWith(TRANSFER_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
-}
-
-function isCrossDeviceMoveTempFile(name: string): boolean {
-  return name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
-}
-
-function isReplaceBackupTempFile(name: string): boolean {
-  return name.startsWith(REPLACE_BACKUP_TEMP_PREFIX) && name.endsWith(TRANSFER_TEMP_SUFFIX);
+  return TRANSFER_TEMP_FILE_PATTERN.test(name);
 }
 
 function isDestinationTempFile(name: string): boolean {
-  return isCrossDeviceMoveTempFile(name) || isReplaceBackupTempFile(name);
+  const prefix = name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX)
+    ? CROSS_DEVICE_MOVE_TEMP_PREFIX
+    : name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)
+      ? REPLACE_BACKUP_TEMP_PREFIX
+      : undefined;
+  if (prefix === undefined || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
+    return false;
+  }
+
+  const payload = name.slice(prefix.length, -TRANSFER_TEMP_SUFFIX.length);
+  return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
+}
+
+export function assertDestinationFileNameIsNotReserved(destinationPath: string): void {
+  const name = path.basename(destinationPath);
+  if (isTransferTempFile(name) || isDestinationTempFile(name)) {
+    throw new Error(`Destination filename uses a reserved B2 transfer temp pattern: ${name}`);
+  }
 }
 
 function pruneCleanupThrottle(now: number): void {
@@ -194,7 +226,15 @@ async function scanBoundedDirectoryEntries(
 
   let dir: fs.Dir | undefined;
   try {
+    const beforeOpenStats = await fs.promises.lstat(directory);
+    if (beforeOpenStats.isSymbolicLink() || !beforeOpenStats.isDirectory()) {
+      return { scannedEntries, budgetHit, maxEntriesHit };
+    }
     dir = await fs.promises.opendir(directory);
+    const afterOpenStats = await fs.promises.lstat(directory);
+    if (afterOpenStats.isSymbolicLink() || !afterOpenStats.isDirectory()) {
+      return { scannedEntries, budgetHit, maxEntriesHit };
+    }
     while (true) {
       if (Date.now() >= deadlineMs) {
         budgetHit = true;
@@ -237,6 +277,20 @@ function logBoundedCleanup(label: string, stats: BoundedCleanupStats): void {
   }
 }
 
+async function cleanupStaleTransferTempFile(filePath: string, cutoff: number): Promise<boolean> {
+  try {
+    const stats = await fs.promises.lstat(filePath);
+    if (stats.mtimeMs <= cutoff) {
+      await fs.promises.rm(filePath, { force: true });
+      return true;
+    }
+  } catch (error) {
+    logError(`Could not remove stale transfer temp file: ${filePath}`, error);
+  }
+
+  return false;
+}
+
 async function cleanupStaleTransferTempDirectory(
   directory: string,
   maxAgeMs: number,
@@ -261,15 +315,7 @@ async function cleanupStaleTransferTempDirectory(
         return;
       }
 
-      const filePath = path.join(directory, entry);
-      try {
-        const stats = await fs.promises.lstat(filePath);
-        if (stats.mtimeMs <= cutoff) {
-          await fs.promises.rm(filePath, { force: true });
-        }
-      } catch (error) {
-        logError(`Could not remove stale transfer temp file: ${filePath}`, error);
-      }
+      await cleanupStaleTransferTempFile(path.join(directory, entry), cutoff);
     },
   );
   logBoundedCleanup("Transfer temp", stats);
@@ -340,6 +386,157 @@ export async function cleanupStaleTransferTempFiles(
   await cleanupDefaultTransferTempDirectories(maxAgeMs, options);
 }
 
+async function closeDirectoryBestEffort(dir: fs.Dir): Promise<void> {
+  try {
+    await dir.close();
+  } catch {
+    // Async Dir iteration closes handles on normal completion and break.
+  }
+}
+
+async function openRealDirectory(directory: string): Promise<fs.Dir | undefined> {
+  const beforeOpenStats = await fs.promises.lstat(directory);
+  if (beforeOpenStats.isSymbolicLink() || !beforeOpenStats.isDirectory()) {
+    return undefined;
+  }
+
+  const dir = await fs.promises.opendir(directory);
+  try {
+    const afterOpenStats = await fs.promises.lstat(directory);
+    if (afterOpenStats.isSymbolicLink() || !afterOpenStats.isDirectory()) {
+      await closeDirectoryBestEffort(dir);
+      return undefined;
+    }
+    return dir;
+  } catch (error) {
+    await closeDirectoryBestEffort(dir);
+    throw error;
+  }
+}
+
+export async function cleanupWorkspaceTransferTempFiles(options: {
+  readonly workspaceRoot: string;
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
+}): Promise<void> {
+  const workspaceRoot = path.resolve(options.workspaceRoot);
+  try {
+    if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
+      return;
+    }
+  } catch (error) {
+    logError(`Could not inspect workspace root for transfer temp cleanup: ${workspaceRoot}`, error);
+    return;
+  }
+
+  const deadlineMs = Date.now() + Math.max(0, options.budgetMs ?? STALE_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? STALE_CLEANUP_MAX_ENTRIES);
+  const cutoff = Date.now() - (options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS);
+  const stack = [workspaceRoot];
+  let scannedEntries = 0;
+  let cleanedFiles = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+
+  while (stack.length > 0) {
+    if (Date.now() >= deadlineMs) {
+      budgetHit = true;
+      break;
+    }
+    if (scannedEntries >= maxEntries) {
+      maxEntriesHit = true;
+      break;
+    }
+
+    const directory = stack.pop() as string;
+    let dir: fs.Dir | undefined;
+    try {
+      dir = await openRealDirectory(directory);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
+        logError(`Could not inspect workspace directory for transfer cleanup: ${directory}`, error);
+      }
+      continue;
+    }
+    if (dir === undefined) {
+      continue;
+    }
+
+    try {
+      for await (const entry of dir) {
+        if (Date.now() >= deadlineMs) {
+          budgetHit = true;
+          break;
+        }
+        if (scannedEntries >= maxEntries) {
+          maxEntriesHit = true;
+          break;
+        }
+
+        scannedEntries += 1;
+        const entryPath = path.join(directory, entry.name);
+        if (!entry.isDirectory() && isTransferTempFile(entry.name)) {
+          if (await cleanupStaleTransferTempFile(entryPath, cutoff)) {
+            cleanedFiles += 1;
+          }
+          continue;
+        }
+
+        if (
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          !isWorkspaceControlDirectorySegment(entry.name)
+        ) {
+          stack.push(entryPath);
+        }
+      }
+    } finally {
+      await closeDirectoryBestEffort(dir);
+    }
+  }
+
+  if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
+    log(
+      `Workspace transfer temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+    );
+  }
+}
+
+async function cleanupDestinationTempEntry(
+  directory: string,
+  entry: string,
+  cutoff: number,
+  preservedPath?: string,
+): Promise<boolean> {
+  if (!isDestinationTempFile(entry)) {
+    return false;
+  }
+
+  const filePath = path.join(directory, entry);
+  if (preservedPath !== undefined && path.resolve(filePath) === preservedPath) {
+    return false;
+  }
+
+  try {
+    const stats = await fs.promises.lstat(filePath);
+    if (stats.mtimeMs > cutoff) {
+      return false;
+    }
+
+    if (entry.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) {
+      log(`Discarding stale destination backup temp file without automatic restore: ${filePath}`);
+    }
+    await fs.promises.rm(filePath, { force: true });
+    return true;
+  } catch (error) {
+    logError(`Could not clean stale destination temp file: ${filePath}`, error);
+  }
+
+  return false;
+}
+
 export async function cleanupStaleDestinationTempFiles(
   options: {
     directory: string;
@@ -367,28 +564,103 @@ export async function cleanupStaleDestinationTempFiles(
     "destination directory",
     options,
     async (entry) => {
-      if (!isDestinationTempFile(entry)) {
-        return;
-      }
-
-      const filePath = path.join(directory, entry);
-      if (preservedPath !== undefined && path.resolve(filePath) === preservedPath) {
-        return;
-      }
-
-      try {
-        const stats = await fs.promises.lstat(filePath);
-        if (stats.mtimeMs > cutoff) {
-          return;
-        }
-
-        await fs.promises.rm(filePath, { force: true });
-      } catch (error) {
-        logError(`Could not clean stale destination temp file: ${filePath}`, error);
-      }
+      await cleanupDestinationTempEntry(directory, entry, cutoff, preservedPath);
     },
   );
   logBoundedCleanup("Destination temp", stats);
+}
+
+export async function cleanupWorkspaceDestinationTempFiles(options: {
+  readonly workspaceRoot: string;
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
+}): Promise<void> {
+  const workspaceRoot = path.resolve(options.workspaceRoot);
+  try {
+    if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
+      return;
+    }
+  } catch (error) {
+    logError(
+      `Could not inspect workspace root for destination temp cleanup: ${workspaceRoot}`,
+      error,
+    );
+    return;
+  }
+
+  const deadlineMs = Date.now() + Math.max(0, options.budgetMs ?? STALE_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? STALE_CLEANUP_MAX_ENTRIES);
+  const cutoff = Date.now() - (options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS);
+  const stack = [workspaceRoot];
+  let scannedEntries = 0;
+  let cleanedFiles = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+
+  while (stack.length > 0) {
+    if (Date.now() >= deadlineMs) {
+      budgetHit = true;
+      break;
+    }
+    if (scannedEntries >= maxEntries) {
+      maxEntriesHit = true;
+      break;
+    }
+
+    const directory = stack.pop() as string;
+    let dir: fs.Dir | undefined;
+    try {
+      dir = await openRealDirectory(directory);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
+        logError(
+          `Could not inspect workspace directory for destination cleanup: ${directory}`,
+          error,
+        );
+      }
+      continue;
+    }
+    if (dir === undefined) {
+      continue;
+    }
+
+    try {
+      for await (const entry of dir) {
+        if (Date.now() >= deadlineMs) {
+          budgetHit = true;
+          break;
+        }
+        if (scannedEntries >= maxEntries) {
+          maxEntriesHit = true;
+          break;
+        }
+
+        scannedEntries += 1;
+        if (await cleanupDestinationTempEntry(directory, entry.name, cutoff)) {
+          cleanedFiles += 1;
+          continue;
+        }
+
+        if (
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          !isWorkspaceControlDirectorySegment(entry.name)
+        ) {
+          stack.push(path.join(directory, entry.name));
+        }
+      }
+    } finally {
+      await closeDirectoryBestEffort(dir);
+    }
+  }
+
+  if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
+    log(
+      `Workspace destination temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+    );
+  }
 }
 
 export async function cleanupTransferTempFilesForDownload(directory: string): Promise<void> {
@@ -421,6 +693,110 @@ export async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+interface MoveIntoPlaceOptions {
+  readonly overwrite?: boolean;
+}
+
+async function copyIntoPlaceNoFollow(
+  sourcePath: string,
+  destinationPath: string,
+  options: MoveIntoPlaceOptions = {},
+  allowedRootDirectory?: string,
+): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    if (options.overwrite !== false) {
+      throw new Error("Root-bound downloads must be written without overwrite.");
+    }
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    if (await pathExists(destinationPath)) {
+      const error = new Error(`Download destination file already exists: ${destinationPath}`);
+      (error as NodeJS.ErrnoException).code = "EEXIST";
+      throw error;
+    }
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await publishNewFileNoOverwrite(sourcePath, destinationPath, {
+      allowedRootDirectory,
+      preferHardlink: false,
+    });
+    await removeTempFile(sourcePath);
+    return;
+  }
+
+  const destinationTempPath = destinationMoveTempPath(destinationPath);
+  let destinationTempCreated = false;
+
+  try {
+    await writeNewFileNoFollow(destinationTempPath, fs.createReadStream(sourcePath));
+    destinationTempCreated = true;
+    if (options.overwrite === false && (await pathExists(destinationPath))) {
+      const error = new Error(`Download destination file already exists: ${destinationPath}`);
+      (error as NodeJS.ErrnoException).code = "EEXIST";
+      throw error;
+    }
+    if (options.overwrite === false) {
+      await publishNewFileNoOverwrite(destinationTempPath, destinationPath, {
+        preferHardlink: true,
+      });
+      await removeTempFile(destinationTempPath);
+    } else {
+      await renameIntoPlace(destinationTempPath, destinationPath, options);
+    }
+    destinationTempCreated = false;
+    await removeTempFile(sourcePath);
+  } catch (error) {
+    if (destinationTempCreated) {
+      await removeTempFile(destinationTempPath);
+    }
+    throw error;
+  }
+}
+
+async function publishNewFileNoOverwrite(
+  sourcePath: string,
+  destinationPath: string,
+  options: {
+    readonly allowedRootDirectory?: string;
+    readonly preferHardlink: boolean;
+  },
+): Promise<void> {
+  if (options.allowedRootDirectory !== undefined) {
+    await writeNewFileNoFollowWithinRoot(
+      options.allowedRootDirectory,
+      destinationPath,
+      fs.createReadStream(sourcePath),
+      {
+        label: "download target",
+      },
+    );
+    return;
+  }
+
+  if (options.preferHardlink) {
+    try {
+      await fs.promises.link(sourcePath, destinationPath);
+      return;
+    } catch (error) {
+      if (!shouldFallbackToCopyAfterHardlinkError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  await fs.promises.copyFile(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
+}
+
 async function replaceExistingDestination(
   sourcePath: string,
   destinationPath: string,
@@ -451,8 +827,19 @@ async function replaceExistingDestination(
   await removeTempFile(backupPath);
 }
 
-interface MoveIntoPlaceOptions {
-  readonly overwrite?: boolean;
+const HARDLINK_COPY_FALLBACK_ERROR_CODES = new Set([
+  "EXDEV",
+  "EPERM",
+  "EOPNOTSUPP",
+  "ENOTSUP",
+  "EINVAL",
+  "EACCES",
+  "ENOSYS",
+]);
+
+function shouldFallbackToCopyAfterHardlinkError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && HARDLINK_COPY_FALLBACK_ERROR_CODES.has(code);
 }
 
 async function renameIntoPlace(
@@ -479,35 +866,40 @@ async function renameIntoPlace(
 async function moveIntoPlaceWithoutOverwrite(
   sourcePath: string,
   destinationPath: string,
+  allowedRootDirectory?: string,
 ): Promise<void> {
+  if (allowedRootDirectory !== undefined) {
+    await copyIntoPlaceNoFollow(
+      sourcePath,
+      destinationPath,
+      { overwrite: false },
+      allowedRootDirectory,
+    );
+    return;
+  }
+
   try {
     await fs.promises.link(sourcePath, destinationPath);
-    await removeTempFile(sourcePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EXDEV") {
+    if (!shouldFallbackToCopyAfterHardlinkError(error)) {
       throw error;
     }
 
-    const destinationTempPath = destinationMoveTempPath(destinationPath);
-    try {
-      await fs.promises.copyFile(sourcePath, destinationTempPath, fs.constants.COPYFILE_EXCL);
-      await fs.promises.link(destinationTempPath, destinationPath);
-      await removeTempFile(sourcePath);
-      await removeTempFile(destinationTempPath);
-    } catch (copyError) {
-      await removeTempFile(destinationTempPath);
-      throw copyError;
-    }
+    await copyIntoPlaceNoFollow(sourcePath, destinationPath, { overwrite: false });
+    return;
   }
+
+  await removeTempFile(sourcePath);
 }
 
 export async function moveIntoPlace(
   sourcePath: string,
   destinationPath: string,
   options: MoveIntoPlaceOptions = {},
+  allowedRootDirectory?: string,
 ): Promise<void> {
   if (options.overwrite === false) {
-    await moveIntoPlaceWithoutOverwrite(sourcePath, destinationPath);
+    await moveIntoPlaceWithoutOverwrite(sourcePath, destinationPath, allowedRootDirectory);
     return;
   }
 

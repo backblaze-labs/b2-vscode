@@ -100,7 +100,7 @@ export function createActivityAbortSignal(
       }
 
       timedOut = new TransferStallTimeoutError(
-        `${description} stalled for ${stallTimeoutMs} ms with no transfer activity.`,
+        `${description} timed out after ${stallTimeoutMs} ms with no transfer activity.`,
       );
       controller.abort(timedOut);
     }, stallTimeoutMs);

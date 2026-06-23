@@ -172,6 +172,10 @@ export async function assertPrivateDirectory(directory: string, label: string): 
   assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
 }
 
+export function assertPrivateDirectorySync(directory: string, label: string): void {
+  assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
+}
+
 export async function ensurePrivateDirectory(
   directory: string,
   label: string,

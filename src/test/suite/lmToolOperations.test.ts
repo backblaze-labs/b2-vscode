@@ -31,6 +31,7 @@ import {
 import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
 import { tempDir } from "../../testSupport/tempDir";
 import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/workspace";
+import { sanitizeLocalPathSegment } from "../../utils/localPaths";
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";
@@ -390,6 +391,43 @@ suite("B2 LM tool operations with simulator", () => {
       assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
     } finally {
       fs.rmSync(downloadPath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile does not re-encode resolved localPath segments", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { extras } = await createUploadedToolFixture();
+    const encodedLikeSegment = "__b2_existing.txt";
+    const expectedSegment = sanitizeLocalPathSegment(encodedLikeSegment);
+    const doubleEncodedSegment = sanitizeLocalPathSegment(expectedSegment);
+    const expectedRelativePath = path.join("downloads", expectedSegment);
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: path.join("downloads", encodedLikeSegment),
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, expectedRelativePath);
+      assert.strictEqual(
+        fs.readFileSync(path.join(workspaceRoot, expectedRelativePath), "utf8"),
+        CONTENT,
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(workspaceRoot, "downloads", doubleEncodedSegment)),
+        false,
+      );
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
