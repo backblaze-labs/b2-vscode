@@ -66,6 +66,7 @@ import {
   createPrivateTempRoot,
   releasePrivateTempRoot,
 } from "../../utils/privateTempRoot";
+import { B2ToolInputError } from "../../errors";
 import type { B2Credentials } from "../../services/authService";
 import {
   cleanupStaleUnfinishedUploadsForClient,
@@ -600,6 +601,32 @@ suite("B2 transfer helpers", () => {
     assert.strictEqual(DEFAULT_DOWNLOAD_MAX_BYTES, 1024 * 1024 * 1024);
   });
 
+  test("reports invalid download byte limits as tool input errors", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-limit-input-"));
+    const destination = path.join(dir, "limited.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("not used"));
+        controller.close();
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { maxBytes: 0 }),
+        (error) => {
+          assert.ok(error instanceof B2ToolInputError);
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          assert.match((error as Error).message, /positive integer/i);
+          return true;
+        },
+      );
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("validates destination parent before creating adjacent temp directory", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-bind-"));
     const outsideDir = fs.mkdtempSync(
@@ -628,7 +655,14 @@ suite("B2 transfer helpers", () => {
             allowedRootDirectory: workspaceDir,
             temporaryDirectory: tempDir,
           }),
-        /inside Workspace download directory|real directory|symlink/i,
+        (error) => {
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          assert.match(
+            (error as Error).message,
+            /inside Workspace download directory|real directory|symlink/i,
+          );
+          return true;
+        },
       );
 
       assert.strictEqual(fs.existsSync(outsideTempDir), false);
@@ -677,7 +711,11 @@ suite("B2 transfer helpers", () => {
             allowedRootDirectory: workspaceDir,
             overwrite: false,
           }),
-        /changed during transfer|real directory|symlink/i,
+        (error) => {
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          assert.match((error as Error).message, /changed during transfer|real directory|symlink/i);
+          return true;
+        },
       );
 
       assert.strictEqual(swapped, true);
@@ -909,7 +947,14 @@ suite("B2 transfer helpers", () => {
             allowedRootDirectory: workspaceDir,
             temporaryDirectory: tempDir,
           }),
-        /Workspace transfer temp directory|real directory|symlink|outside the allowed root/i,
+        (error) => {
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          assert.match(
+            (error as Error).message,
+            /Workspace transfer temp directory|real directory|symlink|outside the allowed root/i,
+          );
+          return true;
+        },
       );
 
       assert.strictEqual(swapped, true);

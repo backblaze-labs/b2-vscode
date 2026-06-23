@@ -218,9 +218,43 @@ export interface UploadSourceFile {
 function normalizedMaxBytes(maxBytes: number | undefined): number {
   const normalized = maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
   if (!Number.isInteger(normalized) || normalized < 1) {
-    throw new Error("Download maximum byte count must be a positive integer.");
+    throw new B2ToolInputError("Download maximum byte count must be a positive integer.");
   }
   return normalized;
+}
+
+function asToolInputError(error: unknown, fallbackMessage: string): B2ToolInputError {
+  if (error instanceof B2ToolInputError) {
+    return error;
+  }
+
+  const message = error instanceof Error && error.message ? error.message : fallbackMessage;
+  return new B2ToolInputError(message);
+}
+
+async function ensureContainedDirectoryPathForTool(
+  rootPath: string,
+  targetDirectory: string,
+  label: string,
+  options: Parameters<typeof ensureContainedDirectoryPath>[3] = {},
+): Promise<void> {
+  try {
+    await ensureContainedDirectoryPath(rootPath, targetDirectory, label, options);
+  } catch (error) {
+    throw asToolInputError(error, `${label} must stay within the allowed root.`);
+  }
+}
+
+async function prepareSafeDownloadWritePath(
+  rootPath: string,
+  destinationPath: string,
+  label: string,
+): Promise<void> {
+  try {
+    await prepareSafeFileWritePath(rootPath, destinationPath, label);
+  } catch (error) {
+    throw asToolInputError(error, `${label} must stay within the allowed root.`);
+  }
 }
 
 function assertKnownDownloadSizeWithinLimit(
@@ -286,7 +320,7 @@ async function ensureTransferTempDirectory(
   requiresPrivateDirectory: boolean,
 ): Promise<void> {
   if (allowedRootDirectory !== undefined) {
-    await ensureContainedDirectoryPath(
+    await ensureContainedDirectoryPathForTool(
       allowedRootDirectory,
       directory,
       "Workspace transfer temp directory",
@@ -768,7 +802,7 @@ async function copyIntoPlaceNoFollow(
     if (options.overwrite !== false) {
       throw new Error("Root-bound downloads must be written without overwrite.");
     }
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
     if (await pathExists(destinationPath)) {
       const error = new Error(`Download destination file already exists: ${destinationPath}`);
       (error as NodeJS.ErrnoException).code = "EEXIST";
@@ -776,7 +810,7 @@ async function copyIntoPlaceNoFollow(
     }
     // Re-check after the existence probe so a parent swap between validation and
     // no-overwrite publish is caught before opening the final path.
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
     await publishNewFileNoOverwrite(sourcePath, destinationPath, {
       allowedRootDirectory,
       preferHardlink: false,
@@ -984,7 +1018,7 @@ async function ensureDownloadDestinationDirectory(
 ): Promise<string> {
   const destinationDirectory = path.dirname(destinationPath);
   if (allowedRootDirectory !== undefined) {
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await prepareSafeDownloadWritePath(allowedRootDirectory, destinationPath, "download target");
   } else {
     await ensureRealDirectory(destinationDirectory, "Download destination directory", {
       recursive: true,
