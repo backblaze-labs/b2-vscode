@@ -94,7 +94,7 @@ npm run watch
 # Run all quality checks
 npm run check
 
-# Install versioned Git hooks
+# Install Husky Git hooks
 npm run install:hooks
 
 # Run Node unit/property tests and VS Code extension tests
