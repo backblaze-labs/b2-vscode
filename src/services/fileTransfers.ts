@@ -640,6 +640,10 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     const directory = stack.pop() as string;
     let dir: fs.Dir;
     try {
+      const directoryStats = await fs.promises.lstat(directory);
+      if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
+        continue;
+      }
       dir = await fs.promises.opendir(directory);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
