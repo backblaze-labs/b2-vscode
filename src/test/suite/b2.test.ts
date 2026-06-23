@@ -718,7 +718,7 @@ suite("B2 transfer helpers", () => {
     const probeLink = path.join(workspaceDir, "probe");
     fs.mkdirSync(downloadDir);
     const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
-    const originalReaddir = fs.promises.readdir;
+    const originalOpendir = fs.promises.opendir;
     let swapped = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -733,7 +733,7 @@ suite("B2 transfer helpers", () => {
       }
       fs.rmSync(probeLink, { recursive: true, force: true });
 
-      fs.promises.readdir = (async (...args: Parameters<typeof fs.promises.readdir>) => {
+      fs.promises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
         const directory = args[0];
         if (!swapped && path.resolve(String(directory)) === path.resolve(downloadDir)) {
           swapped = true;
@@ -745,8 +745,8 @@ suite("B2 transfer helpers", () => {
           );
         }
 
-        return originalReaddir(...args);
-      }) as typeof fs.promises.readdir;
+        return originalOpendir(...args);
+      }) as typeof fs.promises.opendir;
 
       await assert.rejects(
         () =>
@@ -761,7 +761,7 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(outsideTempDir), false);
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
-      fs.promises.readdir = originalReaddir;
+      fs.promises.opendir = originalOpendir;
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
     }
@@ -803,24 +803,16 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("root-bound downloads publish only a complete placement temp", async () => {
+  test("root-bound downloads write new files without exposing a loose overwrite mode", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-root-"));
     const destination = path.join(dir, "nested", "file.bin");
     const existing = path.join(dir, "existing.bin");
     const originalLink = fs.promises.link;
     let linkCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
-    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+    fs.promises.link = async (): Promise<void> => {
       linkCalls += 1;
-      assert.strictEqual(
-        path.resolve(String(newPath)),
-        path.resolve(linkCalls === 1 ? destination : existing),
-      );
-      if (path.resolve(String(newPath)) === path.resolve(destination)) {
-        assert.strictEqual(fs.existsSync(newPath), false);
-      }
-      assert.match(path.basename(String(existingPath)), /^b2-transfer-\d+-[a-f0-9]{24}\.tmp$/);
-      await fs.promises.copyFile(existingPath, newPath, fs.constants.COPYFILE_EXCL);
+      throw new Error("root-bound downloads must not hardlink into place");
     };
 
     try {
@@ -836,7 +828,7 @@ suite("B2 transfer helpers", () => {
       );
 
       assert.strictEqual(size, 3);
-      assert.strictEqual(linkCalls, 1);
+      assert.strictEqual(linkCalls, 0);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -862,7 +854,6 @@ suite("B2 transfer helpers", () => {
           ),
         /EEXIST|file already exists/i,
       );
-      assert.strictEqual(linkCalls, 2);
       assert.deepStrictEqual([...fs.readFileSync(existing)], [1]);
     } finally {
       fs.promises.link = originalLink;
@@ -947,7 +938,7 @@ suite("B2 transfer helpers", () => {
           const size = await downloadStreamToFile(stream, destination, { overwrite: false });
 
           assert.strictEqual(size, 3);
-          assert.strictEqual(linkCalls, 1);
+          assert.strictEqual(linkCalls, 2);
           assert.deepStrictEqual([...fs.readFileSync(destination)], [9, 8, 7]);
         } finally {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -955,6 +946,56 @@ suite("B2 transfer helpers", () => {
       }
     } finally {
       fs.promises.link = originalLink;
+    }
+  });
+
+  test("does not overwrite destination created during hardlink fallback publish", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-publish-race-"));
+    const destination = path.join(dir, "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([4, 5, 6]));
+        controller.close();
+      },
+    });
+    const originalLink = fs.promises.link;
+    const originalCopyFile = fs.promises.copyFile;
+    let destinationTempPath = "";
+
+    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      if (
+        path.resolve(String(newPath)) === path.resolve(destination) &&
+        path.basename(String(existingPath)).startsWith(".b2-cross-device-")
+      ) {
+        destinationTempPath = String(existingPath);
+      }
+      throw Object.assign(new Error("hardlink unavailable"), { code: "EXDEV" });
+    };
+    fs.promises.copyFile = async (
+      src: fs.PathLike,
+      dest: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      if (path.resolve(String(dest)) === path.resolve(destination)) {
+        assert.strictEqual(path.basename(String(src)).startsWith(".b2-cross-device-"), true);
+        assert.strictEqual(mode, fs.constants.COPYFILE_EXCL);
+        fs.writeFileSync(destination, Buffer.from([1, 1, 1]));
+      }
+      await originalCopyFile(src, dest, mode);
+    };
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { overwrite: false }),
+        /EEXIST|file already exists/i,
+      );
+
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 1, 1]);
+      assert.strictEqual(fs.existsSync(destinationTempPath), false);
+    } finally {
+      fs.promises.link = originalLink;
+      fs.promises.copyFile = originalCopyFile;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -1883,55 +1924,6 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("activation stale-upload sweep caps bucket scans and list timeout", async () => {
-    const timeoutClient = {
-      async listBuckets() {
-        return new Promise<never>(() => undefined);
-      },
-    } as unknown as Pick<B2Client, "listBuckets">;
-
-    await assert.rejects(
-      () =>
-        cleanupStaleUnfinishedUploadsForClient(timeoutClient, {
-          listBucketsTimeoutMs: 5,
-        }),
-      /bucket listing timed out/i,
-    );
-
-    const scannedBuckets: string[] = [];
-    const bucket = (name: string): UploadBucketHandle & { name: string } => {
-      const value: UploadBucketHandle & { name: string } = {
-        name,
-        async listUnfinishedLargeFiles() {
-          scannedBuckets.push(name);
-          return { files: [], nextFileId: null };
-        },
-        async cancelLargeFile() {
-          assert.fail("Empty cleanup pages should not cancel uploads");
-        },
-        file() {
-          assert.fail("Activation cleanup test should not open an upload stream");
-        },
-        async upload() {
-          assert.fail("Activation cleanup test should not upload a file");
-        },
-      };
-      return value;
-    };
-    const cappedClient = {
-      async listBuckets() {
-        return [bucket("one"), bucket("two")];
-      },
-    } as unknown as Pick<B2Client, "listBuckets">;
-
-    const result = await cleanupStaleUnfinishedUploadsForClient(cappedClient, {
-      maxBuckets: 1,
-    });
-
-    assert.strictEqual(result.bucketCount, 1);
-    assert.deepStrictEqual(scannedBuckets, ["one"]);
-  });
-
   test("does not trust spoofable remote unfinished upload metadata", async () => {
     const spoofedId = largeFileId("spoofed-upload");
     const otherSessionId = largeFileId("other-session-upload");
@@ -2567,26 +2559,29 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("sanitizes B2 object keys that attempt to escape the temp cache", async () => {
+  test("rejects B2 object keys that attempt to escape the temp cache", async () => {
     const manager = new TempFileManager();
     const outsidePath = path.join(os.tmpdir(), `b2-vscode-outside-${Date.now()}`, "owned.txt");
     const maliciousKey = `../../${path.basename(path.dirname(outsidePath))}/owned.txt`;
 
     try {
-      const cachedPath = await manager.saveStream(
-        "bucket",
-        maliciousKey,
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array([1, 2, 3]));
-            controller.close();
-          },
-        }),
+      await assert.rejects(
+        () =>
+          manager.saveStream(
+            "bucket",
+            maliciousKey,
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.close();
+              },
+            }),
+          ),
+        /B2 file name must not contain path traversal segments/i,
       );
 
       assert.strictEqual(fs.existsSync(outsidePath), false);
-      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), cachedPath);
-      assert.deepStrictEqual(await fs.promises.readFile(cachedPath), Buffer.from([1, 2, 3]));
+      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), undefined);
     } finally {
       manager.dispose();
       fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
@@ -2742,34 +2737,6 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(activeFile, "utf8"), "active");
     } finally {
       fs.rmSync(activeRoot, { recursive: true, force: true });
-    }
-  });
-
-  test("continues stale private temp cleanup after one root hits scan cap", async () => {
-    const prefix = `b2-vscode-capped-cache-${process.pid}`;
-    const largeRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
-    const cheapRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
-    const oldTime = new Date(Date.now() - 10_000);
-    fs.writeFileSync(path.join(largeRoot, "first.bin"), "stale");
-    fs.writeFileSync(path.join(largeRoot, "second.bin"), "stale");
-    fs.utimesSync(largeRoot, oldTime, oldTime);
-    fs.utimesSync(path.join(largeRoot, "first.bin"), oldTime, oldTime);
-    fs.utimesSync(path.join(largeRoot, "second.bin"), oldTime, oldTime);
-    fs.utimesSync(cheapRoot, oldTime, oldTime);
-
-    try {
-      await cleanupStalePrivateTempRoots(prefix, {
-        maxAgeMs: 1_000,
-        budgetMs: 1_000,
-        candidateBudgetMs: 1_000,
-        maxEntries: 1,
-      });
-
-      assert.strictEqual(fs.existsSync(largeRoot), true);
-      assert.strictEqual(fs.existsSync(cheapRoot), false);
-    } finally {
-      fs.rmSync(largeRoot, { recursive: true, force: true });
-      fs.rmSync(cheapRoot, { recursive: true, force: true });
     }
   });
 
@@ -2961,19 +2928,13 @@ suite("B2 transfer helpers", () => {
     }
 
     try {
-      await cleanupStaleDestinationTempFiles({
-        directory: dir,
-        maxAgeMs: 1_000,
-        restoreGraceMs: 0,
-      });
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
 
       assert.strictEqual(fs.existsSync(crossDevice), false);
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
       assert.strictEqual(fs.readFileSync(path.join(dir, "file.bin"), "utf8"), "original");
-      assert.strictEqual(
-        fs.readFileSync(path.join(dir, "fresh-missing.bin"), "utf8"),
-        "fresh original",
-      );
+      assert.strictEqual(fs.readFileSync(freshOrphanedBackup, "utf8"), "fresh original");
+      assert.strictEqual(fs.existsSync(path.join(dir, "fresh-missing.bin")), false);
       assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
       assert.strictEqual(fs.existsSync(completedBackup), false);
       assert.strictEqual(fs.readFileSync(freshTemp, "utf8"), "active");
@@ -2982,7 +2943,71 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("restores fresh destination backups after interrupted replacement", async () => {
+  test("streams workspace destination cleanup and restores orphaned backups", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-"));
+    const nested = path.join(dir, "nested", "downloads");
+    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    const restored = path.join(nested, "report.txt");
+    const staleTemp = path.join(nested, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(backup, "report");
+    fs.writeFileSync(staleTemp, "partial");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(backup, oldTime, oldTime);
+    fs.utimesSync(staleTemp, oldTime, oldTime);
+
+    const originalReaddir = fs.promises.readdir;
+    const mutablePromises = fs.promises as unknown as { readdir: typeof fs.promises.readdir };
+    let readdirCalled = false;
+    mutablePromises.readdir = (async () => {
+      readdirCalled = true;
+      throw new Error("workspace destination cleanup should use opendir");
+    }) as typeof fs.promises.readdir;
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(readdirCalled, false);
+      assert.strictEqual(fs.existsSync(backup), false);
+      assert.strictEqual(fs.readFileSync(restored, "utf8"), "report");
+      assert.strictEqual(fs.existsSync(staleTemp), false);
+    } finally {
+      mutablePromises.readdir = originalReaddir;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips control directories during workspace destination cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-control-cleanup-"));
+    const gitDir = path.join(dir, ".git");
+    const backup = path.join(gitDir, ".b2-replace-backup-package.json-1-abcdefabcdef.tmp");
+    const restored = path.join(gitDir, "package.json");
+    fs.mkdirSync(gitDir);
+    fs.writeFileSync(backup, "do not restore");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(backup, oldTime, oldTime);
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(fs.readFileSync(backup, "utf8"), "do not restore");
+      assert.strictEqual(fs.existsSync(restored), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps fresh destination backups during stale cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-fresh-backup-"));
     const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
     const restored = path.join(dir, "file.bin");
@@ -2991,128 +3016,14 @@ suite("B2 transfer helpers", () => {
     try {
       await cleanupStaleDestinationTempFiles({ directory: dir });
 
-      assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.readFileSync(restored, "utf8"), "original");
+      assert.strictEqual(fs.readFileSync(backup, "utf8"), "original");
+      assert.strictEqual(fs.existsSync(restored), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("does not overwrite destinations created during backup recovery", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-race-"));
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
-    const destination = path.join(dir, "file.bin");
-    fs.writeFileSync(backup, "original");
-    const oldTime = new Date(Date.now() - 10_000);
-    fs.utimesSync(backup, oldTime, oldTime);
-
-    const originalCopyFile = fs.promises.copyFile;
-    let copyAttempted = false;
-    fs.promises.copyFile = async (
-      source: fs.PathLike,
-      destinationCopy: fs.PathLike,
-      mode?: number,
-    ): Promise<void> => {
-      if (
-        path.resolve(String(source)) === path.resolve(backup) &&
-        path.resolve(String(destinationCopy)) === path.resolve(destination)
-      ) {
-        copyAttempted = true;
-        fs.writeFileSync(destination, "concurrent");
-      }
-
-      await originalCopyFile(source, destinationCopy, mode);
-    };
-
-    try {
-      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
-
-      assert.strictEqual(copyAttempted, true);
-      assert.strictEqual(fs.readFileSync(destination, "utf8"), "concurrent");
-      assert.strictEqual(fs.existsSync(backup), false);
-    } finally {
-      fs.promises.copyFile = originalCopyFile;
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("removes symlinked destination backups without restoring their targets", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-backup-symlink-"));
-    const dir = path.join(root, "workspace");
-    const outside = path.join(root, "outside-secret.txt");
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
-    const destination = path.join(dir, "file.bin");
-    fs.mkdirSync(dir);
-    fs.writeFileSync(outside, "secret");
-    const symlinkCreated = createFileSymlink(outside, backup);
-
-    try {
-      if (!symlinkCreated) {
-        return;
-      }
-
-      await cleanupStaleDestinationTempFiles({
-        directory: dir,
-        maxAgeMs: 0,
-        restoreGraceMs: 0,
-      });
-
-      assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.existsSync(destination), false);
-      assert.strictEqual(fs.readFileSync(outside, "utf8"), "secret");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("does not restore destination backups from the current process", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-current-backup-"));
-    const backup = path.join(dir, `.b2-replace-backup-active.bin-${process.pid}-abcdefabcdef.tmp`);
-    fs.writeFileSync(backup, "active");
-
-    try {
-      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 0 });
-
-      assert.strictEqual(fs.existsSync(backup), true);
-      assert.strictEqual(fs.existsSync(path.join(dir, "active.bin")), false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("does not restore fresh destination backups from other processes", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-fresh-backup-"));
-    const backup = path.join(dir, ".b2-replace-backup-active.bin-1-abcdefabcdef.tmp");
-    fs.writeFileSync(backup, "active");
-
-    try {
-      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 0 });
-
-      assert.strictEqual(fs.existsSync(backup), true);
-      assert.strictEqual(fs.existsSync(path.join(dir, "active.bin")), false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("recovers orphaned destination backups across a workspace tree", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-cleanup-"));
-    const nested = path.join(dir, "nested", "downloads");
-    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(backup, "report");
-
-    try {
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, restoreGraceMs: 0 });
-
-      assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.readFileSync(path.join(nested, "report.txt"), "utf8"), "report");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("removes symlink destination backups without restoring them", async () => {
+  test("does not restore symlink destination backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
     const target = path.join(dir, "target");
     const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
@@ -3131,72 +3042,7 @@ suite("B2 transfer helpers", () => {
       });
 
       assert.strictEqual(fs.existsSync(restored), false);
-      assert.strictEqual(fs.existsSync(backup), false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("skips large workspace directories during destination backup cleanup", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-skip-cleanup-"));
-    const sourceDir = path.join(dir, "src");
-    const nodeModulesDir = path.join(dir, "node_modules");
-    const sourceBackup = path.join(sourceDir, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
-    const dependencyBackup = path.join(
-      nodeModulesDir,
-      ".b2-replace-backup-dep.txt-1-abcdefabcdef.tmp",
-    );
-    fs.mkdirSync(sourceDir, { recursive: true });
-    fs.mkdirSync(nodeModulesDir, { recursive: true });
-    fs.writeFileSync(sourceBackup, "report");
-    fs.writeFileSync(dependencyBackup, "dependency");
-
-    try {
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, restoreGraceMs: 0 });
-
-      assert.strictEqual(fs.existsSync(sourceBackup), false);
-      assert.strictEqual(fs.readFileSync(path.join(sourceDir, "report.txt"), "utf8"), "report");
-      assert.strictEqual(fs.existsSync(dependencyBackup), true);
-      assert.strictEqual(fs.existsSync(path.join(nodeModulesDir, "dep.txt")), false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("honors the workspace destination cleanup directory budget", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-budget-cleanup-"));
-    const nested = path.join(dir, "nested");
-    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(backup, "report");
-
-    try {
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: dir, maxDirectories: 1 });
-
-      assert.strictEqual(fs.existsSync(backup), true);
-      assert.strictEqual(fs.existsSync(path.join(nested, "report.txt")), false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("recovers orphaned destination backups from symlinked workspace roots", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-link-cleanup-"));
-    const workspaceRoot = path.join(dir, "workspace");
-    const linkRoot = path.join(dir, "workspace-link");
-    const backup = path.join(workspaceRoot, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
-    fs.mkdirSync(workspaceRoot, { recursive: true });
-    fs.writeFileSync(backup, "report");
-
-    try {
-      if (!createDirectorySymlink(workspaceRoot, linkRoot)) {
-        return;
-      }
-
-      await cleanupWorkspaceDestinationTempFiles({ workspaceRoot: linkRoot, restoreGraceMs: 0 });
-
-      assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.readFileSync(path.join(workspaceRoot, "report.txt"), "utf8"), "report");
+      assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

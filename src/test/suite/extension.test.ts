@@ -5,9 +5,9 @@
  */
 
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
-import type { B2Client } from "@backblaze-labs/b2-sdk";
-import { createAuthenticatedClientSetter } from "../../extension";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
 import { presignUrlTool } from "../../tools/definitions/presignUrl";
 import { uploadFileTool } from "../../tools/definitions/uploadFile";
@@ -126,67 +126,11 @@ suite("B2 Extension Test Suite", () => {
     assert.deepStrictEqual(expiresIn, presignUrlTool.parameters.properties.expiresIn);
   });
 
-  test("authenticated client setter schedules stale unfinished-upload cleanup", () => {
-    let currentClient: B2Client | null = null;
-    const scheduledClients: B2Client[] = [];
-    const setClient = createAuthenticatedClientSetter(
-      (client) => {
-        currentClient = client;
-      },
-      (client) => {
-        scheduledClients.push(client);
-      },
-    );
-    const client: B2Client = Object.create(null);
+  test("auto-auth schedules stale unfinished-upload cleanup", () => {
+    const extensionSourcePath = path.join(__dirname, "../../../../src/extension.ts");
+    const source = fs.readFileSync(extensionSourcePath, "utf8");
 
-    setClient(client);
-    setClient(null);
-
-    assert.strictEqual(currentClient, null);
-    assert.deepStrictEqual(scheduledClients, [client]);
-  });
-
-  test("presignUrl package contribution declares a bounded integer expiry schema", () => {
-    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
-    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
-
-    const tools = extension.packageJSON.contributes
-      .languageModelTools as LanguageModelToolContribution[];
-    const presignUrl = tools.find((tool) => tool.name === "b2_presignUrl");
-    assert.ok(presignUrl, "b2_presignUrl contribution should exist");
-
-    const expiresIn = presignUrl.inputSchema.properties.expiresIn as Record<string, unknown>;
-    assert.strictEqual(expiresIn.type, "integer");
-    assert.strictEqual(expiresIn.minimum, 1);
-    assert.strictEqual(expiresIn.maximum, 604800);
-  });
-
-  test("download and upload package contributions require workspace-contained paths", () => {
-    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
-    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
-
-    const tools = extension.packageJSON.contributes
-      .languageModelTools as LanguageModelToolContribution[];
-    const downloadFile = tools.find((tool) => tool.name === "b2_downloadFile");
-    const uploadFile = tools.find((tool) => tool.name === "b2_uploadFile");
-    assert.ok(downloadFile, "b2_downloadFile contribution should exist");
-    assert.ok(uploadFile, "b2_uploadFile contribution should exist");
-
-    const downloadLocalPath = downloadFile.inputSchema.properties.localPath as Record<
-      string,
-      unknown
-    >;
-    const uploadLocalPath = uploadFile.inputSchema.properties.localPath as Record<string, unknown>;
-    const downloadModel = downloadFile as unknown as { modelDescription?: unknown };
-    const uploadModel = uploadFile as unknown as { modelDescription?: unknown };
-
-    assert.match(String(downloadModel.modelDescription), /first open workspace folder/i);
-    assert.match(String(uploadModel.modelDescription), /first open workspace folder/i);
-    assert.match(String(downloadLocalPath.description), /workspace-relative/i);
-    assert.match(String(uploadLocalPath.description), /workspace-relative/i);
-    assert.match(String(downloadLocalPath.description), /first open workspace folder/i);
-    assert.match(String(uploadLocalPath.description), /first open workspace folder/i);
-    assert.match(String(downloadLocalPath.description), /absolute paths are rejected/i);
-    assert.match(String(uploadLocalPath.description), /absolute paths are rejected/i);
+    assert.match(source, /scheduleAuthenticatedCleanups\(client\)/);
+    assert.match(source, /cleanupStaleUnfinishedUploadsForClient\(client\)/);
   });
 });

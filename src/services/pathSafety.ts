@@ -438,7 +438,9 @@ export async function prepareSafeFileWritePath(
   const parentPath = path.dirname(candidate);
 
   await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
-  await fs.promises.mkdir(parentPath, { recursive: true });
+  await ensureContainedDirectoryPath(rootPath, parentPath, `${label} parent`, {
+    recursive: true,
+  });
   await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
   await assertSafeFileWritePath(rootPath, candidate, label);
 }

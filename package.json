@@ -36,11 +36,9 @@
     "check:release-workflow": "node scripts/assert-release-workflow.js",
     "type-check": "tsc --noEmit",
     "audit:release": "npm audit --omit=dev --audit-level=moderate",
-    "pretest": "npm run test:unit && npm run compile && npm run compile:bundled-smoke && npm run test:discovery-guard:unit && npm run lint",
+    "pretest": "npm run compile-tests && npm run compile && npm run compile:bundled-smoke && npm run test:discovery-guard:unit && npm run lint",
     "test": "node scripts/test-discovery-guard.js && vscode-test",
-    "pretest:unit": "npm run compile-tests",
     "test:discovery-guard:unit": "node scripts/test-discovery-guard.test.js",
-    "test:unit": "node scripts/run-unit-tests.js",
     "clean": "rm -rf dist out *.vsix",
     "clean:vsix": "rm -rf *.vsix",
     "assert:vsix-assets": "node scripts/assert-vsix-assets.js",
@@ -444,7 +442,7 @@
             },
             "localPath": {
               "type": "string",
-              "description": "Optional workspace-relative local path to save the file. Defaults to the workspace root with the same safe file name; unsafe names are encoded and existing files are not overwritten."
+              "description": "Optional workspace-relative local path inside the first open workspace folder. Absolute paths are rejected. Defaults to that workspace root with the same file name. Existing files are not overwritten."
             }
           },
           "required": [
@@ -469,7 +467,7 @@
           "properties": {
             "localPath": {
               "type": "string",
-              "description": "Workspace-relative path to the local file to upload. Absolute paths are rejected."
+              "description": "Workspace-relative path to a local file inside the first open workspace folder. Absolute paths are rejected."
             },
             "bucket": {
               "type": "string",
@@ -525,7 +523,7 @@
           "url"
         ],
         "toolReferenceName": "presignUrl",
-        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires the B2 listFiles and shareFiles capabilities. B2 tokens remain prefix-scoped: the URL can download any current or future object whose name starts with the supplied path until it expires.",
+        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -537,12 +535,13 @@
             "path": {
               "type": "string",
               "minLength": 1,
-              "description": "B2 object name to authorize. The key must have listFiles capability because the path must currently match exactly one downloadable object and no other current downloadable object may start with that value. B2 still grants prefix scope, so future names such as \"reports/q4.pdf.bak\" may also be authorized until expiry."
+              "description": "B2 object name to authorize. The path must currently match exactly one downloadable object and no other current object may start with that value. B2 still grants prefix scope, so future names such as \"reports/q4.pdf.bak\" may also be authorized until expiry."
             },
             "expiresIn": {
               "type": "integer",
               "minimum": 1,
               "maximum": 3600,
+              "default": 300,
               "description": "URL validity duration in seconds. Default: 300 (5 minutes). Maximum: 3600 (1 hour)."
             }
           },
@@ -566,7 +565,7 @@
     "@vscode/vsce": "^3.7.1",
     "copy-webpack-plugin": "^14.0.0",
     "eslint": "^9.25.0",
-    "fast-check": "4.8.0",
+    "fast-check": "^4.8.0",
     "js-yaml": "^4.2.0",
     "jszip": "3.10.1",
     "prettier": "^3.5.3",

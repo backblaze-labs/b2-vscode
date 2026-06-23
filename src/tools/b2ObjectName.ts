@@ -6,15 +6,17 @@
 
 export function normalizeB2ObjectNameInput(filePath: string): string {
   if (!filePath) {
-    throw new Error("path must name a B2 object and must not be empty.");
+    throw new Error("path must not be empty or a folder prefix.");
   }
 
-  if (filePath.includes("\0")) {
-    throw new Error("path must not contain NUL bytes.");
+  if (/[\u0000-\u001F\u007F]/u.test(filePath)) {
+    throw new Error("path must not contain NUL or other control characters.");
   }
 
   if (filePath.endsWith("/")) {
-    throw new Error("path must name a B2 object, not a folder path ending in slash.");
+    throw new Error(
+      "path must not be empty or a folder prefix; folder path ending in slash is not allowed.",
+    );
   }
 
   return filePath;

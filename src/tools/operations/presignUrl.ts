@@ -73,7 +73,7 @@ function signalFromCancellationToken(token: CancellationToken | undefined): {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
-    throw (signal.reason ?? new DOMException("Aborted", "AbortError"));
+    throw signal.reason ?? new DOMException("Aborted", "AbortError");
   }
 }
 
