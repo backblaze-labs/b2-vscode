@@ -66,6 +66,25 @@ documented cap before writing them into the audit workspace.
 `npm-shrinkwrap.json` and `.npmrc` remain unsupported PR metadata because they
 can change the audited dependency tree or npm configuration.
 
+## Generated VSIX Diff Allowlist
+
+Dependency-maintenance PRs build base and head VSIX artifacts and compare
+generated runtime entries before publishing. Unexpected generated-code deltas
+fail unless they match an exact reviewed entry in
+`.github/vsix-generated-diff-allowlist.json`.
+
+The allowlist uses `version: 1` and a `reviewedDiffs` array. Each reviewed diff
+entry must include:
+
+- `diffSha256`: the fingerprint printed by `scripts/assert-dependency-vsix-diff.js`
+- `generatedEntries`: the exact generated entry diff printed by the guard,
+  including each path and its base/head byte counts and SHA-256 values
+- `reason`: a non-empty maintainer note explaining why the generated output
+  change is expected for the dependency update
+
+Add an entry only after reviewing the base and head generated runtime output
+and confirming the delta is expected for the dependency change under review.
+
 The gate fails on moderate, high, or critical advisories because tooling
 dependencies participate in building, packaging, and testing the VSIX.
 Low-severity advisories are triaged through Dependabot updates and can be

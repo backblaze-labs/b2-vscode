@@ -13,6 +13,12 @@ const yaml = require("js-yaml");
 const repoRoot = path.join(__dirname, "..");
 const workflowsDirectory = path.join(repoRoot, ".github", "workflows");
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
+const buildExtensionWorkflowPath = path.join(
+  repoRoot,
+  ".github",
+  "workflows",
+  "build-extension.yml",
+);
 const codeQualityWorkflowPath = path.join(repoRoot, ".github", "workflows", "code-quality.yml");
 const publisherPackagePath = path.join(
   repoRoot,
@@ -46,6 +52,10 @@ function readJsonFile(filePath) {
 
 function loadReleaseWorkflow() {
   return readYamlFile(workflowPath);
+}
+
+function loadBuildExtensionWorkflow() {
+  return readYamlFile(buildExtensionWorkflowPath);
 }
 
 function loadCodeQualityWorkflow() {
@@ -560,6 +570,28 @@ function assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, workflowN
   }
 }
 
+function assertSetupNodeCacheDisabled(workflowToCheck, workflowName = "workflow") {
+  for (const [jobName, job] of Object.entries(workflowToCheck.jobs ?? {})) {
+    for (const step of job.steps ?? []) {
+      if (!String(step.uses ?? "").startsWith("actions/setup-node@")) {
+        continue;
+      }
+      assert(
+        step.with?.cache === undefined &&
+          step.with?.["cache-dependency-path"] === undefined &&
+          step.with?.["package-manager-cache"] === false,
+        `${workflowName} ${jobName} step ${step.name ?? "<unnamed>"} must explicitly disable setup-node dependency caching.`,
+      );
+    }
+  }
+}
+
+function assertGithubWorkflowSetupNodeCacheDisabled(workflows = loadGithubWorkflows()) {
+  for (const { name, workflow: workflowToCheck } of workflows) {
+    assertSetupNodeCacheDisabled(workflowToCheck, name);
+  }
+}
+
 function assertGithubWorkflowInstallsIgnoreLifecycleScripts(workflows = loadGithubWorkflows()) {
   for (const { name, workflow: workflowToCheck } of workflows) {
     assertWorkflowInstallsIgnoreLifecycleScripts(workflowToCheck, name);
@@ -606,8 +638,11 @@ function assertCodeQualityRunsReleaseGuard(workflowToCheck = loadCodeQualityWork
   for (const eventName of ["push", "pull_request"]) {
     const paths = eventPaths(workflowToCheck, eventName);
     for (const requiredPath of [
+      ".github/workflows/build-extension.yml",
       ".github/workflows/release.yml",
       ".github/marketplace-publisher/**",
+      "scripts/assert-dependency-vsix-diff.js",
+      "scripts/assert-package-metadata.js",
       "scripts/assert-release-workflow.js",
     ]) {
       assert(
@@ -618,8 +653,147 @@ function assertCodeQualityRunsReleaseGuard(workflowToCheck = loadCodeQualityWork
   }
 }
 
+function assertPullRequestOnlyStep(step, stepName) {
+  assert(
+    String(step.if ?? "").includes("github.event_name == 'pull_request'"),
+    `${stepName} must only run for pull_request events.`,
+  );
+}
+
+function assertDependencyVsixDiffConditionalStep(step, stepName) {
+  assertPullRequestOnlyStep(step, stepName);
+  assert(
+    String(step.if ?? "").includes("steps.dependency-vsix-diff.outputs.should_check == 'true'"),
+    `${stepName} must only run when the dependency VSIX diff gate is required.`,
+  );
+}
+
+function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkflow()) {
+  const steps = jobSteps(workflowToCheck, "build");
+  const recordChangedFilesIndex = stepIndexInSteps(steps, "build", "Record changed files");
+  const evaluateGateIndex = stepIndexInSteps(steps, "build", "Evaluate dependency VSIX diff gate");
+  const checkoutBaseIndex = stepIndexInSteps(
+    steps,
+    "build",
+    "Checkout base source for artifact diff",
+  );
+  const packageHeadIndex = stepIndexInSteps(steps, "build", "Package VSIX");
+  const packageBaseIndex = stepIndexInSteps(
+    steps,
+    "build",
+    "Package base VSIX for dependency diff",
+  );
+  const gateIndex = stepIndexInSteps(
+    steps,
+    "build",
+    "Check dependency-only VSIX generated-code diff",
+  );
+
+  assert(
+    recordChangedFilesIndex < evaluateGateIndex && evaluateGateIndex < checkoutBaseIndex,
+    "dependency VSIX diff gate must decide before checking out base source.",
+  );
+  assert(
+    checkoutBaseIndex < packageBaseIndex && evaluateGateIndex < gateIndex,
+    "dependency VSIX diff gate must collect base source and decide before comparing artifacts.",
+  );
+  assert(
+    packageHeadIndex < gateIndex && packageBaseIndex < gateIndex,
+    "dependency VSIX diff gate must run after packaging both head and base VSIX artifacts.",
+  );
+
+  const checkoutBaseStep = steps[checkoutBaseIndex];
+  assertDependencyVsixDiffConditionalStep(
+    checkoutBaseStep,
+    "Checkout base source for artifact diff",
+  );
+  assert(
+    String(checkoutBaseStep.uses ?? "").startsWith("actions/checkout@"),
+    "base artifact checkout must use actions/checkout.",
+  );
+  assert(
+    normalizedGithubExpression(checkoutBaseStep.with?.ref) ===
+      "${{ github.event.pull_request.base.sha }}",
+    "base artifact checkout must use the pull request base SHA.",
+  );
+  assert(
+    checkoutBaseStep.with?.path === "base-source",
+    "base artifact checkout must use the base-source directory.",
+  );
+
+  const recordChangedFilesStep = steps[recordChangedFilesIndex];
+  assertPullRequestOnlyStep(recordChangedFilesStep, "Record changed files");
+  const recordChangedFilesRun = normalizedCommand(String(recordChangedFilesStep.run ?? ""));
+  assert(
+    recordChangedFilesRun.includes("git diff --name-only") &&
+      recordChangedFilesRun.includes("$RUNNER_TEMP/changed-files.txt"),
+    "dependency VSIX diff gate must record changed files from the PR base.",
+  );
+
+  const evaluateGateStep = steps[evaluateGateIndex];
+  assertPullRequestOnlyStep(evaluateGateStep, "Evaluate dependency VSIX diff gate");
+  assert(
+    evaluateGateStep.id === "dependency-vsix-diff",
+    "dependency VSIX diff gate decision step must expose id: dependency-vsix-diff.",
+  );
+  const evaluateGateRun = normalizedCommand(String(evaluateGateStep.run ?? ""));
+  assert(
+    evaluateGateRun.includes("shouldCheckDependencyVsixDiff") &&
+      evaluateGateRun.includes("GITHUB_OUTPUT") &&
+      evaluateGateRun.includes("should_check"),
+    "dependency VSIX diff gate must publish a should_check output from changed files.",
+  );
+
+  const packageBaseStep = steps[packageBaseIndex];
+  assertDependencyVsixDiffConditionalStep(packageBaseStep, "Package base VSIX for dependency diff");
+  assert(
+    packageBaseStep["working-directory"] === "base-source",
+    "base VSIX packaging must run in the base-source checkout.",
+  );
+  const packageBaseRun = normalizedCommand(String(packageBaseStep.run ?? ""));
+  assert(
+    /\bnpm\s+ci\b/.test(packageBaseRun) &&
+      packageBaseRun.includes("--ignore-scripts") &&
+      /\bnpm\s+run\s+vsix\b/.test(packageBaseRun),
+    "base VSIX packaging must install locked dependencies without lifecycle scripts before packaging.",
+  );
+
+  const gateStep = steps[gateIndex];
+  assertDependencyVsixDiffConditionalStep(
+    gateStep,
+    "Check dependency-only VSIX generated-code diff",
+  );
+  const gateRun = normalizedCommand(String(gateStep.run ?? ""));
+  assert(
+    gateRun.includes("scripts/assert-dependency-vsix-diff.js") &&
+      gateRun.includes("--base") &&
+      gateRun.includes("--head") &&
+      gateRun.includes("--changed-files") &&
+      gateRun.includes("$RUNNER_TEMP/changed-files.txt"),
+    "build-extension workflow must compare base and head generated VSIX entries for dependency PRs.",
+  );
+
+  for (const eventName of ["push", "pull_request"]) {
+    const paths = eventPaths(workflowToCheck, eventName);
+    for (const requiredPath of [
+      ".npmrc",
+      ".github/vsix-generated-diff-allowlist.json",
+      "npm-shrinkwrap.json",
+      "package-lock.json",
+      "package.json",
+      "scripts/assert-dependency-vsix-diff.js",
+    ]) {
+      assert(
+        paths.includes(requiredPath),
+        `build-extension ${eventName} paths must include ${requiredPath}.`,
+      );
+    }
+  }
+}
+
 function main() {
   const workflow = loadReleaseWorkflow();
+  const buildExtensionWorkflow = loadBuildExtensionWorkflow();
   const codeQualityWorkflow = loadCodeQualityWorkflow();
   const marketplacePublisherPackage = loadMarketplacePublisherPackage();
   const marketplacePublisherLock = loadMarketplacePublisherLock();
@@ -653,7 +827,9 @@ function main() {
   assertArtifactResolverUsage(workflow);
   assertReleaseInstallsIgnoreLifecycleScripts(workflow);
   assertPublishPreflightIgnoresLifecycleScripts(workflow);
+  assertDependencyVsixDiffGate(buildExtensionWorkflow);
   assertCodeQualityRunsReleaseGuard(codeQualityWorkflow);
+  assertGithubWorkflowSetupNodeCacheDisabled();
   assertGithubWorkflowInstallsIgnoreLifecycleScripts();
 }
 
@@ -680,7 +856,11 @@ module.exports = {
   assertReleasePublishGate,
   assertWorkflowInstallsIgnoreLifecycleScripts,
   assertGithubWorkflowInstallsIgnoreLifecycleScripts,
+  assertGithubWorkflowSetupNodeCacheDisabled,
   assertCodeQualityRunsReleaseGuard,
+  assertDependencyVsixDiffGate,
+  assertSetupNodeCacheDisabled,
+  loadBuildExtensionWorkflow,
   loadReleaseWorkflow,
   main,
   marketplaceSecretPattern,

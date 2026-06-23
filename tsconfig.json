@@ -7,6 +7,9 @@
     "rootDir": "src",
     "outDir": "out",
     "strict": true,
+    // TS 6 deprecates baseUrl/path aliases and node10 module resolution.
+    // Remove this after imports migrate to package imports or another supported resolver.
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@/services/*": ["src/services/*"],
@@ -16,7 +19,7 @@
       "@/ui/*": ["src/ui/*"],
       "@/tools/*": ["src/tools/*"]
     },
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
