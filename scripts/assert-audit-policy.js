@@ -164,8 +164,10 @@ function assertCodeOwnerProtection() {
     "/scripts/pr-audit-metadata.js",
     "/scripts/assert-audit-policy.js",
     "/scripts/assert-audit-workflow.js",
+    "/scripts/assert-package-metadata.js",
     "/scripts/assert-ignore-scripts-install.js",
     "/scripts/assert-audit-gate-fixture.js",
+    "/.github/vsix-generated-diff-allowlist.json",
     "/.github/workflows/pr-tests.yml",
   ]) {
     if (!protectedPaths.has(requiredPath)) {

@@ -12,8 +12,10 @@
 /scripts/pr-audit-metadata.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-policy.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-workflow.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/scripts/assert-package-metadata.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-ignore-scripts-install.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /scripts/assert-audit-gate-fixture.js @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/.github/vsix-generated-diff-allowlist.json @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/build-extension.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/pr-tests.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/test.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav

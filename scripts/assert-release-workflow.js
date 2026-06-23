@@ -642,6 +642,7 @@ function assertCodeQualityRunsReleaseGuard(workflowToCheck = loadCodeQualityWork
       ".github/workflows/release.yml",
       ".github/marketplace-publisher/**",
       "scripts/assert-dependency-vsix-diff.js",
+      "scripts/assert-package-metadata.js",
       "scripts/assert-release-workflow.js",
     ]) {
       assert(
