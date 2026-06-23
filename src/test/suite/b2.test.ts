@@ -3378,6 +3378,59 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("skips workspace destination directories swapped to symlinks during open", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-open-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-workspace-destination-open-outside-"),
+    );
+    const nested = path.join(dir, "nested");
+    const outsideTemp = path.join(
+      outsideDir,
+      ".b2-cross-device-open.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const probeLink = path.join(dir, "probe");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(outsideTemp, "outside");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(outsideTemp, oldTime, oldTime);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpendir = fs.promises.opendir;
+    const mutablePromises = fs.promises as unknown as { opendir: typeof fs.promises.opendir };
+    let swapped = false;
+
+    mutablePromises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(nested)) {
+        fs.rmSync(nested, { recursive: true, force: true });
+        swapped = createDirectorySymlink(outsideDir, nested);
+        if (!swapped) {
+          throw new Error("Directory symlink creation became unavailable.");
+        }
+      }
+      return originalOpendir(...args);
+    }) as typeof fs.promises.opendir;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTemp, "utf8"), "outside");
+    } finally {
+      mutablePromises.opendir = originalOpendir;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("skips control directories during workspace destination cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-control-cleanup-"));
     const gitDir = path.join(dir, ".git");

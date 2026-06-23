@@ -638,14 +638,22 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
     }
 
     const directory = stack.pop() as string;
-    let dir: fs.Dir;
+    let dir: fs.Dir | undefined;
     try {
       const directoryStats = await fs.promises.lstat(directory);
       if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
         continue;
       }
       dir = await fs.promises.opendir(directory);
+      const openedDirectoryStats = await fs.promises.lstat(directory);
+      if (openedDirectoryStats.isSymbolicLink() || !openedDirectoryStats.isDirectory()) {
+        await closeDirectoryBestEffort(dir);
+        continue;
+      }
     } catch (error) {
+      if (dir) {
+        await closeDirectoryBestEffort(dir);
+      }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
         logError(
@@ -653,6 +661,9 @@ export async function cleanupWorkspaceDestinationTempFiles(options: {
           error,
         );
       }
+      continue;
+    }
+    if (!dir) {
       continue;
     }
 
