@@ -106,18 +106,6 @@ function rejectUrlDotSegments(parameterName: string, value: string): void {
   }
 }
 
-export function buildPresignedDownloadUrl(
-  downloadUrl: string,
-  bucketName: string,
-  filePath: string,
-  authorizationToken: string,
-): string {
-  rejectUrlDotSegments("bucket", bucketName);
-  rejectUrlDotSegments("path", filePath);
-
-  return buildB2DownloadUrl(downloadUrl, bucketName, filePath, authorizationToken);
-}
-
 function signalFromCancellationToken(token: CancellationToken | undefined): {
   readonly signal: AbortSignal | undefined;
   dispose(): void;

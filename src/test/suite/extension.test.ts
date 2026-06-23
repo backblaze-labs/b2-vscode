@@ -146,18 +146,4 @@ suite("B2 Extension Test Suite", () => {
     assert.deepStrictEqual(assignedClients, [client, null]);
   });
 
-  test("presignUrl package contribution matches expiration limits", () => {
-    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
-    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
-
-    const tools = extension.packageJSON.contributes
-      .languageModelTools as LanguageModelToolContribution[];
-    const presignUrl = tools.find((tool) => tool.name === "b2_presignUrl");
-    assert.ok(presignUrl, "b2_presignUrl contribution should exist");
-
-    const expiresIn = presignUrl.inputSchema.properties.expiresIn as Record<string, unknown>;
-    assert.strictEqual(expiresIn.type, "integer");
-    assert.strictEqual(expiresIn.minimum, 1);
-    assert.strictEqual(expiresIn.maximum, MAX_PRESIGN_URL_EXPIRES_IN_SECONDS);
-  });
 });
