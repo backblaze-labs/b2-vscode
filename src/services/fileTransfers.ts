@@ -763,11 +763,10 @@ async function copyIntoPlaceNoFollow(
       await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
     }
     if (options.overwrite === false) {
-      await publishNewFileNoOverwrite(
-        destinationTempPath,
-        destinationPath,
-        allowedRootDirectory === undefined,
-      );
+      await publishNewFileNoOverwrite(destinationTempPath, destinationPath, {
+        allowedRootDirectory,
+        preferHardlink: allowedRootDirectory === undefined,
+      });
       await removeTempFile(destinationTempPath);
     } else {
       await renameIntoPlace(destinationTempPath, destinationPath, options);
@@ -785,9 +784,24 @@ async function copyIntoPlaceNoFollow(
 async function publishNewFileNoOverwrite(
   sourcePath: string,
   destinationPath: string,
-  preferHardlink: boolean,
+  options: {
+    readonly allowedRootDirectory?: string;
+    readonly preferHardlink: boolean;
+  },
 ): Promise<void> {
-  if (preferHardlink) {
+  if (options.allowedRootDirectory !== undefined) {
+    await writeNewFileNoFollowWithinRoot(
+      options.allowedRootDirectory,
+      destinationPath,
+      fs.createReadStream(sourcePath),
+      {
+        label: "download target",
+      },
+    );
+    return;
+  }
+
+  if (options.preferHardlink) {
     try {
       await fs.promises.link(sourcePath, destinationPath);
       return;

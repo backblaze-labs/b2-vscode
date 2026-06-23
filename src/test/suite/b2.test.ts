@@ -710,6 +710,72 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects destination symlink swaps before root-bound no-overwrite publish", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-file-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-file-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    fs.writeFileSync(outsideTarget, "outside");
+    const symlinkSupported = createFileSymlink(outsideTarget, probeLink);
+    const originalOpen = fs.promises.open;
+    const mutablePromises = fs.promises as unknown as {
+      open: typeof fs.promises.open;
+    };
+    let destinationTempOpened = false;
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (
+        destinationTempOpened &&
+        !swapped &&
+        path.resolve(openedPath) === path.resolve(destination)
+      ) {
+        swapped = createFileSymlink(outsideTarget, destination);
+        if (!swapped) {
+          throw new Error("File symlink creation became unavailable.");
+        }
+      }
+      const handle = await originalOpen(...args);
+      if (path.basename(openedPath).startsWith(".b2-cross-device-payload.bin-")) {
+        destinationTempOpened = true;
+      }
+      return handle;
+    }) as typeof fs.promises.open;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /EEXIST|ELOOP|file already exists|symbolic link|symlink/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTarget, "utf8"), "outside");
+    } finally {
+      mutablePromises.open = originalOpen;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("does not create workspace transfer temp dir after parent swap", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-race-"));
     const outsideDir = fs.mkdtempSync(
@@ -813,11 +879,24 @@ suite("B2 transfer helpers", () => {
     const destination = path.join(dir, "nested", "file.bin");
     const existing = path.join(dir, "existing.bin");
     const originalLink = fs.promises.link;
+    const originalCopyFile = fs.promises.copyFile;
     let linkCalls = 0;
+    let destinationCopyFileCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
     fs.promises.link = async (): Promise<void> => {
       linkCalls += 1;
       throw new Error("root-bound downloads must not hardlink into place");
+    };
+    fs.promises.copyFile = async (
+      sourcePath: fs.PathLike,
+      destinationPath: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      if (path.resolve(String(destinationPath)) === path.resolve(destination)) {
+        destinationCopyFileCalls += 1;
+        throw new Error("root-bound downloads must not copyFile into place");
+      }
+      await originalCopyFile(sourcePath, destinationPath, mode);
     };
 
     try {
@@ -834,6 +913,7 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(size, 3);
       assert.strictEqual(linkCalls, 0);
+      assert.strictEqual(destinationCopyFileCalls, 0);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -862,6 +942,7 @@ suite("B2 transfer helpers", () => {
       assert.deepStrictEqual([...fs.readFileSync(existing)], [1]);
     } finally {
       fs.promises.link = originalLink;
+      fs.promises.copyFile = originalCopyFile;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
