@@ -493,4 +493,75 @@ suite("Release workflow guard assertions", () => {
       /generated-code diff/i,
     );
   });
+
+  test("rejects base artifact diff steps that are not checkout actions", () => {
+    const guard = loadReleaseWorkflowGuard();
+    const paths = [
+      ".github/vsix-generated-diff-allowlist.json",
+      "package-lock.json",
+      "package.json",
+      "scripts/assert-dependency-vsix-diff.js",
+    ];
+
+    assert.throws(
+      () =>
+        guard.assertDependencyVsixDiffGate({
+          on: {
+            push: { paths },
+            pull_request: { paths },
+          },
+          jobs: {
+            build: {
+              steps: [
+                {
+                  name: "Record changed files",
+                  if: "github.event_name == 'pull_request'",
+                  run: 'git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+                },
+                {
+                  name: "Evaluate dependency VSIX diff gate",
+                  id: "dependency-vsix-diff",
+                  if: "github.event_name == 'pull_request'",
+                  run: [
+                    'const { shouldCheckDependencyVsixDiff } = require("./scripts/assert-dependency-vsix-diff.js");',
+                    "shouldCheckDependencyVsixDiff([]);",
+                    'fs.appendFileSync(process.env.GITHUB_OUTPUT, "should_check=true\\n");',
+                  ].join("\n"),
+                },
+                {
+                  name: "Checkout base source for artifact diff",
+                  if: "github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'",
+                  run: "echo not a checkout action",
+                  with: {
+                    ref: "${{ github.event.pull_request.base.sha }}",
+                    path: "base-source",
+                  },
+                },
+                {
+                  name: "Package VSIX",
+                  run: "npm run vsix",
+                },
+                {
+                  name: "Package base VSIX for dependency diff",
+                  if: "github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'",
+                  "working-directory": "base-source",
+                  run: "npm ci --ignore-scripts\nnpm run vsix",
+                },
+                {
+                  name: "Check dependency-only VSIX generated-code diff",
+                  if: "github.event_name == 'pull_request' && steps.dependency-vsix-diff.outputs.should_check == 'true'",
+                  run: [
+                    "node scripts/assert-dependency-vsix-diff.js",
+                    "--base base.vsix",
+                    "--head head.vsix",
+                    '--changed-files "$RUNNER_TEMP/changed-files.txt"',
+                  ].join(" "),
+                },
+              ],
+            },
+          },
+        }),
+      /actions\/checkout/i,
+    );
+  });
 });

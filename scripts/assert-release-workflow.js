@@ -708,6 +708,10 @@ function assertDependencyVsixDiffGate(workflowToCheck = loadBuildExtensionWorkfl
     "Checkout base source for artifact diff",
   );
   assert(
+    String(checkoutBaseStep.uses ?? "").startsWith("actions/checkout@"),
+    "base artifact checkout must use actions/checkout.",
+  );
+  assert(
     normalizedGithubExpression(checkoutBaseStep.with?.ref) ===
       "${{ github.event.pull_request.base.sha }}",
     "base artifact checkout must use the pull request base SHA.",
