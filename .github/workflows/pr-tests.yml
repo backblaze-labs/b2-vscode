@@ -1,18 +1,8 @@
-name: Documentation
+name: PR Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/**"
-      - "typedoc.json"
-      - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "typedoc.json"
-      - ".github/workflows/docs.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -22,14 +12,16 @@ permissions:
   contents: read
 
 jobs:
-  docs:
-    name: Generate API Docs
+  vscode-tests:
+    name: VS Code Extension Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          path: source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -37,15 +29,22 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install dependencies
+      - name: Install dependencies without lifecycle scripts
+        timeout-minutes: 10
+        working-directory: source
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
-      - name: Generate documentation
-        run: npm run docs
+      - name: Compile extension
+        timeout-minutes: 10
+        working-directory: source
+        run: npm run compile
 
-      - name: Upload docs artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: api-docs
-          path: docs/api/
-          retention-days: 14
+      - name: Lint extension
+        timeout-minutes: 10
+        working-directory: source
+        run: npm run lint
+
+      - name: Run VS Code tests with discovery guard
+        timeout-minutes: 20
+        working-directory: source
+        run: xvfb-run -a npm test

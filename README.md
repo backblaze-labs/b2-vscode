@@ -64,7 +64,7 @@ When GitHub Copilot is available, the extension registers language model tools:
 - `listBuckets` — list all accessible buckets
 - `listFiles` — list files in a bucket/folder
 - `getFileInfo` — get metadata for a specific file
-- `downloadFile` — download a file to the first open workspace folder by default, or to a workspace-relative `localPath`; existing files are not overwritten
+- `downloadFile` — download a file to the first open workspace folder by default, or to a workspace-relative `localPath` whose filename segments are sanitized once for portable writes; existing files are not overwritten
 - `uploadFile` — upload a workspace-relative local file from the first open workspace folder to a bucket
 - `deleteFile` — delete a file by name
 - `presignUrl` — generate a time-limited prefix download URL after a direct B2 list-file-names verification confirms the prefix currently names one file and no current same-prefix sibling files
@@ -97,6 +97,9 @@ npm run check
 # Run Node unit/property tests and VS Code extension tests
 npm test
 
+# Audit the full dependency tree using audit-policy.jsonc
+npm run audit:ci
+
 # Fix formatting and lint issues
 npm run check:fix
 
@@ -119,6 +122,9 @@ Expected test output includes the discovery guard and a nonzero Mocha summary, f
 `passing` count. If the compiled test files are missing, `npm test` exits nonzero instead of
 reporting `0 passing`; Mocha is also configured to fail zero-test and pending-test runs.
 
+See [SECURITY.md](SECURITY.md) for the dependency audit policy and accepted
+advisory process.
+
 ## Architecture
 
 ```
@@ -130,8 +136,13 @@ src/
 ├── commands/index.ts         # Command registrations
 ├── services/
 │   ├── authService.ts        # Credential resolution (4-tier)
-│   ├── b2.ts                 # B2 SDK client factory + stream helper
-│   └── tempFileManager.ts    # Downloaded file cache
+│   ├── b2.ts                 # B2 SDK client factory
+│   ├── fileTransfers.ts      # Upload/download transfer facade
+│   ├── pathSafety.ts         # Workspace and filesystem path containment
+│   ├── tempFileManager.ts    # Downloaded file cache
+│   ├── transferTempFiles.ts  # Transfer temp files and atomic destination moves
+│   ├── transferTimeout.ts    # Transfer stall timeout orchestration
+│   └── transferProgress.ts   # VS Code transfer progress/cancellation
 ├── providers/
 │   └── b2TreeProvider.ts     # Tree data provider
 ├── models/
@@ -143,8 +154,10 @@ src/
 │   ├── b2ToolAdapter.ts
 │   ├── definitions/          # Tool schemas
 │   └── operations/           # Tool implementations
-└── ui/
-    └── statusBar.ts          # Status bar integration
+├── ui/
+│   └── statusBar.ts          # Status bar integration
+└── utils/
+    └── humanSize.ts          # Human-readable byte formatting
 ```
 
 Transfer orchestration is consolidated in `fileTransfers.ts` so timeout handling, temp-file

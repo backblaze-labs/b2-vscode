@@ -80,7 +80,7 @@ export interface EnsureRealDirectoryOptions {
 
 export function assertRealDirectory(stats: fs.Stats, directory: string, label: string): void {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(
+    throw new UnsafePathError(
       `${label} must be a real directory, not a symlink or special file: ${directory}`,
     );
   }
@@ -163,13 +163,17 @@ function assertPrivateDirectoryStats(stats: fs.Stats, directory: string, label: 
 
   if ((stats.mode & 0o077) !== 0) {
     throw new UnsafePathError(
-      `${label} must not be readable or writable by other users: ${directory}`,
+      `${label} must not be accessible by group or other users: ${directory}`,
     );
   }
 }
 
 export async function assertPrivateDirectory(directory: string, label: string): Promise<void> {
   assertPrivateDirectoryStats(await fs.promises.lstat(directory), directory, label);
+}
+
+export function assertPrivateDirectorySync(directory: string, label: string): void {
+  assertPrivateDirectoryStats(fs.lstatSync(directory), directory, label);
 }
 
 export async function ensurePrivateDirectory(
@@ -183,10 +187,12 @@ export async function ensurePrivateDirectory(
   });
 
   let chmodFailed = false;
-  try {
-    await fs.promises.chmod(directory, options.mode ?? 0o700);
-  } catch {
-    chmodFailed = true;
+  if (process.platform !== "win32") {
+    try {
+      await fs.promises.chmod(directory, options.mode ?? 0o700);
+    } catch {
+      chmodFailed = true;
+    }
   }
 
   try {
@@ -210,10 +216,12 @@ export function ensurePrivateDirectorySync(
   });
 
   let chmodFailed = false;
-  try {
-    fs.chmodSync(directory, options.mode ?? 0o700);
-  } catch {
-    chmodFailed = true;
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(directory, options.mode ?? 0o700);
+    } catch {
+      chmodFailed = true;
+    }
   }
 
   try {
@@ -235,7 +243,7 @@ export async function ensureContainedDirectoryPath(
   const root = path.resolve(rootPath);
   const target = path.resolve(targetDirectory);
   if (!isPathInsideOrEqual(root, target)) {
-    throw new Error(`${label} resolves outside the allowed root: ${targetDirectory}`);
+    throw new UnsafePathError(`${label} resolves outside the allowed root: ${targetDirectory}`);
   }
 
   const rootRealPath = await fs.promises.realpath(rootPath);
@@ -246,7 +254,7 @@ export async function ensureContainedDirectoryPath(
     await ensureRealDirectory(current, label, options);
     const currentRealPath = await fs.promises.realpath(current);
     if (!isPathInsideOrEqual(rootRealPath, currentRealPath)) {
-      throw new Error(`${label} resolves outside the allowed root: ${current}`);
+      throw new UnsafePathError(`${label} resolves outside the allowed root: ${current}`);
     }
   }
 }
@@ -450,6 +458,13 @@ async function nearestExistingPath(candidatePath: string): Promise<ExistingPath>
 
 export function resolveInsideRoot(rootPath: string, ...segments: string[]): string {
   const root = path.resolve(rootPath);
+  for (const segment of segments) {
+    assertNoNul(segment, "Path segment");
+    if (isAbsolutePortable(segment)) {
+      throw new UnsafePathError("Path segment must be relative to the allowed root.");
+    }
+  }
+
   const resolved = path.resolve(root, ...segments);
 
   if (!isPathInsideOrEqual(root, resolved)) {
@@ -471,6 +486,13 @@ export async function assertSafeWritePath(
   const candidate = path.resolve(candidatePath);
   if (!isPathInsideOrEqual(root, candidate)) {
     throw new UnsafePathError(`${label} resolves outside the allowed root.`);
+  }
+
+  const controlDirectory = findWorkspaceControlDirectory(root, candidate);
+  if (controlDirectory) {
+    throw new UnsafePathError(
+      `${label} must not target workspace control directory ${controlDirectory}.`,
+    );
   }
 
   const realRoot = await fs.promises.realpath(root);
@@ -589,6 +611,92 @@ export function findWorkspaceSecretPath(
     }
   }
   return undefined;
+}
+
+export async function assertSafeFileReadPath(
+  workspaceRoot: string,
+  targetPath: string,
+): Promise<void> {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(targetPath);
+
+  if (!isPathInsideOrEqual(resolvedRoot, resolvedTarget)) {
+    throw new UnsafePathError("localPath resolves outside the workspace.");
+  }
+
+  const lexicalControlDirectory = findWorkspaceControlDirectory(resolvedRoot, resolvedTarget);
+  if (lexicalControlDirectory) {
+    throw new UnsafePathError(
+      `localPath must not target workspace control directory ${lexicalControlDirectory}.`,
+    );
+  }
+
+  const [rootRealPath, targetRealPath] = await Promise.all([
+    fs.promises.realpath(resolvedRoot),
+    fs.promises.realpath(resolvedTarget),
+  ]);
+  if (!isPathInsideOrEqual(rootRealPath, targetRealPath)) {
+    throw new UnsafePathError("localPath resolves outside the open workspace.");
+  }
+
+  const realControlDirectory = findWorkspaceControlDirectory(rootRealPath, targetRealPath);
+  if (realControlDirectory) {
+    throw new UnsafePathError(
+      `localPath must not target workspace control directory ${realControlDirectory}.`,
+    );
+  }
+
+  const stats = await fs.promises.stat(resolvedTarget);
+  if (!stats.isFile()) {
+    throw new UnsafePathError(`localPath must target a regular file: ${resolvedTarget}`);
+  }
+}
+
+export interface ResolveWorkspaceFilePathOptions {
+  readonly access: "read" | "write-new";
+  readonly label?: string;
+  readonly createParentDirectories?: boolean;
+}
+
+async function assertFileDoesNotExist(filePath: string): Promise<void> {
+  try {
+    await fs.promises.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  throw new UnsafePathError(`localPath refuses to overwrite existing workspace file: ${filePath}`);
+}
+
+export async function resolveWorkspaceFilePath(
+  workspaceRoot: string,
+  relativePath: string,
+  options: ResolveWorkspaceFilePathOptions,
+): Promise<string> {
+  const label = options.label ?? "localPath";
+  const resolvedPath = resolveContainedRelativePath(workspaceRoot, relativePath, label);
+
+  if (options.access === "read") {
+    await assertSafeFileReadPath(workspaceRoot, resolvedPath);
+    return resolvedPath;
+  }
+
+  await assertSafeFileWritePath(workspaceRoot, resolvedPath, label);
+  await assertFileDoesNotExist(resolvedPath);
+  if (options.createParentDirectories !== false) {
+    await ensureContainedDirectoryPath(
+      workspaceRoot,
+      path.dirname(resolvedPath),
+      "Workspace localPath directory",
+      { recursive: true },
+    );
+    await assertSafeFileWritePath(workspaceRoot, resolvedPath, label);
+    await assertFileDoesNotExist(resolvedPath);
+  }
+  return resolvedPath;
 }
 
 export function resolveContainedRelativePath(

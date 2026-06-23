@@ -11,7 +11,6 @@
 
 import * as vscode from "vscode";
 import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
-import { BufferSource } from "@backblaze-labs/b2-sdk";
 import type { AuthService, B2Credentials } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
 import type { TempFileManager } from "../services/tempFileManager";
@@ -24,7 +23,11 @@ import {
   createTransferProgressReporter,
   withCancellableTransferProgress,
 } from "../services/transferProgress";
-import { withTransferStallTimeout } from "../services/fileTransfers";
+import {
+  type TransferTimeoutOptions,
+  uploadEmptyObject,
+  withTransferStallTimeout,
+} from "../services/fileTransfers";
 import {
   B2MutationTimeoutError,
   B2PartialFailureError,
@@ -130,6 +133,22 @@ function validateBucketName(bucketName: string): string | undefined {
   }
   if (!/^[a-zA-Z0-9-]+$/.test(bucketName)) {
     return "Bucket name can only contain letters, digits, and hyphens";
+  }
+  return undefined;
+}
+
+function validateFolderName(folderName: string): string | undefined {
+  if (!folderName) {
+    return "Folder name is required";
+  }
+  if (folderName.includes("/") || folderName.includes("\\")) {
+    return "Folder name cannot contain path separators";
+  }
+  if (/[\0-\x1f\x7f]/u.test(folderName)) {
+    return "Folder name cannot contain control characters";
+  }
+  if (folderName === "." || folderName === "..") {
+    return "Folder name cannot be '.' or '..'";
   }
   return undefined;
 }
@@ -246,6 +265,11 @@ export interface OpenFileCommandServices {
   getClient: () => B2Client | null;
 }
 
+export interface CreateFolderCommandServices {
+  treeProvider: Pick<B2TreeProvider, "refresh">;
+  getClient: () => B2Client | null;
+}
+
 export async function openFileCommand(
   item: FileTreeItem,
   services: OpenFileCommandServices,
@@ -344,6 +368,52 @@ export async function authenticateCommand(services: CommandServices): Promise<vo
       isAuthenticated: false,
       error: formatB2UserMessage(error),
     });
+  }
+}
+
+export async function createFolderCommand(
+  item: BucketTreeItem | FolderTreeItem | undefined,
+  services: CreateFolderCommandServices,
+  options: TransferTimeoutOptions = {},
+): Promise<void> {
+  const { treeProvider, getClient } = services;
+  if (!getClient()) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showErrorMessage("B2: Select a bucket or folder first.");
+    return;
+  }
+
+  const folderName = await vscode.window.showInputBox({
+    title: "Create Folder",
+    prompt: `Create a new folder inside "${item instanceof BucketTreeItem ? item.bucketName : item.prefix}"`,
+    placeHolder: "my-folder",
+    ignoreFocusOut: true,
+    validateInput: validateFolderName,
+  });
+  if (!folderName) {
+    return;
+  }
+  const folderNameValidation = validateFolderName(folderName);
+  if (folderNameValidation) {
+    vscode.window.showErrorMessage(`B2: ${folderNameValidation}`);
+    return;
+  }
+
+  const prefix = item instanceof FolderTreeItem ? item.prefix : "";
+  const fullPath = `${prefix}${folderName}/.bzEmpty`;
+
+  try {
+    await uploadEmptyObject(item.bucket, fullPath, {
+      ...options,
+      contentType: "application/x-bzEmpty",
+    });
+    treeProvider.refresh();
+    vscode.window.showInformationMessage(`B2: Folder "${folderName}" created.`);
+  } catch (error) {
+    showCommandError("B2: Failed to create folder", error);
   }
 }
 
@@ -583,50 +653,8 @@ export function registerCommands(services: CommandServices): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "b2.createFolder",
-      async (item?: BucketTreeItem | FolderTreeItem) => {
-        if (!getClient()) {
-          vscode.window.showErrorMessage("B2: Not authenticated.");
-          return;
-        }
-        if (!item) {
-          vscode.window.showErrorMessage("B2: Select a bucket or folder first.");
-          return;
-        }
-
-        const folderName = await vscode.window.showInputBox({
-          title: "Create Folder",
-          prompt: `Create a new folder inside "${item instanceof BucketTreeItem ? item.bucketName : item.prefix}"`,
-          placeHolder: "my-folder",
-          ignoreFocusOut: true,
-          validateInput: (value) => {
-            if (!value) {
-              return "Folder name is required";
-            }
-            if (value.includes("/")) {
-              return "Folder name cannot contain '/'";
-            }
-            return undefined;
-          },
-        });
-        if (!folderName) {
-          return;
-        }
-
-        const prefix = item instanceof FolderTreeItem ? item.prefix : "";
-        const fullPath = `${prefix}${folderName}/.bzEmpty`;
-
-        try {
-          await item.bucket.upload({
-            fileName: fullPath,
-            source: new BufferSource(new Uint8Array(0)),
-            contentType: "application/x-bzEmpty",
-          });
-          treeProvider.refresh();
-          vscode.window.showInformationMessage(`B2: Folder "${folderName}" created.`);
-        } catch (error) {
-          showCommandError("B2: Failed to create folder", error);
-        }
-      },
+      async (item?: BucketTreeItem | FolderTreeItem) =>
+        createFolderCommand(item, { treeProvider, getClient }),
     ),
   );
 

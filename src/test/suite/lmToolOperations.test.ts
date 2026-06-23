@@ -31,6 +31,7 @@ import {
 import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
 import { tempDir } from "../../testSupport/tempDir";
 import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/workspace";
+import { sanitizeLocalPathSegment } from "../../utils/localPaths";
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";
@@ -116,21 +117,23 @@ suite("B2 LM tool operations with simulator", () => {
     }
   });
 
-  test("uploadFile accepts absolute paths inside the extension tools temp root", async () => {
+  test("uploadFile treats backslashes as workspace-relative separators", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, `upload-${Date.now()}.txt`);
+    const localPath = path.join(workspaceRoot, "nested", "source.txt");
     const { client } = await createSimulatorBucket();
 
     try {
-      fs.mkdirSync(workspaceRoot, { recursive: true });
-      fs.mkdirSync(TOOLS_TEMP_ROOT, { recursive: true, mode: 0o700 });
-      fs.chmodSync(TOOLS_TEMP_ROOT, 0o700);
-      fs.writeFileSync(toolsSourcePath, CONTENT);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, CONTENT);
 
       const uploaded = await withWorkspaceFolder(workspaceRoot, () =>
         uploadFileOperation.execute(
-          { localPath: toolsSourcePath, bucket: SIMULATOR_BUCKET_NAME, remotePath: REMOTE_PATH },
+          {
+            localPath: String.raw`nested\source.txt`,
+            bucket: SIMULATOR_BUCKET_NAME,
+            remotePath: REMOTE_PATH,
+          },
           { getClient: () => client },
         ),
       );
@@ -138,7 +141,37 @@ suite("B2 LM tool operations with simulator", () => {
       assert.strictEqual(uploaded.fileName, REMOTE_PATH);
       assert.strictEqual(uploaded.size, Buffer.byteLength(CONTENT));
     } finally {
-      fs.rmSync(toolsSourcePath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploadFile rejects files under another tools temp session", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, "other-session", "secret.txt");
+    const { client } = await createSimulatorBucket();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+      fs.mkdirSync(path.dirname(toolsSourcePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(toolsSourcePath, CONTENT);
+
+      await withWorkspaceFolder(workspaceRoot, () =>
+        assert.rejects(
+          () =>
+            uploadFileOperation.execute(
+              {
+                localPath: toolsSourcePath,
+                bucket: SIMULATOR_BUCKET_NAME,
+                remotePath: REMOTE_PATH,
+              },
+              { getClient: () => client },
+            ),
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
+        ),
+      );
+    } finally {
+      fs.rmSync(TOOLS_TEMP_ROOT, { recursive: true, force: true });
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -162,7 +195,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath, bucket: SIMULATOR_BUCKET_NAME, remotePath: "loot/secret.txt" },
               { getClient: () => client },
             ),
-          /localPath must stay within the current workspace or extension tools temporary directory/i,
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
         ),
       );
     } finally {
@@ -187,7 +220,7 @@ suite("B2 LM tool operations with simulator", () => {
               { localPath: "../secret.txt", bucket: SIMULATOR_BUCKET_NAME },
               { getClient: () => client },
             ),
-          /localPath must stay within the current workspace/i,
+          /localPath must (stay within the current workspace|not contain path traversal segments)/i,
         ),
       );
     } finally {
@@ -390,6 +423,43 @@ suite("B2 LM tool operations with simulator", () => {
       assert.strictEqual(fs.readFileSync(downloadPath, "utf8"), CONTENT);
     } finally {
       fs.rmSync(downloadPath, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile does not re-encode resolved localPath segments", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const { extras } = await createUploadedToolFixture();
+    const encodedLikeSegment = "__b2_existing.txt";
+    const expectedSegment = sanitizeLocalPathSegment(encodedLikeSegment);
+    const doubleEncodedSegment = sanitizeLocalPathSegment(expectedSegment);
+    const expectedRelativePath = path.join("downloads", expectedSegment);
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: path.join("downloads", encodedLikeSegment),
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, expectedRelativePath);
+      assert.strictEqual(
+        fs.readFileSync(path.join(workspaceRoot, expectedRelativePath), "utf8"),
+        CONTENT,
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(workspaceRoot, "downloads", doubleEncodedSegment)),
+        false,
+      );
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -742,6 +812,33 @@ suite("B2 LM tool operations with simulator", () => {
       );
 
       assert.strictEqual(downloaded.localPath, "..notes.txt");
+      assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("downloadFile normalizes dot segments in relative localPath", async () => {
+    const dir = tempDir();
+    const workspaceRoot = path.join(dir, "workspace");
+    const expectedPath = path.join(workspaceRoot, "downloads", "payload.txt");
+    const { extras } = await createUploadedToolFixture();
+
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+
+      const downloaded = await withWorkspaceFolder(workspaceRoot, () =>
+        downloadFileOperation.execute(
+          {
+            bucket: SIMULATOR_BUCKET_NAME,
+            path: REMOTE_PATH,
+            localPath: "./downloads/./payload.txt",
+          },
+          extras,
+        ),
+      );
+
+      assert.strictEqual(downloaded.localPath, path.join("downloads", "payload.txt"));
       assert.strictEqual(fs.readFileSync(expectedPath, "utf8"), CONTENT);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

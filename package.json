@@ -35,7 +35,8 @@
     "check:fix": "npm run format && npm run lint:fix && npm run type-check",
     "check:release-workflow": "node scripts/assert-release-workflow.js",
     "type-check": "tsc --noEmit",
-    "audit:release": "npm audit --omit=dev --audit-level=moderate",
+    "audit:ci": "node scripts/run-npm-audit.js",
+    "audit:release": "npm run audit:ci",
     "pretest": "npm run test:unit && npm run compile && npm run compile:bundled-smoke && npm run test:discovery-guard:unit && npm run lint",
     "test": "node scripts/test-discovery-guard.js && vscode-test",
     "pretest:unit": "npm run compile-tests",
@@ -444,7 +445,7 @@
             },
             "localPath": {
               "type": "string",
-              "description": "Optional local file path. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected."
+              "description": "Optional local file path. Relative paths resolve inside the first open workspace folder and each filename segment is sanitized once for portable writes. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Defaults to the workspace root with a safe version of the remote file name. Sensitive workspace config/secret paths and existing files are rejected."
             }
           },
           "required": [
@@ -462,14 +463,14 @@
           "upload"
         ],
         "toolReferenceName": "uploadFile",
-        "modelDescription": "Uploads a file from the first open workspace folder or the extension tools temporary directory to a B2 bucket. Returns the uploaded file info including file ID and size.",
+        "modelDescription": "Uploads a file from the first open workspace folder to a B2 bucket. Returns the uploaded file info including file ID and size.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
           "properties": {
             "localPath": {
               "type": "string",
-              "description": "Local file path to upload. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace or the extension tools temporary directory. Sensitive workspace config/secret paths are rejected."
+              "description": "Local file path to upload. Relative paths resolve inside the first open workspace folder. Absolute paths are accepted only inside that workspace. Sensitive workspace config/secret paths are rejected."
             },
             "bucket": {
               "type": "string",

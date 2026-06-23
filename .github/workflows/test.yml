@@ -1,39 +1,153 @@
 name: Tests
 
 on:
+  schedule:
+    - cron: "37 8 * * 1"
   push:
     branches: [main]
-  pull_request:
+    paths:
+      - "src/**"
+      - "resources/icons/**"
+      - "scripts/**"
+      - "audit-policy.jsonc"
+      - "package.json"
+      - "package-lock.json"
+      - "npm-shrinkwrap.json"
+      - ".npmrc"
+      - "README.md"
+      - "SECURITY.md"
+      - "tsconfig*.json"
+      - "webpack.config.js"
+      - ".vscode-test.mjs"
+      - "test-harness.config.mjs"
+      - ".github/CODEOWNERS"
+      - ".github/dependabot.yml"
+      - ".github/workflows/build-extension.yml"
+      - ".github/workflows/code-quality.yml"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/pr-tests.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/test.yml"
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Trusted gate audits metadata only and never executes PR code.
     branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: VS Code Extension Tests
+  dependency-audit:
+    name: Dependency Audit Gate
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
+        if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          path: source
           persist-credentials: false
 
+      - name: Checkout trusted gate source
+        timeout-minutes: 10
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Download PR audit metadata
+        if: github.event_name == 'pull_request_target'
+        timeout-minutes: 10
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const path = require('path');
+            const { downloadPrAuditMetadata } = require(path.join(
+              process.env.GITHUB_WORKSPACE,
+              'trusted-source',
+              'scripts',
+              'pr-audit-metadata.js',
+            ));
+            await downloadPrAuditMetadata({
+              github,
+              context,
+              workspace: process.env.GITHUB_WORKSPACE,
+            });
+
       - name: Setup Node.js
+        timeout-minutes: 10
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install trusted guard dependencies
+        timeout-minutes: 10
+        working-directory: trusted-source
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
-      - name: Run VS Code tests with discovery guard
-        timeout-minutes: 20
-        run: xvfb-run -a npm test
+      - name: Assert lifecycle scripts stay disabled
+        timeout-minutes: 10
+        working-directory: trusted-source
+        run: node scripts/assert-ignore-scripts-install.js
+
+      - name: Install dependencies without lifecycle scripts
+        if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
+        # Keep this lifecycle-disabled. If a future dependency needs a build
+        # step, add a targeted npm rebuild after the audit and document why.
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Assert audit policy guardrails
+        timeout-minutes: 10
+        working-directory: trusted-source
+        run: node scripts/assert-audit-policy.js --repo-root "$GITHUB_WORKSPACE/source"
+
+      - name: Assert audit gate fails closed
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: trusted-source
+        run: bash scripts/retry.sh node scripts/assert-audit-gate-fixture.js
+
+      - name: Audit dependency advisories from PR metadata
+        if: github.event_name == 'pull_request_target'
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: trusted-source
+        # Inline this instead of the package script because package.json is
+        # PR-mutable; trusted-source stays pinned to the protected base branch
+        # for pull_request_target runs.
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc" --trusted-policy "$GITHUB_WORKSPACE/trusted-source/audit-policy.jsonc"
+
+      - name: Audit dependency advisories
+        if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: trusted-source
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$GITHUB_WORKSPACE/source" --policy "$GITHUB_WORKSPACE/source/audit-policy.jsonc"
+
+      - name: Verify dependency signatures
+        if: github.event_name != 'pull_request_target'
+        timeout-minutes: 10
+        env:
+          npm_config_ignore_scripts: "true"
+        working-directory: source
+        run: bash ../trusted-source/scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Assert audit workflow guardrails
+        timeout-minutes: 10
+        working-directory: trusted-source
+        run: NODE_PATH="$GITHUB_WORKSPACE/trusted-source/node_modules" node scripts/assert-audit-workflow.js --repo-root "$GITHUB_WORKSPACE/source"

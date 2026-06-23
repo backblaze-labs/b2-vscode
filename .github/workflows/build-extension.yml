@@ -15,6 +15,8 @@ on:
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
+      - "npm-shrinkwrap.json"
+      - ".npmrc"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
   pull_request:
@@ -31,6 +33,8 @@ on:
       - "scripts/smoke-install-vsix.js"
       - "package.json"
       - "package-lock.json"
+      - "npm-shrinkwrap.json"
+      - ".npmrc"
       - "webpack.config.js"
       - ".github/workflows/build-extension.yml"
 
@@ -48,9 +52,10 @@ jobs:
       contents: read # needed to check out and build the extension
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          path: source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -59,15 +64,38 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        working-directory: source
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
+
+      - name: Assert audit policy guardrails
+        working-directory: source
+        run: node scripts/assert-audit-policy.js --repo-root "$PWD"
+
+      - name: Audit dependency advisories
+        timeout-minutes: 10
+        env:
+          RETRY_EXIT_CODES: "2"
+          npm_config_ignore_scripts: "true"
+        working-directory: source
+        run: bash scripts/retry.sh node scripts/run-npm-audit.js --directory "$PWD" --policy "$PWD/audit-policy.jsonc"
+
+      - name: Verify dependency signatures
+        timeout-minutes: 10
+        env:
+          npm_config_ignore_scripts: "true"
+        working-directory: source
+        run: bash scripts/retry.sh npm audit signatures --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Build extension
+        working-directory: source
         run: npm run compile
 
       - name: Package VSIX
+        working-directory: source
         run: npm run vsix
 
       - name: Record VSIX checksum
+        working-directory: source
         run: |
           VSIX_FILE=$(node scripts/resolve-vsix-artifact.js .)
           CHECKSUM=$(sha256sum "$VSIX_FILE" | cut -d ' ' -f1)
@@ -78,8 +106,8 @@ jobs:
         with:
           name: vsix
           path: |
-            *.vsix
-            VSIX_SHA256SUMS.txt
+            source/*.vsix
+            source/VSIX_SHA256SUMS.txt
           retention-days: 30
 
   test-installation:
@@ -91,19 +119,20 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          path: source
           persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        working-directory: source
+        run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -112,8 +141,9 @@ jobs:
           path: ./artifacts
 
       - name: Verify extension package
+        working-directory: source
         run: |
-          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ./artifacts --verify-checksum)
+          VSIX_FILE=$(node scripts/resolve-vsix-artifact.js ../artifacts --verify-checksum)
           echo "Found: $VSIX_FILE ($(stat -c%s "$VSIX_FILE") bytes)"
           npm run assert:vsix-assets -- "$VSIX_FILE"
           timeout 10m xvfb-run -a npm run smoke:vsix-install -- "$VSIX_FILE"
@@ -145,6 +175,7 @@ jobs:
             core.setOutput('vsix_url', url);
 
       - name: Post PR comment
+        continue-on-error: true
         uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: extension-artifact

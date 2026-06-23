@@ -13,6 +13,7 @@ import {
   withTransferStallTimeout,
 } from "../../services/fileTransfers";
 import {
+  assertSafeFileWritePath,
   findWorkspaceControlDirectory,
   findWorkspaceSecretPath,
   prepareSafeFileWritePath,
@@ -27,6 +28,8 @@ import {
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
+import { sanitizeLocalPathSegment } from "../../utils/localPaths";
+import { isWorkspaceControlDirectorySegment } from "../../utils/workspaceControlDirectories";
 import {
   resolveToolLocalPathDetails,
   safeDefaultDownloadName,
@@ -130,21 +133,68 @@ async function assertDestinationDoesNotExist(destinationPath: string): Promise<v
 
 type DownloadDestination = ResolvedToolLocalPath;
 
-async function workspacePath(remotePath: string, localPath?: string): Promise<DownloadDestination> {
+function normalizeRelativeDownloadLocalPath(requestedPath: string): string {
+  if (requestedPath.includes("\0")) {
+    throw new B2ToolInputError("localPath must not contain null bytes.");
+  }
+  if (path.isAbsolute(requestedPath) || path.win32.isAbsolute(requestedPath)) {
+    return requestedPath;
+  }
+
+  const rawSegments = requestedPath.split(/[\\/]+/).filter(Boolean);
+  const finalSegment = rawSegments[rawSegments.length - 1];
+  if (
+    rawSegments.length === 0 ||
+    requestedPath.length === 0 ||
+    /[\\/]/.test(requestedPath.slice(-1)) ||
+    finalSegment === "." ||
+    finalSegment === ".."
+  ) {
+    throw new B2ToolInputError("localPath must be a file path, not a directory path.");
+  }
+  if (rawSegments.some((segment) => segment === "..")) {
+    throw new B2ToolInputError(
+      "localPath must stay within the current workspace or extension tools temporary directory.",
+    );
+  }
+  const segments = rawSegments.filter((segment) => segment !== ".");
+  const controlDirectory = segments.find(isWorkspaceControlDirectorySegment);
+  if (controlDirectory !== undefined) {
+    throw new B2ToolInputError(
+      `downloadFile refuses to write inside workspace control directories: ${controlDirectory}`,
+    );
+  }
+
+  return segments.map(sanitizeLocalPathSegment).join(path.sep);
+}
+
+async function workspacePath(
+  remotePath: string,
+  localPath?: string,
+  options: { readonly createParentDirectories: boolean } = { createParentDirectories: true },
+): Promise<DownloadDestination> {
   const destination = resolveToolLocalPathDetails(
-    localPath !== undefined ? localPath : safeDefaultDownloadName(remotePath),
+    normalizeRelativeDownloadLocalPath(
+      localPath !== undefined ? localPath : safeDefaultDownloadName(remotePath),
+    ),
     WORKSPACE_REQUIRED_MESSAGE,
   );
   try {
     assertNoSensitiveWorkspaceTarget(destination);
     await assertDestinationDoesNotExist(destination.path);
-    await prepareSafeFileWritePath(
-      destination.allowedRoot,
-      destination.path,
-      "downloadFile target",
-    );
-    // Re-check after creating parent directories to avoid overwriting a target
-    // that appeared while validation was in progress.
+    if (options.createParentDirectories) {
+      await prepareSafeFileWritePath(
+        destination.allowedRoot,
+        destination.path,
+        "downloadFile target",
+      );
+    } else {
+      await assertSafeFileWritePath(
+        destination.allowedRoot,
+        destination.path,
+        "downloadFile target",
+      );
+    }
     await assertDestinationDoesNotExist(destination.path);
     return destination;
   } catch (error) {
@@ -166,13 +216,19 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
     // Determine local save path before any remote request so invalid local
     // paths fail without touching B2.
     const remotePath = normalizeB2ObjectNameInput(params.path);
-    const destination = await workspacePath(remotePath, params.localPath);
-    const savePath = destination.path;
+    let destination = await workspacePath(remotePath, params.localPath, {
+      createParentDirectories: false,
+    });
 
     const bucket = await client.getBucket(params.bucket);
     if (!bucket) {
       throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
     }
+
+    destination = await workspacePath(remotePath, destination.path, {
+      createParentDirectories: true,
+    });
+    const savePath = destination.path;
 
     let size: number;
     try {

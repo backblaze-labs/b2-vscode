@@ -82,7 +82,8 @@ function allowedRootDescription(resolvedPath: ResolvedToolLocalPath): string {
 async function workspaceUploadSource(requestedPath: string): Promise<ResolvedUploadSource> {
   const resolvedPath = resolveToolLocalPathDetails(
     requestedPath,
-    "No workspace folder open. The uploadFile tool requires an open workspace folder for relative localPath inputs.",
+    "No workspace folder open. The uploadFile tool requires an open workspace folder for localPath inputs.",
+    { allowToolsTemp: false },
   );
   if (resolvedPath.rootKind === "workspace") {
     assertNoControlDirectoryRead(resolvedPath.allowedRoot, resolvedPath.path);

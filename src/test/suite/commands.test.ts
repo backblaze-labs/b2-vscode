@@ -22,6 +22,7 @@ import {
   buildCommandErrorMessage,
   changeBucketVisibilityCommand,
   createBucketCommand,
+  createFolderCommand,
   openFileCommand,
 } from "../../commands";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "../../errors";
 import { createAuthenticatedClientSetter } from "../../extension";
+import { BucketTreeItem } from "../../models/bucketTreeItem";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
 import { withWindowUiStubs } from "./windowStubs";
@@ -257,6 +259,73 @@ suite("B2 commands error handling", () => {
       assert.deepStrictEqual(ui.infos, ["B2: Authenticated as account-id"]);
     } finally {
       setClient(null);
+    }
+  });
+
+  test("create folder times out stalled folder marker uploads", async () => {
+    let refreshed = false;
+    let uploadSignal: AbortSignal | undefined;
+    const bucket = {
+      name: "bucket",
+      id: "bucket-id",
+      info: { bucketType: "allPrivate" },
+      async upload(options: { fileName: string; contentType?: string; signal?: AbortSignal }) {
+        assert.strictEqual(options.fileName, "my-folder/.bzEmpty");
+        assert.strictEqual(options.contentType, "application/x-bzEmpty");
+        uploadSignal = options.signal;
+        return new Promise(() => undefined);
+      },
+    };
+    const item = new BucketTreeItem(
+      bucket as unknown as ConstructorParameters<typeof BucketTreeItem>[0],
+    );
+
+    const ui = await withWindowUiStubs({ inputValues: ["my-folder"] }, () =>
+      createFolderCommand(
+        item,
+        {
+          getClient: () =>
+            ({ accountInfo: { getAccountId: () => "account-id" } }) as unknown as B2Client,
+          treeProvider: { refresh: () => (refreshed = true) },
+        },
+        { stallTimeoutMs: 20 },
+      ),
+    );
+
+    assert.strictEqual(uploadSignal?.aborted, true);
+    assert.strictEqual(refreshed, false);
+    assert.deepStrictEqual(ui.infos, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("create folder revalidates path-shaped names after input", async () => {
+    for (const folderName of ["..", "bad\0name"]) {
+      let uploadCalled = false;
+      const bucket = {
+        name: "bucket",
+        id: "bucket-id",
+        info: { bucketType: "allPrivate" },
+        async upload() {
+          uploadCalled = true;
+          return undefined;
+        },
+      };
+      const item = new BucketTreeItem(
+        bucket as unknown as ConstructorParameters<typeof BucketTreeItem>[0],
+      );
+
+      const ui = await withWindowUiStubs({ inputValues: [folderName] }, () =>
+        createFolderCommand(item, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+      );
+
+      assert.strictEqual(uploadCalled, false);
+      assert.deepStrictEqual(ui.infos, []);
+      assert.strictEqual(ui.errors.length, 1);
+      assert.match(ui.errors[0] ?? "", /Folder name/);
     }
   });
 

@@ -1,0 +1,6 @@
+{
+  "_comment": "Strict JSON only: comments and trailing commas are not allowed despite the .jsonc extension.",
+  "auditLevel": "moderate",
+  "includeDev": true,
+  "acceptedAdvisories": []
+}

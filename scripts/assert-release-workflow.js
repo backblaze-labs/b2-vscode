@@ -238,9 +238,13 @@ function assertPublishUsesIsolatedPublisher(workflowToCheck = loadReleaseWorkflo
   );
 
   const installDependenciesRun = normalizedCommand(
-    stepRunInSteps(steps, "publish", "Install dependencies"),
+    stepRunInSteps(steps, "publish", "Install dependencies without lifecycle scripts"),
   );
-  const installDependenciesStepIndex = stepIndexInSteps(steps, "publish", "Install dependencies");
+  const installDependenciesStepIndex = stepIndexInSteps(
+    steps,
+    "publish",
+    "Install dependencies without lifecycle scripts",
+  );
   assert(
     /\bnpm\s+ci\b/.test(installDependenciesRun) &&
       installDependenciesRun.includes("--ignore-scripts"),
@@ -525,7 +529,7 @@ function assertPublishPreflightIgnoresLifecycleScripts(workflowToCheck = loadRel
   const steps = preflightJob.steps;
   assert(Array.isArray(steps), "publish-preflight must declare steps.");
   const installRun = normalizedCommand(
-    stepRunInSteps(steps, "publish-preflight", "Install dependencies"),
+    stepRunInSteps(steps, "publish-preflight", "Install dependencies without lifecycle scripts"),
   );
   assert(
     /\bnpm\s+ci\b/.test(installRun) && installRun.includes("--ignore-scripts"),

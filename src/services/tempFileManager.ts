@@ -19,7 +19,9 @@ import {
 } from "./fileTransfers";
 import { log, logError } from "../logger";
 import {
+  ensureContainedDirectoryPath,
   ensurePrivateDirectorySync,
+  assertPrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
@@ -211,7 +213,23 @@ export class TempFileManager implements vscode.Disposable {
   }
 
   private ensurePrivateTempRoot(): void {
+    try {
+      assertPrivateDirectorySync(this.tempRoot, "Temp file cache root");
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
     ensurePrivateDirectorySync(this.tempRoot, "Temp file cache root", {
+      recursive: true,
+      mode: 0o700,
+    });
+  }
+
+  private async ensureCacheDirectoryPath(directory: string): Promise<void> {
+    await ensureContainedDirectoryPath(this.tempRoot, directory, "Temp file cache directory", {
       recursive: true,
       mode: 0o700,
     });
@@ -288,8 +306,11 @@ export class TempFileManager implements vscode.Disposable {
     assertNoPathTraversalSegments(bucketName, "B2 bucket name");
     assertNoPathTraversalSegments(fileName, "B2 file name");
     const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    const cacheDirectory = path.dirname(localPath);
+    await this.ensureCacheDirectoryPath(cacheDirectory);
     await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
     await removeExistingCachePath(localPath);
+    await this.ensureCacheDirectoryPath(cacheDirectory);
     await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
 
     await downloadStreamToFile(stream, localPath, {

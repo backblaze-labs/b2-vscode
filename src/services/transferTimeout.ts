@@ -13,6 +13,13 @@ export class TransferStallTimeoutError extends Error {
   }
 }
 
+export class UploadIndeterminateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UploadIndeterminateError";
+  }
+}
+
 export interface TransferTimeoutOptions {
   readonly signal?: AbortSignal;
   readonly stallTimeoutMs?: number;
@@ -26,16 +33,21 @@ export interface FixedTimeoutOptions {
 export interface ActivityAbortSignal {
   readonly signal: AbortSignal;
   markActivity(): void;
+  abort(reason?: unknown): void;
   timeoutError(): TransferStallTimeoutError | undefined;
   dispose(): void;
 }
 
-function linkParentAbort(parentSignal: AbortSignal | undefined): {
+function linkParentAbort(
+  parentSignal: AbortSignal | undefined,
+  onAbort: () => void = () => undefined,
+): {
   readonly controller: AbortController;
   dispose(): void;
 } {
   const controller = new AbortController();
   const abortFromParent = () => {
+    onAbort();
     if (!controller.signal.aborted) {
       controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
     }
@@ -64,8 +76,6 @@ export function createActivityAbortSignal(
   stallTimeoutMs: number,
   description: string,
 ): ActivityAbortSignal {
-  const linkedAbort = linkParentAbort(parentSignal);
-  const { controller } = linkedAbort;
   let timer: NodeJS.Timeout | undefined;
   let timedOut: TransferStallTimeoutError | undefined;
 
@@ -75,6 +85,8 @@ export function createActivityAbortSignal(
       timer = undefined;
     }
   };
+  const linkedAbort = linkParentAbort(parentSignal, clearTimer);
+  const { controller } = linkedAbort;
 
   const markActivity = () => {
     clearTimer();
@@ -83,8 +95,12 @@ export function createActivityAbortSignal(
     }
 
     timer = setTimeout(() => {
+      if (controller.signal.aborted || parentSignal?.aborted) {
+        return;
+      }
+
       timedOut = new TransferStallTimeoutError(
-        `${description} stalled for ${stallTimeoutMs} ms with no transfer activity.`,
+        `${description} timed out after ${stallTimeoutMs} ms with no transfer activity.`,
       );
       controller.abort(timedOut);
     }, stallTimeoutMs);
@@ -98,6 +114,12 @@ export function createActivityAbortSignal(
   return {
     signal: controller.signal,
     markActivity,
+    abort(reason?: unknown) {
+      clearTimer();
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    },
     timeoutError: () => timedOut,
     dispose() {
       clearTimer();
@@ -106,9 +128,16 @@ export function createActivityAbortSignal(
   };
 }
 
+export function isActivityTimeout(error: unknown, activity: ActivityAbortSignal): boolean {
+  const timeoutError = activity.timeoutError();
+  return Boolean(
+    timeoutError && (error === timeoutError || activity.signal.aborted || isAbortLikeError(error)),
+  );
+}
+
 export function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): never {
   const timeoutError = activity.timeoutError();
-  if (timeoutError && (activity.signal.aborted || isAbortLikeError(error))) {
+  if (timeoutError && isActivityTimeout(error, activity)) {
     throw timeoutError;
   }
 

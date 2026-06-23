@@ -11,7 +11,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { B2Client, classifyError } from "@backblaze-labs/b2-sdk";
 import { TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME } from "../../constants";
-import { ensurePrivateDirectorySync } from "../../pathSafety";
+import { ensureToolPrivateDirectorySync } from "../../toolPathSafety";
 import { B2ToolAdapter } from "../../tools/b2ToolAdapter";
 import type { B2ToolOperation, ToolExtras } from "../../tools/types";
 import { deleteFileTool } from "../../tools/definitions/deleteFile";
@@ -164,7 +164,7 @@ function createFileSymlink(target: string, linkPath: string): boolean {
 suite("B2 LM tool failure handling", () => {
   function extensionTempFixture(prefix: string): string {
     const tempRoot = path.join(os.tmpdir(), TEMP_DIR_NAME, TEMP_TOOLS_DIR_NAME);
-    ensurePrivateDirectorySync(tempRoot);
+    ensureToolPrivateDirectorySync(tempRoot);
     return fs.mkdtempSync(path.join(tempRoot, prefix));
   }
 
@@ -384,8 +384,38 @@ suite("B2 LM tool failure handling", () => {
           },
           { getClient: () => client },
         ),
-      /No workspace folder open/i,
+      (error: unknown) => {
+        assert.match((error as Error).message, /No workspace folder open/i);
+        assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+        return true;
+      },
     );
+  });
+
+  test("upload tool requires a workspace for absolute local paths", async () => {
+    const client = {
+      async getBucket() {
+        assert.fail("Expected workspace validation before bucket lookup");
+      },
+    } as unknown as B2Client;
+
+    await withoutWorkspaceFolder(async () => {
+      await assert.rejects(
+        () =>
+          uploadFileOperation.execute(
+            { bucket: "b", localPath: path.join(os.tmpdir(), "payload.txt") },
+            { getClient: () => client },
+          ),
+        (error: unknown) => {
+          assert.match(
+            (error as Error).message,
+            /requires an open workspace folder for localPath inputs/i,
+          );
+          assert.strictEqual((error as NodeJS.ErrnoException).code, "ERR_B2_TOOL_INPUT");
+          return true;
+        },
+      );
+    });
   });
 
   test("download tool surfaces existing destination feedback", async () => {
@@ -455,7 +485,7 @@ suite("B2 LM tool failure handling", () => {
                 }>,
                 token,
               ),
-            /B2: Upload File failed: localPath must stay within the current workspace or extension tools temporary directory/i,
+            /B2: Upload File failed: localPath must stay within the current workspace/i,
           ),
         ),
       );
@@ -494,11 +524,26 @@ suite("B2 LM tool failure handling", () => {
   });
 
   test("all tool operations report missing authentication", async () => {
-    for (const entry of operations) {
-      await assert.rejects(
-        () => entry.operation.execute(entry.input, noClientExtras),
-        /Not authenticated/i,
-      );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-order-"));
+    fs.writeFileSync(path.join(dir, "a.txt"), "hello");
+
+    try {
+      await withWorkspaceFolder(dir, async () => {
+        for (const entry of operations) {
+          const input =
+            entry.name === "uploadFile"
+              ? { bucket: "b", localPath: "a.txt" }
+              : entry.name === "downloadFile"
+                ? { bucket: "b", path: "a.txt", localPath: "download.txt" }
+                : entry.input;
+          await assert.rejects(
+            () => entry.operation.execute(input, noClientExtras),
+            /Not authenticated/i,
+          );
+        }
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -641,6 +686,33 @@ suite("B2 LM tool failure handling", () => {
     }
   });
 
+  test("download tool checks buckets before creating parent directories", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-missing-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const client = {
+      async getBucket() {
+        return null;
+      },
+    } as unknown as B2Client;
+
+    try {
+      await withWorkspaceFolder(workspaceDir, async () => {
+        await assert.rejects(
+          () =>
+            downloadFileOperation.execute(
+              { bucket: "missing", path: "payload.txt", localPath: "downloads/payload.txt" },
+              { getClient: () => client },
+            ),
+          /bucket .* not found/i,
+        );
+      });
+
+      assert.strictEqual(fs.existsSync(downloadDir), false);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   test("download tool rejects workspace path traversal before writing", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-policy-"));
     let downloadWasCalled = false;
@@ -666,7 +738,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", path: "payload.txt", localPath: "../outside.txt" },
               { getClient: () => client },
             ),
-          /must stay within the current workspace/i,
+          /must (stay within the current workspace|not contain path traversal segments)/i,
         );
       });
       assert.strictEqual(bucketLookupWasCalled, false);
@@ -951,6 +1023,7 @@ suite("B2 LM tool failure handling", () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-existing-"));
     const existingPath = path.join(workspaceDir, "payload.txt");
     fs.writeFileSync(existingPath, "keep me");
+    let getBucketWasCalled = false;
     let downloadWasCalled = false;
     const bucket = {
       async download() {
@@ -960,6 +1033,7 @@ suite("B2 LM tool failure handling", () => {
     };
     const client = {
       async getBucket() {
+        getBucketWasCalled = true;
         return bucket;
       },
     } as unknown as B2Client;
@@ -976,6 +1050,7 @@ suite("B2 LM tool failure handling", () => {
         );
       });
 
+      assert.strictEqual(getBucketWasCalled, false);
       assert.strictEqual(downloadWasCalled, false);
       assert.strictEqual(fs.readFileSync(existingPath, "utf8"), "keep me");
     } finally {
@@ -1182,7 +1257,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: "../secret.txt" },
               { getClient: () => client },
             ),
-          /must stay within the current workspace/i,
+          /must (stay within the current workspace|not contain path traversal segments)/i,
         );
       });
     } finally {
@@ -1307,7 +1382,7 @@ suite("B2 LM tool failure handling", () => {
               { bucket: "b", localPath: requestedPath },
               { getClient: () => client },
             ),
-          /current workspace or extension tools temporary directory/i,
+          /current workspace/i,
         );
       });
     } finally {
