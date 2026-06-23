@@ -30,6 +30,15 @@ interface PresignUrlResult {
 
 const PRESIGN_URL_OPERATION_TIMEOUT_MS = 30_000;
 
+function createCancellationError(): Error {
+  try {
+    const vscode = require("vscode") as typeof import("vscode");
+    return new vscode.CancellationError();
+  } catch {
+    return new DOMException("Aborted", "AbortError");
+  }
+}
+
 export function normalizePresignUrlExpiration(expiresIn: number | undefined): number {
   if (expiresIn === undefined) {
     return DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS;
@@ -58,7 +67,7 @@ function signalFromCancellationToken(token: CancellationToken | undefined): {
   const controller = new AbortController();
   const abort = () => {
     if (!controller.signal.aborted) {
-      controller.abort(new DOMException("Aborted", "AbortError"));
+      controller.abort(createCancellationError());
     }
   };
   if (token.isCancellationRequested) {

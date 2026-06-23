@@ -7,6 +7,7 @@
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
+import * as vscode from "vscode";
 import { BufferSource, type FileVersion } from "@backblaze-labs/b2-sdk";
 import { deleteFileOperation } from "../../tools/operations/deleteFile";
 import { downloadFileOperation } from "../../tools/operations/downloadFile";
@@ -833,6 +834,52 @@ suite("B2 LM tool operations with simulator", () => {
       for (const timer of timers) {
         originalClearTimeout(timer);
       }
+    }
+  });
+
+  test("presignUrl propagates token cancellation while waiting for B2", async () => {
+    const tokenSource = new vscode.CancellationTokenSource();
+    let authorizationRequested = false;
+    let listStarted: (() => void) | undefined;
+    const listStartedPromise = new Promise<void>((resolve) => {
+      listStarted = resolve;
+    });
+    const bucket = {
+      async listFileNames() {
+        listStarted?.();
+        return new Promise<never>(() => undefined);
+      },
+      async getDownloadAuthorization() {
+        authorizationRequested = true;
+        return { authorizationToken: "cancelled-token" };
+      },
+    };
+    const client = {
+      accountInfo: { getDownloadUrl: () => "https://download.example.com" },
+      async getBucket(name: string) {
+        return name === SIMULATOR_BUCKET_NAME ? bucket : null;
+      },
+    };
+
+    try {
+      const operation = presignUrlOperation.execute(
+        { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
+        { getClient: () => client as never },
+        tokenSource.token,
+      );
+      await listStartedPromise;
+      tokenSource.cancel();
+
+      await assert.rejects(
+        () => operation,
+        (error) => {
+          assert.ok(error instanceof vscode.CancellationError);
+          return true;
+        },
+      );
+      assert.strictEqual(authorizationRequested, false);
+    } finally {
+      tokenSource.dispose();
     }
   });
 
