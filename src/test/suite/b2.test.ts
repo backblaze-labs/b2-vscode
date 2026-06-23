@@ -270,6 +270,31 @@ suite("B2 utility helpers", () => {
     }
   });
 
+  test("uses custom workspace write labels for unsafe paths", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-safe-write-label-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-safe-write-outside-"));
+    const linkPath = path.join(workspaceDir, "linked");
+    const symlinkCreated = createDirectorySymlink(outsideDir, linkPath);
+
+    try {
+      if (!symlinkCreated) {
+        return;
+      }
+
+      await assert.rejects(
+        () =>
+          resolveWorkspaceFilePath(workspaceDir, "linked/file.txt", {
+            access: "write-new",
+            label: "download target",
+          }),
+        /download target/i,
+      );
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("uses recursive workspace parent creation to tolerate races", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-race-"));
     const parentDirectory = path.join(workspaceDir, "nested");

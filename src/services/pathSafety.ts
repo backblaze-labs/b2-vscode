@@ -684,7 +684,7 @@ export async function resolveWorkspaceFilePath(
     return resolvedPath;
   }
 
-  await assertSafeFileWritePath(workspaceRoot, resolvedPath);
+  await assertSafeFileWritePath(workspaceRoot, resolvedPath, label);
   await assertFileDoesNotExist(resolvedPath);
   if (options.createParentDirectories !== false) {
     await ensureContainedDirectoryPath(
@@ -693,7 +693,7 @@ export async function resolveWorkspaceFilePath(
       "Workspace localPath directory",
       { recursive: true },
     );
-    await assertSafeFileWritePath(workspaceRoot, resolvedPath);
+    await assertSafeFileWritePath(workspaceRoot, resolvedPath, label);
     await assertFileDoesNotExist(resolvedPath);
   }
   return resolvedPath;
