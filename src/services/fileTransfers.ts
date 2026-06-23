@@ -63,6 +63,8 @@ const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
 const TRANSFER_TEMP_RANDOM_BYTES = 12;
 const TRANSFER_TEMP_RANDOM_HEX_LENGTH = TRANSFER_TEMP_RANDOM_BYTES * 2;
+const DESTINATION_TEMP_RANDOM_BYTES = 12;
+const DESTINATION_TEMP_RANDOM_HEX_LENGTH = DESTINATION_TEMP_RANDOM_BYTES * 2;
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -111,6 +113,10 @@ function escapeRegExp(value: string): string {
 
 const TRANSFER_TEMP_FILE_PATTERN = new RegExp(
   `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
+  "u",
+);
+const DESTINATION_TEMP_PAYLOAD_PATTERN = new RegExp(
+  `^[\\s\\S]+-\\d+-[a-f0-9]{${DESTINATION_TEMP_RANDOM_HEX_LENGTH}}$`,
   "u",
 );
 
@@ -301,7 +307,7 @@ function transferTempPath(directory: string): string {
 }
 
 function destinationMoveTempPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -310,7 +316,7 @@ function destinationMoveTempPath(destinationPath: string): string {
 }
 
 function destinationReplaceBackupPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -323,11 +329,17 @@ function isTransferTempFile(name: string): boolean {
 }
 
 function isDestinationTempFile(name: string): boolean {
-  return (
-    (name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX) ||
-      name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) &&
-    name.endsWith(TRANSFER_TEMP_SUFFIX)
-  );
+  const prefix = name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX)
+    ? CROSS_DEVICE_MOVE_TEMP_PREFIX
+    : name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)
+      ? REPLACE_BACKUP_TEMP_PREFIX
+      : undefined;
+  if (prefix === undefined || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
+    return false;
+  }
+
+  const payload = name.slice(prefix.length, -TRANSFER_TEMP_SUFFIX.length);
+  return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

@@ -3107,23 +3107,39 @@ suite("B2 transfer helpers", () => {
 
   test("cleans stale destination temp files without restoring orphaned backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
-    const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
-    const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
+    const orphanedBackup = path.join(
+      dir,
+      ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
     const freshOrphanedBackup = path.join(
       dir,
-      ".b2-replace-backup-fresh-missing.bin-1-abcdefabcdef.tmp",
+      ".b2-replace-backup-fresh-missing.bin-1-abcdefabcdefabcdefabcdef.tmp",
     );
     const completedDestination = path.join(dir, "complete.bin");
-    const completedBackup = path.join(dir, ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp");
-    const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdef.tmp");
+    const completedBackup = path.join(
+      dir,
+      ".b2-replace-backup-complete.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdefabcdefabcdef.tmp");
+    const userLikeCrossDevice = path.join(dir, ".b2-cross-device-user-not-extension.tmp");
+    const userLikeBackup = path.join(dir, ".b2-replace-backup-user-not-extension.tmp");
     fs.writeFileSync(crossDevice, "partial");
     fs.writeFileSync(orphanedBackup, "original");
     fs.writeFileSync(freshOrphanedBackup, "fresh original");
     fs.writeFileSync(completedDestination, "new");
     fs.writeFileSync(completedBackup, "old");
     fs.writeFileSync(freshTemp, "active");
+    fs.writeFileSync(userLikeCrossDevice, "user cross-device");
+    fs.writeFileSync(userLikeBackup, "user backup");
     const oldTime = new Date(Date.now() - 10_000);
-    for (const filePath of [crossDevice, orphanedBackup, completedBackup]) {
+    for (const filePath of [
+      crossDevice,
+      orphanedBackup,
+      completedBackup,
+      userLikeCrossDevice,
+      userLikeBackup,
+    ]) {
       fs.utimesSync(filePath, oldTime, oldTime);
     }
 
@@ -3138,6 +3154,8 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
       assert.strictEqual(fs.existsSync(completedBackup), false);
       assert.strictEqual(fs.readFileSync(freshTemp, "utf8"), "active");
+      assert.strictEqual(fs.readFileSync(userLikeCrossDevice, "utf8"), "user cross-device");
+      assert.strictEqual(fs.readFileSync(userLikeBackup, "utf8"), "user backup");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -3146,9 +3164,12 @@ suite("B2 transfer helpers", () => {
   test("streams workspace destination cleanup without restoring forged backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-"));
     const nested = path.join(dir, "nested", "downloads");
-    const backup = path.join(nested, ".b2-replace-backup-report.txt-1-abcdefabcdef.tmp");
+    const backup = path.join(
+      nested,
+      ".b2-replace-backup-report.txt-1-abcdefabcdefabcdefabcdef.tmp",
+    );
     const restored = path.join(nested, "report.txt");
-    const staleTemp = path.join(nested, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
+    const staleTemp = path.join(nested, ".b2-cross-device-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
     fs.mkdirSync(nested, { recursive: true });
     fs.writeFileSync(backup, "report");
     fs.writeFileSync(staleTemp, "partial");
@@ -3185,7 +3206,10 @@ suite("B2 transfer helpers", () => {
   test("skips control directories during workspace destination cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-control-cleanup-"));
     const gitDir = path.join(dir, ".git");
-    const backup = path.join(gitDir, ".b2-replace-backup-package.json-1-abcdefabcdef.tmp");
+    const backup = path.join(
+      gitDir,
+      ".b2-replace-backup-package.json-1-abcdefabcdefabcdefabcdef.tmp",
+    );
     const restored = path.join(gitDir, "package.json");
     fs.mkdirSync(gitDir);
     fs.writeFileSync(backup, "do not restore");
@@ -3209,7 +3233,7 @@ suite("B2 transfer helpers", () => {
 
   test("keeps fresh destination backups during stale cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-fresh-backup-"));
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
     const restored = path.join(dir, "file.bin");
     fs.writeFileSync(backup, "original");
 
@@ -3226,7 +3250,7 @@ suite("B2 transfer helpers", () => {
   test("deletes stale symlink destination backups without restoring them", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
     const target = path.join(dir, "target");
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
     const restored = path.join(dir, "file.bin");
     fs.mkdirSync(target);
 
