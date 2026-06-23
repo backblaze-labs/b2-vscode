@@ -21,7 +21,7 @@ export const downloadFileTool: B2ToolDefinition = {
   name: "b2_downloadFile",
   displayName: "B2: Download File",
   description:
-    "Downloads a file from a B2 bucket to the first open workspace folder. Returns the local file path where the file was saved.",
+    "Downloads a file from a B2 bucket to the first open workspace folder without overwriting existing files. Returns the local file path where the file was saved.",
   parameters: {
     type: "object",
     properties: {

@@ -29,7 +29,7 @@ export const presignUrlTool: B2ToolDefinition = {
   name: "b2_presignUrl",
   displayName: "B2: Pre-sign URL",
   description:
-    "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires listFiles for verification and shareFiles to mint the download authorization. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
+    "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires the B2 listFiles capability for verification and the B2 shareFiles capability to mint the download authorization. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
   parameters: {
     type: "object",
     properties: {

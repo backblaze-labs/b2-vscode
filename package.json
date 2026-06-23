@@ -429,7 +429,7 @@
           "download"
         ],
         "toolReferenceName": "downloadFile",
-        "modelDescription": "Downloads a file from a B2 bucket to the first open workspace folder. Returns the local file path where the file was saved.",
+        "modelDescription": "Downloads a file from a B2 bucket to the first open workspace folder without overwriting existing files. Returns the local file path where the file was saved.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
@@ -525,7 +525,7 @@
           "url"
         ],
         "toolReferenceName": "presignUrl",
-        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires listFiles for verification and shareFiles to mint the download authorization. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
+        "modelDescription": "Generates a pre-signed B2 download URL after verifying the path currently names one object and no adjacent same-prefix object. Requires the B2 listFiles capability for verification and the B2 shareFiles capability to mint the download authorization. B2 tokens remain prefix-scoped: the URL can download any object whose name starts with the supplied path until it expires.",
         "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
