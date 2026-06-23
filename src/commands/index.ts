@@ -12,7 +12,7 @@
 import * as vscode from "vscode";
 import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
 import { BufferSource } from "@backblaze-labs/b2-sdk";
-import type { AuthService } from "../services/authService";
+import type { AuthService, B2Credentials } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
 import type { TempFileManager } from "../services/tempFileManager";
 import { BucketTreeItem } from "../models/bucketTreeItem";
@@ -48,6 +48,7 @@ import {
   type PublicPrivateBucketType,
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
+import { renameFileVersion } from "./renameFile";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
@@ -58,6 +59,10 @@ type BucketUpdateOptions = Parameters<Bucket["update"]>[0];
 type BucketUpdateResult = ReturnType<Bucket["update"]>;
 type AbortableCreateBucketOptions = CreateBucketOptions & { readonly signal?: AbortSignal };
 type AbortableBucketUpdateOptions = BucketUpdateOptions & { readonly signal?: AbortSignal };
+export type ConfiguredB2ClientFactory = (
+  credentials: B2Credentials,
+  extensionVersion: string,
+) => Promise<B2Client>;
 
 export interface BucketCreationClient {
   createBucket(options: AbortableCreateBucketOptions): CreateBucketResult;
@@ -233,6 +238,7 @@ export interface CommandServices extends CreateBucketCommandServices {
   context: vscode.ExtensionContext;
   getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
+  createClient?: ConfiguredB2ClientFactory;
 }
 
 export interface OpenFileCommandServices {
@@ -288,6 +294,56 @@ export async function openFileCommand(
       return;
     }
     showCommandError("B2: Failed to open file", error);
+  }
+}
+
+export async function authenticateCommand(services: CommandServices): Promise<void> {
+  const { authService, context, treeProvider, setClient } = services;
+  const createClient = services.createClient ?? createConfiguredB2Client;
+  const keyId = await vscode.window.showInputBox({
+    title: "B2 Application Key ID",
+    prompt: "Enter your Backblaze B2 application key ID",
+    placeHolder: "00123456789abcdef0000000n",
+    ignoreFocusOut: true,
+  });
+  if (!keyId) {
+    return;
+  }
+
+  const appKey = await vscode.window.showInputBox({
+    title: "B2 Application Key",
+    prompt: "Enter your Backblaze B2 application key",
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (!appKey) {
+    return;
+  }
+
+  try {
+    const client = await createClient({ keyId, appKey }, context.extension.packageJSON.version);
+    await client.authorize();
+
+    await authService.storeCredentials(keyId, appKey);
+    setClient(client);
+    treeProvider.setClient(client);
+
+    await authService.setAuthState({
+      isAuthenticated: true,
+      accountId: client.accountInfo.getAccountId(),
+      apiUrl: client.accountInfo.getApiUrl(),
+      downloadUrl: client.accountInfo.getDownloadUrl(),
+    });
+
+    vscode.window.showInformationMessage(
+      `B2: Authenticated as ${client.accountInfo.getAccountId()}`,
+    );
+  } catch (error) {
+    showCommandError("B2: Authentication failed", error);
+    await authService.setAuthState({
+      isAuthenticated: false,
+      error: formatB2UserMessage(error),
+    });
   }
 }
 
@@ -508,56 +564,7 @@ export function registerCommands(services: CommandServices): void {
 
   // ── Authenticate ────────────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("b2.authenticate", async () => {
-      const keyId = await vscode.window.showInputBox({
-        title: "B2 Application Key ID",
-        prompt: "Enter your Backblaze B2 application key ID",
-        placeHolder: "00123456789abcdef0000000n",
-        ignoreFocusOut: true,
-      });
-      if (!keyId) {
-        return;
-      }
-
-      const appKey = await vscode.window.showInputBox({
-        title: "B2 Application Key",
-        prompt: "Enter your Backblaze B2 application key",
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (!appKey) {
-        return;
-      }
-
-      try {
-        const client = await createConfiguredB2Client(
-          { keyId, appKey },
-          context.extension.packageJSON.version,
-        );
-        await client.authorize();
-
-        await authService.storeCredentials(keyId, appKey);
-        setClient(client);
-        treeProvider.setClient(client);
-
-        await authService.setAuthState({
-          isAuthenticated: true,
-          accountId: client.accountInfo.getAccountId(),
-          apiUrl: client.accountInfo.getApiUrl(),
-          downloadUrl: client.accountInfo.getDownloadUrl(),
-        });
-
-        vscode.window.showInformationMessage(
-          `B2: Authenticated as ${client.accountInfo.getAccountId()}`,
-        );
-      } catch (error) {
-        showCommandError("B2: Authentication failed", error);
-        await authService.setAuthState({
-          isAuthenticated: false,
-          error: formatB2UserMessage(error),
-        });
-      }
-    }),
+    vscode.commands.registerCommand("b2.authenticate", () => authenticateCommand(services)),
   );
 
   // ── Create Bucket ─────────────────────────────────────────────────────
@@ -772,25 +779,9 @@ export function registerCommands(services: CommandServices): void {
       const newPath = `${prefixWithSlash}${newName}`;
 
       try {
-        let copyCompleted = false;
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: `Renaming to "${newName}"...` },
-          async () => {
-            // Server-side copy then delete the original
-            try {
-              await item.bucket.copyFile({ sourceFileId: item.file.fileId, fileName: newPath });
-              copyCompleted = true;
-              await item.bucket.deleteFileVersion(oldPath, item.file.fileId);
-            } catch (error) {
-              if (copyCompleted) {
-                throw new B2PartialFailureError(
-                  `Rename incomplete. Copied "${oldPath}" to "${newPath}", but failed to delete the original. Both B2 objects may exist. ${formatB2UserMessage(error)}`,
-                  error,
-                );
-              }
-              throw error;
-            }
-          },
+          () => renameFileVersion(item.bucket, oldPath, item.file.fileId, newPath),
         );
         treeProvider.refresh();
         vscode.window.showInformationMessage(`B2: Renamed to "${newName}".`);

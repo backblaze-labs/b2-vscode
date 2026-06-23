@@ -262,6 +262,7 @@ async function writeFileNoFollowInternal(
   data: string | Uint8Array | NodeJS.ReadableStream,
   options: {
     readonly overwrite: boolean;
+    readonly afterOpen?: (openedStats: fs.Stats) => Promise<void>;
     readonly beforeWrite?: () => Promise<void>;
     readonly cleanupOnFailure?: (openedStats: fs.Stats) => Promise<void>;
   },
@@ -273,10 +274,12 @@ async function writeFileNoFollowInternal(
     fs.constants.O_WRONLY | fs.constants.O_CREAT | overwriteFlag | noFollowFlag,
     0o600,
   );
-  const openedStats = await fileHandle.stat();
+  let openedStats: fs.Stats | undefined;
   let completed = false;
 
   try {
+    openedStats = await fileHandle.stat();
+    await options.afterOpen?.(openedStats);
     await options.beforeWrite?.();
     if (typeof data === "string" || data instanceof Uint8Array) {
       await fileHandle.writeFile(data);
@@ -290,7 +293,7 @@ async function writeFileNoFollowInternal(
     try {
       await fileHandle.close();
     } finally {
-      if (!completed && !options.overwrite) {
+      if (!completed && !options.overwrite && openedStats) {
         await (
           options.cleanupOnFailure?.(openedStats) ?? fs.promises.rm(filePath, { force: true })
         ).catch(() => undefined);
@@ -315,12 +318,50 @@ async function removeRootBoundCreatedFileIfSafe(
   }
 
   const realRoot = await fs.promises.realpath(path.resolve(rootPath));
-  const realCandidate = await fs.promises.realpath(candidate);
-  if (!isPathInsideOrEqual(realRoot, realCandidate)) {
+  const realCandidate = await fs.promises.realpath(candidate).catch(() => undefined);
+
+  const removeCandidate = async () => {
+    try {
+      await fs.promises.unlink(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  };
+
+  // If the path still names the inode we created, remove that file even when a
+  // parent symlink race made it resolve outside the root. The same-inode check
+  // keeps this limited to the file opened by this helper.
+  if (realCandidate !== undefined && !isPathInsideOrEqual(realRoot, realCandidate)) {
+    await removeCandidate();
     return;
   }
+  await removeCandidate();
+}
 
-  await fs.promises.rm(candidate, { force: true });
+async function assertOpenedFileStillTargetWithinRoot(
+  rootPath: string,
+  filePath: string,
+  openedStats: fs.Stats,
+  label: string,
+): Promise<void> {
+  const candidate = path.resolve(filePath);
+  const currentStats = await lstatIfExists(candidate);
+  if (
+    currentStats === undefined ||
+    currentStats.isSymbolicLink() ||
+    !currentStats.isFile() ||
+    !isSameFilesystemEntry(currentStats, openedStats)
+  ) {
+    throw new UnsafePathError(`${label} changed while it was being opened.`);
+  }
+
+  const realRoot = await fs.promises.realpath(path.resolve(rootPath));
+  const realCandidate = await fs.promises.realpath(candidate);
+  if (!isPathInsideOrEqual(realRoot, realCandidate)) {
+    throw new UnsafePathError(`${label} resolves outside the allowed root after open.`);
+  }
 }
 
 export async function openFileNoFollow(filePath: string, label = "file"): Promise<FileHandle> {
@@ -438,7 +479,9 @@ export async function prepareSafeFileWritePath(
   const parentPath = path.dirname(candidate);
 
   await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
-  await fs.promises.mkdir(parentPath, { recursive: true });
+  await ensureContainedDirectoryPath(rootPath, parentPath, `${label} parent`, {
+    recursive: true,
+  });
   await assertSafeWritePath(rootPath, parentPath, `${label} parent`);
   await assertSafeFileWritePath(rootPath, candidate, label);
 }
@@ -467,6 +510,8 @@ export async function writeNewFileNoFollowWithinRoot(
   await assertSafeFileWritePath(rootPath, filePath, label);
   await writeFileNoFollowInternal(filePath, data, {
     overwrite: false,
+    afterOpen: (openedStats) =>
+      assertOpenedFileStillTargetWithinRoot(rootPath, filePath, openedStats, label),
     beforeWrite: () => assertSafeFileWritePath(rootPath, filePath, label),
     cleanupOnFailure: (openedStats) =>
       removeRootBoundCreatedFileIfSafe(rootPath, filePath, openedStats),

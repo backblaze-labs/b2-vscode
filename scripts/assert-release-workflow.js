@@ -425,15 +425,22 @@ function assertAttestIsReleaseOnly(workflowToCheck = loadReleaseWorkflow()) {
   );
 }
 
-function assertReleaseAfterPublish(workflowToCheck = loadReleaseWorkflow()) {
+function assertReleasePublishGate(workflowToCheck = loadReleaseWorkflow()) {
   assertJobExists(workflowToCheck, "release");
   assert(
     jobNeeds(workflowToCheck, "release").includes("publish"),
     "GitHub Release creation must depend on Marketplace publish.",
   );
+  const releaseIf = jobIf(workflowToCheck, "release");
   assert(
-    jobIf(workflowToCheck, "release").includes("needs.publish.result == 'success'"),
+    releaseIf.includes("!contains(github.ref_name, '-')") &&
+      releaseIf.includes("needs.publish.result == 'success'"),
     "stable GitHub Release must require successful Marketplace publish.",
+  );
+  assert(
+    releaseIf.includes("contains(github.ref_name, '-')") &&
+      releaseIf.includes("needs.publish.result == 'skipped'"),
+    "prerelease GitHub Release must be allowed when Marketplace publish is skipped.",
   );
 }
 
@@ -592,7 +599,7 @@ function main() {
   assertMarketplaceSecretStepsUseIsolatedPublisher(workflow);
   assertReleaseSourceGate(workflow);
   assertAttestIsReleaseOnly(workflow);
-  assertReleaseAfterPublish(workflow);
+  assertReleasePublishGate(workflow);
   assertPublishVerifiesAttestation(workflow);
   assertArtifactResolverUsage(workflow);
   assertReleaseInstallsIgnoreLifecycleScripts(workflow);
@@ -619,6 +626,7 @@ module.exports = {
   assertPublishUsesIsolatedPublisher,
   assertPublishPreflightIgnoresLifecycleScripts,
   assertReleaseInstallsIgnoreLifecycleScripts,
+  assertReleasePublishGate,
   assertWorkflowInstallsIgnoreLifecycleScripts,
   assertGithubWorkflowInstallsIgnoreLifecycleScripts,
   assertCodeQualityRunsReleaseGuard,

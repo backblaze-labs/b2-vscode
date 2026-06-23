@@ -14,9 +14,11 @@ import {
   type BucketType,
 } from "@backblaze-labs/b2-sdk";
 import {
+  type CommandServices,
   type BucketCreationClient,
   type BucketCommandServices,
   type BucketVisibilityItem,
+  authenticateCommand,
   buildCommandErrorMessage,
   changeBucketVisibilityCommand,
   createBucketCommand,
@@ -27,6 +29,7 @@ import {
   isPublicBucketNameConfirmationAccepted,
 } from "../../commands/publicBucketVisibility";
 import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "../../errors";
+import { createAuthenticatedClientSetter } from "../../extension";
 import type { FileTreeItem } from "../../models/fileTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
 import { withWindowUiStubs } from "./windowStubs";
@@ -190,6 +193,71 @@ suite("B2 commands error handling", () => {
     );
 
     assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("manual authenticate schedules authenticated cleanup through the setter", async () => {
+    const fakeClient = {
+      async authorize() {
+        return undefined;
+      },
+      accountInfo: {
+        getAccountId: () => "account-id",
+        getApiUrl: () => "https://api.example.com",
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as B2Client;
+    const scheduledClients: B2Client[] = [];
+    const treeClients: Array<B2Client | null> = [];
+    const storedCredentials: Array<{ keyId: string; appKey: string }> = [];
+    const authStates: unknown[] = [];
+    const setClient = createAuthenticatedClientSetter((client) => {
+      scheduledClients.push(client);
+    });
+    const services = {
+      authService: {
+        async storeCredentials(keyId: string, appKey: string) {
+          storedCredentials.push({ keyId, appKey });
+        },
+        async setAuthState(state: unknown) {
+          authStates.push(state);
+        },
+      },
+      context: {
+        extension: { packageJSON: { version: "1.2.3" } },
+      },
+      treeProvider: {
+        setClient(client: B2Client | null) {
+          treeClients.push(client);
+        },
+      },
+      tempFileManager: {},
+      isAuthenticated: () => false,
+      getClient: () => null,
+      setClient,
+      async createClient(
+        credentials: { readonly keyId: string; readonly appKey: string },
+        extensionVersion: string,
+      ) {
+        assert.deepStrictEqual(credentials, { keyId: "key-id", appKey: "app-key" });
+        assert.strictEqual(extensionVersion, "1.2.3");
+        return fakeClient;
+      },
+    } as unknown as CommandServices;
+
+    try {
+      const ui = await withWindowUiStubs({ inputValues: ["key-id", "app-key"] }, () =>
+        authenticateCommand(services),
+      );
+
+      assert.deepStrictEqual(storedCredentials, [{ keyId: "key-id", appKey: "app-key" }]);
+      assert.deepStrictEqual(scheduledClients, [fakeClient]);
+      assert.deepStrictEqual(treeClients, [fakeClient]);
+      assert.strictEqual(authStates.length, 1);
+      assert.deepStrictEqual(ui.errors, []);
+      assert.deepStrictEqual(ui.infos, ["B2: Authenticated as account-id"]);
+    } finally {
+      setClient(null);
+    }
   });
 
   test("classifies public mutation failures by certainty", () => {

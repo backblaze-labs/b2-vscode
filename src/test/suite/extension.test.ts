@@ -6,7 +6,7 @@
 
 import * as assert from "assert";
 import * as vscode from "vscode";
-import type { B2Client } from "@backblaze-labs/b2-sdk";
+import { B2Client } from "@backblaze-labs/b2-sdk";
 import { createAuthenticatedClientSetter } from "../../extension";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
 import { presignUrlTool } from "../../tools/definitions/presignUrl";
@@ -127,22 +127,22 @@ suite("B2 Extension Test Suite", () => {
   });
 
   test("authenticated client setter schedules stale unfinished-upload cleanup", () => {
-    let currentClient: B2Client | null = null;
+    const client = new B2Client({ applicationKeyId: "key-id", applicationKey: "app-key" });
     const scheduledClients: B2Client[] = [];
+    const assignedClients: Array<B2Client | null> = [];
     const setClient = createAuthenticatedClientSetter(
-      (client) => {
-        currentClient = client;
+      (scheduledClient) => {
+        scheduledClients.push(scheduledClient);
       },
-      (client) => {
-        scheduledClients.push(client);
+      (assignedClient) => {
+        assignedClients.push(assignedClient);
       },
     );
-    const client: B2Client = Object.create(null);
 
     setClient(client);
     setClient(null);
 
-    assert.strictEqual(currentClient, null);
     assert.deepStrictEqual(scheduledClients, [client]);
+    assert.deepStrictEqual(assignedClients, [client, null]);
   });
 });

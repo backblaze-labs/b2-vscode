@@ -83,15 +83,17 @@ function safeLocalPathInputSegments(localPath: string): string[] {
   assertNoNul(localPath, "localPath");
   assertFilePathInput(localPath);
   if (isAbsolutePortable(localPath)) {
-    throw new UnsafePathError("localPath must be relative to the workspace.");
+    throw new UnsafePathError(
+      "localPath must be a relative path inside the allowed directory and relative to the workspace.",
+    );
   }
 
   const segments = localPath.split(/[\\/]/);
-  if (
-    segments.length === 0 ||
-    segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
-  ) {
-    throw new UnsafePathError("localPath must not contain empty or traversal segments.");
+  if (segments.some((segment) => segment === "..")) {
+    throw new UnsafePathError("localPath must not contain path traversal segments.");
+  }
+  if (segments.some((segment) => segment.length === 0 || segment === ".")) {
+    throw new UnsafePathError("localPath must not contain empty or dot segments.");
   }
 
   return segments.map(sanitizeLocalPathSegment);

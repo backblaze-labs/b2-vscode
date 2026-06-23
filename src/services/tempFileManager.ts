@@ -12,13 +12,18 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { TEMP_DIR_NAME } from "../constants";
-import { downloadStreamToFile, type DownloadStreamToFileOptions } from "./fileTransfers";
-import { log } from "../logger";
+import {
+  downloadStreamToFile,
+  TRANSFER_TEMP_DIR_NAME,
+  type DownloadStreamToFileOptions,
+} from "./fileTransfers";
+import { log, logError } from "../logger";
 import {
   ensurePrivateDirectorySync,
   isPathInsideOrEqual,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
+  UnsafePathError,
 } from "./pathSafety";
 import { buildTempFilePath } from "../utils/localPaths";
 import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
@@ -41,6 +46,10 @@ interface StaleTempCacheCleanupStats {
   maxEntriesHit: boolean;
 }
 
+interface InFlightCacheEntry {
+  readonly promise: Promise<string>;
+}
+
 function assertManagedTempRoot(tempRoot: string): void {
   const systemTemp = path.resolve(os.tmpdir());
   if (tempRoot === systemTemp || !isPathInsideOrEqual(systemTemp, tempRoot)) {
@@ -48,6 +57,18 @@ function assertManagedTempRoot(tempRoot: string): void {
       `Temp file cache root must be a dedicated directory inside the system temp directory: ${tempRoot}`,
     );
   }
+}
+
+function assertNoPathTraversalSegments(value: string, label: string): void {
+  if (value.split(/[\\/]/).some((segment) => segment === "..")) {
+    throw new UnsafePathError(`${label} must not contain path traversal segments.`);
+  }
+}
+
+function cancelUnusedCacheStream(stream: ReadableStream<Uint8Array>): void {
+  void stream.cancel().catch((error) => {
+    logError("Could not cancel unused temp-cache download stream", error);
+  });
 }
 
 function shouldStopCleanup(
@@ -122,6 +143,24 @@ async function removeStaleCacheEntries(
   }
 }
 
+async function removeExistingCachePath(filePath: string): Promise<void> {
+  let stats: fs.Stats;
+  try {
+    stats = await fs.promises.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (stats.isDirectory() && !stats.isSymbolicLink()) {
+    throw new Error(`Temp file cache path is a directory, not a cached file: ${filePath}`);
+  }
+
+  await fs.promises.rm(filePath, { force: true });
+}
+
 export async function cleanupStaleTempFileCache(
   options: StaleTempCacheCleanupOptions = {},
 ): Promise<void> {
@@ -159,6 +198,7 @@ export async function cleanupStaleTempFileCache(
 export class TempFileManager implements vscode.Disposable {
   private readonly tempRoot: string;
   private readonly cache = new Map<string, string>();
+  private readonly inFlight = new Map<string, InFlightCacheEntry>();
 
   constructor(tempRoot = createPrivateTempRoot(TEMP_DIR_NAME)) {
     this.tempRoot = path.resolve(tempRoot);
@@ -186,7 +226,22 @@ export class TempFileManager implements vscode.Disposable {
    */
   getCachedPath(bucketName: string, fileName: string): string | undefined {
     const key = `${bucketName}/${fileName}`;
-    return this.cache.get(key);
+    const cachedPath = this.cache.get(key);
+    if (!cachedPath) {
+      return undefined;
+    }
+    let cachedStats: fs.Stats;
+    try {
+      cachedStats = fs.lstatSync(cachedPath);
+    } catch {
+      this.cache.delete(key);
+      return undefined;
+    }
+    if (!cachedStats.isFile()) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return cachedPath;
   }
 
   /**
@@ -198,10 +253,51 @@ export class TempFileManager implements vscode.Disposable {
     stream: ReadableStream<Uint8Array>,
     options: DownloadStreamToFileOptions = {},
   ): Promise<string> {
-    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
-    await prepareSafeFileWritePath(this.tempRoot, localPath);
+    const key = `${bucketName}/${fileName}`;
+    const cachedPath = this.getCachedPath(bucketName, fileName);
+    if (cachedPath) {
+      cancelUnusedCacheStream(stream);
+      return cachedPath;
+    }
 
-    await downloadStreamToFile(stream, localPath, options);
+    const inFlight = this.inFlight.get(key);
+    if (inFlight) {
+      cancelUnusedCacheStream(stream);
+      return inFlight.promise;
+    }
+
+    const entry: InFlightCacheEntry = {
+      promise: this.populateCache(bucketName, fileName, stream, options),
+    };
+    this.inFlight.set(key, entry);
+    try {
+      return await entry.promise;
+    } finally {
+      if (this.inFlight.get(key) === entry) {
+        this.inFlight.delete(key);
+      }
+    }
+  }
+
+  private async populateCache(
+    bucketName: string,
+    fileName: string,
+    stream: ReadableStream<Uint8Array>,
+    options: DownloadStreamToFileOptions,
+  ): Promise<string> {
+    assertNoPathTraversalSegments(bucketName, "B2 bucket name");
+    assertNoPathTraversalSegments(fileName, "B2 file name");
+    const localPath = buildTempFilePath(this.tempRoot, bucketName, fileName);
+    await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
+    await removeExistingCachePath(localPath);
+    await prepareSafeFileWritePath(this.tempRoot, localPath, "Temp file cache path");
+
+    await downloadStreamToFile(stream, localPath, {
+      ...options,
+      overwrite: false,
+      allowedRootDirectory: this.tempRoot,
+      temporaryDirectory: path.join(path.dirname(localPath), `.${TRANSFER_TEMP_DIR_NAME}`),
+    });
 
     const key = `${bucketName}/${fileName}`;
     this.cache.set(key, localPath);
@@ -222,5 +318,6 @@ export class TempFileManager implements vscode.Disposable {
       // Best-effort cleanup — ignore errors
     }
     this.cache.clear();
+    this.inFlight.clear();
   }
 }

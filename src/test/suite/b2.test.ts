@@ -35,6 +35,7 @@ import {
   cleanupStaleDestinationTempFiles,
   cleanupStaleTransferTempFiles,
   cleanupStaleUnfinishedUploads,
+  cleanupWorkspaceDestinationTempFiles,
   cleanupWorkspaceTransferTempFiles,
   DEFAULT_DOWNLOAD_MAX_BYTES,
   downloadStreamToNewFileWithinRoot,
@@ -51,6 +52,7 @@ import {
   type UploadBucketHandle,
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
+import { withTimeout } from "../../services/transferTimeout";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import {
   ensurePrivateDirectory,
@@ -64,7 +66,11 @@ import {
   releasePrivateTempRoot,
 } from "../../utils/privateTempRoot";
 import type { B2Credentials } from "../../services/authService";
-import { cleanupStaleUnfinishedUploadsForClient } from "../../extension";
+import {
+  cleanupStaleUnfinishedUploadsForClient,
+  STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS,
+  STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS,
+} from "../../extension";
 import { stubWarningMessage, type WarningMessageCall } from "./windowStubs";
 
 const CUSTOM_API_URL = "https://b2-compatible.example.com";
@@ -541,6 +547,39 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects known oversized downloads without waiting for stream cancel", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-known-limit-"));
+    const destination = path.join(dir, "known-limited.bin");
+    let cancelCalled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+        return new Promise(() => undefined);
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          withTimeout(
+            () =>
+              downloadStreamToFile(stream, destination, {
+                knownBytes: 9,
+                maxBytes: 8,
+              }),
+            100,
+            "known oversized download rejection",
+          ),
+        DownloadSizeLimitError,
+      );
+
+      assert.strictEqual(cancelCalled, true);
+      assert.strictEqual(fs.existsSync(destination), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("documents the default download size cap", () => {
     assert.strictEqual(DEFAULT_DOWNLOAD_MAX_BYTES, 1024 * 1024 * 1024);
   });
@@ -633,6 +672,178 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("rejects parent symlink swaps before no-overwrite publish", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-bind-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalLstat = fs.promises.lstat;
+    const mutablePromises = fs.promises as unknown as {
+      lstat: typeof fs.promises.lstat;
+    };
+    let downloaded = false;
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        downloaded = true;
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.lstat = (async (...args: Parameters<typeof fs.promises.lstat>) => {
+      if (downloaded && !swapped && path.resolve(String(args[0])) === path.resolve(destination)) {
+        swapped = true;
+        fs.renameSync(downloadDir, movedDownloadDir);
+        fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalLstat(...args);
+    }) as typeof fs.promises.lstat;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /outside the allowed root|real directory|symlink|ENOENT|no such file/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+    } finally {
+      mutablePromises.lstat = originalLstat;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects destination symlink swaps before root-bound no-overwrite publish", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-file-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-file-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    fs.writeFileSync(outsideTarget, "outside");
+    const symlinkSupported = createFileSymlink(outsideTarget, probeLink);
+    const originalOpen = fs.promises.open;
+    const mutablePromises = fs.promises as unknown as {
+      open: typeof fs.promises.open;
+    };
+    let downloaded = false;
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        downloaded = true;
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (downloaded && !swapped && path.resolve(openedPath) === path.resolve(destination)) {
+        swapped = createFileSymlink(outsideTarget, destination);
+        if (!swapped) {
+          throw new Error("File symlink creation became unavailable.");
+        }
+      }
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /EEXIST|ELOOP|file already exists|symbolic link|symlink/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTarget, "utf8"), "outside");
+    } finally {
+      mutablePromises.open = originalOpen;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("removes root-bound files opened through parent symlink races", async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-open-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-publish-open-outside-"));
+    const downloadDir = path.join(workspaceDir, "downloads");
+    const movedDownloadDir = path.join(workspaceDir, "downloads-original");
+    const destination = path.join(downloadDir, "payload.bin");
+    const outsideTarget = path.join(outsideDir, "payload.bin");
+    const probeLink = path.join(workspaceDir, "probe");
+    fs.mkdirSync(downloadDir);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpen = fs.promises.open;
+    const mutablePromises = fs.promises as unknown as {
+      open: typeof fs.promises.open;
+    };
+    let swapped = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("do not publish outside"));
+        controller.close();
+      },
+    });
+
+    mutablePromises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (!swapped && path.resolve(openedPath) === path.resolve(destination)) {
+        swapped = true;
+        fs.renameSync(downloadDir, movedDownloadDir);
+        fs.symlinkSync(outsideDir, downloadDir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await assert.rejects(
+        () =>
+          downloadStreamToFile(stream, destination, {
+            allowedRootDirectory: workspaceDir,
+            overwrite: false,
+          }),
+        /outside the allowed root|changed while it was being opened|real directory|symlink/i,
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+    } finally {
+      mutablePromises.open = originalOpen;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   test("does not create workspace transfer temp dir after parent swap", async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-temp-race-"));
     const outsideDir = fs.mkdtempSync(
@@ -646,7 +857,7 @@ suite("B2 transfer helpers", () => {
     const probeLink = path.join(workspaceDir, "probe");
     fs.mkdirSync(downloadDir);
     const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
-    const originalReaddir = fs.promises.readdir;
+    const originalOpendir = fs.promises.opendir;
     let swapped = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -661,7 +872,7 @@ suite("B2 transfer helpers", () => {
       }
       fs.rmSync(probeLink, { recursive: true, force: true });
 
-      fs.promises.readdir = (async (...args: Parameters<typeof fs.promises.readdir>) => {
+      fs.promises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
         const directory = args[0];
         if (!swapped && path.resolve(String(directory)) === path.resolve(downloadDir)) {
           swapped = true;
@@ -673,8 +884,8 @@ suite("B2 transfer helpers", () => {
           );
         }
 
-        return originalReaddir(...args);
-      }) as typeof fs.promises.readdir;
+        return originalOpendir(...args);
+      }) as typeof fs.promises.opendir;
 
       await assert.rejects(
         () =>
@@ -689,7 +900,7 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.existsSync(outsideTempDir), false);
       assert.strictEqual(fs.existsSync(destination), false);
     } finally {
-      fs.promises.readdir = originalReaddir;
+      fs.promises.opendir = originalOpendir;
       fs.rmSync(workspaceDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
     }
@@ -731,25 +942,40 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("root-bound downloads publish only a complete placement temp", async () => {
+  test("root-bound downloads write new files without exposing a loose overwrite mode", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-root-"));
     const destination = path.join(dir, "nested", "file.bin");
     const existing = path.join(dir, "existing.bin");
     const originalLink = fs.promises.link;
+    const originalCopyFile = fs.promises.copyFile;
+    const originalOpen = fs.promises.open;
     let linkCalls = 0;
+    let destinationCopyFileCalls = 0;
+    let destinationTempOpenCalls = 0;
     fs.writeFileSync(existing, Buffer.from([1]));
-    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+    fs.promises.link = async (): Promise<void> => {
       linkCalls += 1;
-      assert.strictEqual(
-        path.resolve(String(newPath)),
-        path.resolve(linkCalls === 1 ? destination : existing),
-      );
-      if (path.resolve(String(newPath)) === path.resolve(destination)) {
-        assert.strictEqual(fs.existsSync(newPath), false);
-      }
-      assert.match(path.basename(String(existingPath)), /^b2-transfer-\d+-[a-f0-9]{24}\.tmp$/);
-      await fs.promises.copyFile(existingPath, newPath, fs.constants.COPYFILE_EXCL);
+      throw new Error("root-bound downloads must not hardlink into place");
     };
+    fs.promises.copyFile = async (
+      sourcePath: fs.PathLike,
+      destinationPath: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      if (path.resolve(String(destinationPath)) === path.resolve(destination)) {
+        destinationCopyFileCalls += 1;
+        throw new Error("root-bound downloads must not copyFile into place");
+      }
+      await originalCopyFile(sourcePath, destinationPath, mode);
+    };
+    fs.promises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+      const openedPath = String(args[0]);
+      if (path.basename(openedPath).startsWith(".b2-cross-device-file.bin-")) {
+        destinationTempOpenCalls += 1;
+        throw new Error("root-bound downloads must publish directly from the staged temp");
+      }
+      return originalOpen(...args);
+    }) as typeof fs.promises.open;
 
     try {
       const size = await downloadStreamToNewFileWithinRoot(
@@ -764,7 +990,9 @@ suite("B2 transfer helpers", () => {
       );
 
       assert.strictEqual(size, 3);
-      assert.strictEqual(linkCalls, 1);
+      assert.strictEqual(linkCalls, 0);
+      assert.strictEqual(destinationCopyFileCalls, 0);
+      assert.strictEqual(destinationTempOpenCalls, 0);
       assert.deepStrictEqual([...fs.readFileSync(destination)], [6, 7, 8]);
       assert.strictEqual(
         fs.existsSync(path.join(dir, TRANSFER_TEMP_DIR_NAME)),
@@ -790,10 +1018,11 @@ suite("B2 transfer helpers", () => {
           ),
         /EEXIST|file already exists/i,
       );
-      assert.strictEqual(linkCalls, 2);
       assert.deepStrictEqual([...fs.readFileSync(existing)], [1]);
     } finally {
       fs.promises.link = originalLink;
+      fs.promises.copyFile = originalCopyFile;
+      fs.promises.open = originalOpen;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -875,7 +1104,7 @@ suite("B2 transfer helpers", () => {
           const size = await downloadStreamToFile(stream, destination, { overwrite: false });
 
           assert.strictEqual(size, 3);
-          assert.strictEqual(linkCalls, 1);
+          assert.strictEqual(linkCalls, 2);
           assert.deepStrictEqual([...fs.readFileSync(destination)], [9, 8, 7]);
         } finally {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -883,6 +1112,56 @@ suite("B2 transfer helpers", () => {
       }
     } finally {
       fs.promises.link = originalLink;
+    }
+  });
+
+  test("does not overwrite destination created during hardlink fallback publish", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-publish-race-"));
+    const destination = path.join(dir, "file.bin");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([4, 5, 6]));
+        controller.close();
+      },
+    });
+    const originalLink = fs.promises.link;
+    const originalCopyFile = fs.promises.copyFile;
+    let destinationTempPath = "";
+
+    fs.promises.link = async (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> => {
+      if (
+        path.resolve(String(newPath)) === path.resolve(destination) &&
+        path.basename(String(existingPath)).startsWith(".b2-cross-device-")
+      ) {
+        destinationTempPath = String(existingPath);
+      }
+      throw Object.assign(new Error("hardlink unavailable"), { code: "EXDEV" });
+    };
+    fs.promises.copyFile = async (
+      src: fs.PathLike,
+      dest: fs.PathLike,
+      mode?: number,
+    ): Promise<void> => {
+      if (path.resolve(String(dest)) === path.resolve(destination)) {
+        assert.strictEqual(path.basename(String(src)).startsWith(".b2-cross-device-"), true);
+        assert.strictEqual(mode, fs.constants.COPYFILE_EXCL);
+        fs.writeFileSync(destination, Buffer.from([1, 1, 1]));
+      }
+      await originalCopyFile(src, dest, mode);
+    };
+
+    try {
+      await assert.rejects(
+        () => downloadStreamToFile(stream, destination, { overwrite: false }),
+        /EEXIST|file already exists/i,
+      );
+
+      assert.deepStrictEqual([...fs.readFileSync(destination)], [1, 1, 1]);
+      assert.strictEqual(fs.existsSync(destinationTempPath), false);
+    } finally {
+      fs.promises.link = originalLink;
+      fs.promises.copyFile = originalCopyFile;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -1811,53 +2090,149 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("activation stale-upload sweep caps bucket scans and list timeout", async () => {
-    const timeoutClient = {
-      async listBuckets() {
+  test("activation stale unfinished-upload sweep times out bucket listing", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: NodeJS.Timeout[] = [];
+    let listBucketsCalled = false;
+    const client = {
+      listBuckets() {
+        listBucketsCalled = true;
         return new Promise<never>(() => undefined);
       },
     } as unknown as Pick<B2Client, "listBuckets">;
 
-    await assert.rejects(
-      () =>
-        cleanupStaleUnfinishedUploadsForClient(timeoutClient, {
-          listBucketsTimeoutMs: 5,
-        }),
-      /bucket listing timed out/i,
-    );
+    globalThis.setTimeout = ((
+      callback: (...args: unknown[]) => void,
+      _timeout?: number,
+      ...args: unknown[]
+    ) => {
+      const timer = originalSetTimeout(callback, 0, ...args);
+      timers.push(timer);
+      return timer;
+    }) as typeof setTimeout;
 
-    const scannedBuckets: string[] = [];
-    const bucket = (name: string): UploadBucketHandle & { name: string } => {
-      const value: UploadBucketHandle & { name: string } = {
-        name,
+    try {
+      const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+      assert.strictEqual(listBucketsCalled, true);
+      assert.deepStrictEqual(result, {
+        bucketCount: 0,
+        reclaimedOwnedStaleUploadCount: 0,
+        ignoredUnownedStaleUploadCount: 0,
+        failedBucketCount: 0,
+      });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      for (const timer of timers) {
+        originalClearTimeout(timer);
+      }
+    }
+  });
+
+  test("activation stale unfinished-upload sweep caps bucket count", async () => {
+    let listCalls = 0;
+    const buckets = Array.from(
+      { length: STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS + 3 },
+      (_, index) => ({
+        name: `bucket-${index}`,
         async listUnfinishedLargeFiles() {
-          scannedBuckets.push(name);
+          listCalls += 1;
           return { files: [], nextFileId: null };
         },
         async cancelLargeFile() {
-          assert.fail("Empty cleanup pages should not cancel uploads");
+          assert.fail("Expected empty cleanup pages not to cancel uploads");
         },
-        file() {
-          assert.fail("Activation cleanup test should not open an upload stream");
-        },
-        async upload() {
-          assert.fail("Activation cleanup test should not upload a file");
-        },
-      };
-      return value;
-    };
-    const cappedClient = {
+      }),
+    ) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
       async listBuckets() {
-        return [bucket("one"), bucket("two")];
+        return buckets;
       },
     } as unknown as Pick<B2Client, "listBuckets">;
 
-    const result = await cleanupStaleUnfinishedUploadsForClient(cappedClient, {
-      maxBuckets: 1,
+    const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+    assert.strictEqual(listCalls, STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS);
+    assert.deepStrictEqual(result, {
+      bucketCount: STALE_UNFINISHED_UPLOAD_SWEEP_MAX_BUCKETS,
+      reclaimedOwnedStaleUploadCount: 0,
+      ignoredUnownedStaleUploadCount: 0,
+      failedBucketCount: 0,
+    });
+  });
+
+  test("activation stale unfinished-upload sweep enforces aggregate budget", async () => {
+    const originalNow = Date.now;
+    let now = 10_000;
+    let listCalls = 0;
+    const buckets = [0, 1].map((index) => ({
+      name: `bucket-${index}`,
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        now += STALE_UNFINISHED_UPLOAD_SWEEP_BUDGET_MS + 1;
+        return { files: [], nextFileId: null };
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected empty cleanup pages not to cancel uploads");
+      },
+    })) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
+      async listBuckets() {
+        return buckets;
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    Date.now = () => now;
+    try {
+      const result = await cleanupStaleUnfinishedUploadsForClient(client);
+
+      assert.strictEqual(listCalls, 1);
+      assert.deepStrictEqual(result, {
+        bucketCount: 1,
+        reclaimedOwnedStaleUploadCount: 0,
+        ignoredUnownedStaleUploadCount: 0,
+        failedBucketCount: 0,
+      });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("activation stale unfinished-upload sweep reports missing capability once", async () => {
+    let listCalls = 0;
+    let missingCapabilityReports = 0;
+    const buckets = [0, 1].map((index) => ({
+      name: `bucket-${index}`,
+      async listUnfinishedLargeFiles() {
+        listCalls += 1;
+        throw Object.assign(new Error("missing capability"), { code: "missing_capability" });
+      },
+      async cancelLargeFile() {
+        assert.fail("Expected missing capability not to cancel uploads");
+      },
+    })) as unknown as Array<UploadBucketHandle & { name: string }>;
+    const client = {
+      async listBuckets() {
+        return buckets;
+      },
+    } as unknown as Pick<B2Client, "listBuckets">;
+
+    const result = await cleanupStaleUnfinishedUploadsForClient(client, {
+      onMissingCapability: () => {
+        missingCapabilityReports += 1;
+      },
     });
 
-    assert.strictEqual(result.bucketCount, 1);
-    assert.deepStrictEqual(scannedBuckets, ["one"]);
+    assert.strictEqual(listCalls, 2);
+    assert.strictEqual(missingCapabilityReports, 1);
+    assert.deepStrictEqual(result, {
+      bucketCount: 2,
+      reclaimedOwnedStaleUploadCount: 0,
+      ignoredUnownedStaleUploadCount: 0,
+      failedBucketCount: 0,
+    });
   });
 
   test("does not trust spoofable remote unfinished upload metadata", async () => {
@@ -2495,26 +2870,29 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("sanitizes B2 object keys that attempt to escape the temp cache", async () => {
+  test("rejects B2 object keys that attempt to escape the temp cache", async () => {
     const manager = new TempFileManager();
     const outsidePath = path.join(os.tmpdir(), `b2-vscode-outside-${Date.now()}`, "owned.txt");
     const maliciousKey = `../../${path.basename(path.dirname(outsidePath))}/owned.txt`;
 
     try {
-      const cachedPath = await manager.saveStream(
-        "bucket",
-        maliciousKey,
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array([1, 2, 3]));
-            controller.close();
-          },
-        }),
+      await assert.rejects(
+        () =>
+          manager.saveStream(
+            "bucket",
+            maliciousKey,
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.close();
+              },
+            }),
+          ),
+        /B2 file name must not contain path traversal segments/i,
       );
 
       assert.strictEqual(fs.existsSync(outsidePath), false);
-      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), cachedPath);
-      assert.deepStrictEqual(await fs.promises.readFile(cachedPath), Buffer.from([1, 2, 3]));
+      assert.strictEqual(manager.getCachedPath("bucket", maliciousKey), undefined);
     } finally {
       manager.dispose();
       fs.rmSync(path.dirname(outsidePath), { recursive: true, force: true });
@@ -2655,6 +3033,32 @@ suite("B2 transfer helpers", () => {
     }
   });
 
+  test("bounds stale private temp root scans across empty candidates", async () => {
+    const prefix = `b2-vscode-budget-cache-${process.pid}`;
+    const staleRoots = Array.from({ length: 3 }, () =>
+      fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`)),
+    );
+    const oldTime = new Date(Date.now() - 10_000);
+    for (const staleRoot of staleRoots) {
+      fs.utimesSync(staleRoot, oldTime, oldTime);
+    }
+
+    try {
+      await cleanupStalePrivateTempRoots(prefix, {
+        maxAgeMs: 1_000,
+        maxEntries: 1,
+        budgetMs: 1_000,
+      });
+
+      const remainingRoots = staleRoots.filter((staleRoot) => fs.existsSync(staleRoot));
+      assert.ok(remainingRoots.length >= 2, "scan cap should leave unscanned roots in place");
+    } finally {
+      for (const staleRoot of staleRoots) {
+        fs.rmSync(staleRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("keeps stale private temp roots with active child files", async () => {
     const prefix = `b2-vscode-active-cache-${process.pid}`;
     const activeRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
@@ -2670,34 +3074,6 @@ suite("B2 transfer helpers", () => {
       assert.strictEqual(fs.readFileSync(activeFile, "utf8"), "active");
     } finally {
       fs.rmSync(activeRoot, { recursive: true, force: true });
-    }
-  });
-
-  test("continues stale private temp cleanup after one root hits scan cap", async () => {
-    const prefix = `b2-vscode-capped-cache-${process.pid}`;
-    const largeRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
-    const cheapRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
-    const oldTime = new Date(Date.now() - 10_000);
-    fs.writeFileSync(path.join(largeRoot, "first.bin"), "stale");
-    fs.writeFileSync(path.join(largeRoot, "second.bin"), "stale");
-    fs.utimesSync(largeRoot, oldTime, oldTime);
-    fs.utimesSync(path.join(largeRoot, "first.bin"), oldTime, oldTime);
-    fs.utimesSync(path.join(largeRoot, "second.bin"), oldTime, oldTime);
-    fs.utimesSync(cheapRoot, oldTime, oldTime);
-
-    try {
-      await cleanupStalePrivateTempRoots(prefix, {
-        maxAgeMs: 1_000,
-        budgetMs: 1_000,
-        candidateBudgetMs: 1_000,
-        maxEntries: 1,
-      });
-
-      assert.strictEqual(fs.existsSync(largeRoot), true);
-      assert.strictEqual(fs.existsSync(cheapRoot), false);
-    } finally {
-      fs.rmSync(largeRoot, { recursive: true, force: true });
-      fs.rmSync(cheapRoot, { recursive: true, force: true });
     }
   });
 
@@ -2801,6 +3177,71 @@ suite("B2 transfer helpers", () => {
     );
   });
 
+  test("propagates parent aborts through fixed transfer timeouts", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("caller cancelled transfer");
+    let runSignal: AbortSignal | undefined;
+
+    const pending = withTimeout(
+      (signal) => {
+        runSignal = signal;
+        return new Promise<never>(() => undefined);
+      },
+      100,
+      "request setup",
+      { signal: controller.signal },
+    );
+
+    controller.abort(abortReason);
+
+    await assert.rejects(
+      () => pending,
+      (error) => error === abortReason,
+    );
+    assert.strictEqual(runSignal?.aborted, true);
+  });
+
+  test("cleans up fixed transfer timeouts when callbacks throw synchronously", async () => {
+    for (const timeoutMs of [0, 100] as const) {
+      const controller = new AbortController();
+      const signal = controller.signal as AbortSignal & {
+        addEventListener: AbortSignal["addEventListener"];
+        removeEventListener: AbortSignal["removeEventListener"];
+      };
+      const originalAddEventListener = signal.addEventListener.bind(signal);
+      const originalRemoveEventListener = signal.removeEventListener.bind(signal);
+      const thrown = new Error(`sync failure ${timeoutMs}`);
+      let linkedAbortListenerCount = 0;
+
+      signal.addEventListener = ((type, listener, options) => {
+        if (type === "abort") {
+          linkedAbortListenerCount += 1;
+        }
+        return originalAddEventListener(type, listener, options);
+      }) as AbortSignal["addEventListener"];
+      signal.removeEventListener = ((type, listener, options) => {
+        if (type === "abort") {
+          linkedAbortListenerCount -= 1;
+        }
+        return originalRemoveEventListener(type, listener, options);
+      }) as AbortSignal["removeEventListener"];
+
+      await assert.rejects(
+        () =>
+          withTimeout(
+            () => {
+              throw thrown;
+            },
+            timeoutMs,
+            "request setup",
+            { signal },
+          ),
+        (error) => error === thrown,
+      );
+      assert.strictEqual(linkedAbortListenerCount, 0);
+    }
+  });
+
   test("cleans stale managed transfer temp files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-transfer-cleanup-"));
     const stale = path.join(dir, "b2-transfer-1-abcdefabcdefabcdefabcdef.tmp");
@@ -2866,25 +3307,41 @@ suite("B2 transfer helpers", () => {
     }
   });
 
-  test("cleans stale destination temp files and restores orphaned backups", async () => {
+  test("cleans stale destination temp files without restoring orphaned backups", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-cleanup-"));
-    const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdef.tmp");
-    const orphanedBackup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const crossDevice = path.join(dir, ".b2-cross-device-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
+    const orphanedBackup = path.join(
+      dir,
+      ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
     const freshOrphanedBackup = path.join(
       dir,
-      ".b2-replace-backup-fresh-missing.bin-1-abcdefabcdef.tmp",
+      ".b2-replace-backup-fresh-missing.bin-1-abcdefabcdefabcdefabcdef.tmp",
     );
     const completedDestination = path.join(dir, "complete.bin");
-    const completedBackup = path.join(dir, ".b2-replace-backup-complete.bin-1-abcdefabcdef.tmp");
-    const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdef.tmp");
+    const completedBackup = path.join(
+      dir,
+      ".b2-replace-backup-complete.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const freshTemp = path.join(dir, ".b2-cross-device-fresh.bin-1-abcdefabcdefabcdefabcdef.tmp");
+    const userLikeCrossDevice = path.join(dir, ".b2-cross-device-user-not-extension.tmp");
+    const userLikeBackup = path.join(dir, ".b2-replace-backup-user-not-extension.tmp");
     fs.writeFileSync(crossDevice, "partial");
     fs.writeFileSync(orphanedBackup, "original");
     fs.writeFileSync(freshOrphanedBackup, "fresh original");
     fs.writeFileSync(completedDestination, "new");
     fs.writeFileSync(completedBackup, "old");
     fs.writeFileSync(freshTemp, "active");
+    fs.writeFileSync(userLikeCrossDevice, "user cross-device");
+    fs.writeFileSync(userLikeBackup, "user backup");
     const oldTime = new Date(Date.now() - 10_000);
-    for (const filePath of [crossDevice, orphanedBackup, completedBackup]) {
+    for (const filePath of [
+      crossDevice,
+      orphanedBackup,
+      completedBackup,
+      userLikeCrossDevice,
+      userLikeBackup,
+    ]) {
       fs.utimesSync(filePath, oldTime, oldTime);
     }
 
@@ -2893,39 +3350,262 @@ suite("B2 transfer helpers", () => {
 
       assert.strictEqual(fs.existsSync(crossDevice), false);
       assert.strictEqual(fs.existsSync(orphanedBackup), false);
-      assert.strictEqual(fs.readFileSync(path.join(dir, "file.bin"), "utf8"), "original");
-      assert.strictEqual(
-        fs.readFileSync(path.join(dir, "fresh-missing.bin"), "utf8"),
-        "fresh original",
-      );
+      assert.strictEqual(fs.existsSync(path.join(dir, "file.bin")), false);
+      assert.strictEqual(fs.readFileSync(freshOrphanedBackup, "utf8"), "fresh original");
+      assert.strictEqual(fs.existsSync(path.join(dir, "fresh-missing.bin")), false);
       assert.strictEqual(fs.readFileSync(completedDestination, "utf8"), "new");
       assert.strictEqual(fs.existsSync(completedBackup), false);
       assert.strictEqual(fs.readFileSync(freshTemp, "utf8"), "active");
+      assert.strictEqual(fs.readFileSync(userLikeCrossDevice, "utf8"), "user cross-device");
+      assert.strictEqual(fs.readFileSync(userLikeBackup, "utf8"), "user backup");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("restores fresh destination backups after interrupted replacement", async () => {
+  test("skips destination cleanup directory swapped to a symlink during open", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-open-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-destination-open-outside-"),
+    );
+    const outsideTemp = path.join(
+      outsideDir,
+      ".b2-cross-device-escape.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const probeLink = path.join(path.dirname(dir), `probe-${path.basename(dir)}`);
+    fs.writeFileSync(outsideTemp, "outside");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(outsideTemp, oldTime, oldTime);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpendir = fs.promises.opendir;
+    const mutablePromises = fs.promises as unknown as {
+      opendir: typeof fs.promises.opendir;
+    };
+    let swapped = false;
+
+    mutablePromises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(dir)) {
+        swapped = true;
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.symlinkSync(outsideDir, dir, process.platform === "win32" ? "junction" : "dir");
+      }
+      return originalOpendir(...args);
+    }) as typeof fs.promises.opendir;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await cleanupStaleDestinationTempFiles({ directory: dir, maxAgeMs: 1_000 });
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTemp, "utf8"), "outside");
+    } finally {
+      mutablePromises.opendir = originalOpendir;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+      fs.rmSync(probeLink, { recursive: true, force: true });
+    }
+  });
+
+  test("streams workspace destination cleanup without restoring forged backups", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-"));
+    const nested = path.join(dir, "nested", "downloads");
+    const backup = path.join(
+      nested,
+      ".b2-replace-backup-report.txt-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const restored = path.join(nested, "report.txt");
+    const staleTemp = path.join(nested, ".b2-cross-device-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(backup, "report");
+    fs.writeFileSync(staleTemp, "partial");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(backup, oldTime, oldTime);
+    fs.utimesSync(staleTemp, oldTime, oldTime);
+
+    const originalReaddir = fs.promises.readdir;
+    const mutablePromises = fs.promises as unknown as { readdir: typeof fs.promises.readdir };
+    let readdirCalled = false;
+    mutablePromises.readdir = (async () => {
+      readdirCalled = true;
+      throw new Error("workspace destination cleanup should use opendir");
+    }) as typeof fs.promises.readdir;
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(readdirCalled, false);
+      assert.strictEqual(fs.existsSync(backup), false);
+      assert.strictEqual(fs.existsSync(restored), false);
+      assert.strictEqual(fs.existsSync(staleTemp), false);
+    } finally {
+      mutablePromises.readdir = originalReaddir;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips workspace destination directories swapped to symlinks", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-swap-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-workspace-destination-outside-"),
+    );
+    const nested = path.join(dir, "nested");
+    const outsideTemp = path.join(
+      outsideDir,
+      ".b2-cross-device-escape.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const probeLink = path.join(dir, "probe");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(outsideTemp, "outside");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(outsideTemp, oldTime, oldTime);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalLstat = fs.promises.lstat;
+    const mutablePromises = fs.promises as unknown as { lstat: typeof fs.promises.lstat };
+    let swapped = false;
+
+    mutablePromises.lstat = (async (...args: Parameters<typeof fs.promises.lstat>) => {
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(nested)) {
+        fs.rmSync(nested, { recursive: true, force: true });
+        swapped = createDirectorySymlink(outsideDir, nested);
+        if (!swapped) {
+          throw new Error("Directory symlink creation became unavailable.");
+        }
+      }
+      return originalLstat(...args);
+    }) as typeof fs.promises.lstat;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTemp, "utf8"), "outside");
+    } finally {
+      mutablePromises.lstat = originalLstat;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips workspace destination directories swapped to symlinks during open", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-destination-open-"));
+    const outsideDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "b2-vscode-workspace-destination-open-outside-"),
+    );
+    const nested = path.join(dir, "nested");
+    const outsideTemp = path.join(
+      outsideDir,
+      ".b2-cross-device-open.bin-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const probeLink = path.join(dir, "probe");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(outsideTemp, "outside");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(outsideTemp, oldTime, oldTime);
+    const symlinkSupported = createDirectorySymlink(outsideDir, probeLink);
+    const originalOpendir = fs.promises.opendir;
+    const mutablePromises = fs.promises as unknown as { opendir: typeof fs.promises.opendir };
+    let swapped = false;
+
+    mutablePromises.opendir = (async (...args: Parameters<typeof fs.promises.opendir>) => {
+      if (!swapped && path.resolve(String(args[0])) === path.resolve(nested)) {
+        fs.rmSync(nested, { recursive: true, force: true });
+        swapped = createDirectorySymlink(outsideDir, nested);
+        if (!swapped) {
+          throw new Error("Directory symlink creation became unavailable.");
+        }
+      }
+      return originalOpendir(...args);
+    }) as typeof fs.promises.opendir;
+
+    try {
+      if (!symlinkSupported) {
+        return;
+      }
+      fs.rmSync(probeLink, { recursive: true, force: true });
+
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(swapped, true);
+      assert.strictEqual(fs.readFileSync(outsideTemp, "utf8"), "outside");
+    } finally {
+      mutablePromises.opendir = originalOpendir;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips control directories during workspace destination cleanup", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-workspace-control-cleanup-"));
+    const gitDir = path.join(dir, ".git");
+    const backup = path.join(
+      gitDir,
+      ".b2-replace-backup-package.json-1-abcdefabcdefabcdefabcdef.tmp",
+    );
+    const restored = path.join(gitDir, "package.json");
+    fs.mkdirSync(gitDir);
+    fs.writeFileSync(backup, "do not restore");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(backup, oldTime, oldTime);
+
+    try {
+      await cleanupWorkspaceDestinationTempFiles({
+        workspaceRoot: dir,
+        maxAgeMs: 1_000,
+        budgetMs: 1_000,
+        maxEntries: 20,
+      });
+
+      assert.strictEqual(fs.readFileSync(backup, "utf8"), "do not restore");
+      assert.strictEqual(fs.existsSync(restored), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps fresh destination backups during stale cleanup", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-fresh-backup-"));
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
     const restored = path.join(dir, "file.bin");
     fs.writeFileSync(backup, "original");
 
     try {
       await cleanupStaleDestinationTempFiles({ directory: dir });
 
-      assert.strictEqual(fs.existsSync(backup), false);
-      assert.strictEqual(fs.readFileSync(restored, "utf8"), "original");
+      assert.strictEqual(fs.readFileSync(backup, "utf8"), "original");
+      assert.strictEqual(fs.existsSync(restored), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("does not restore symlink destination backups", async () => {
+  test("deletes stale symlink destination backups without restoring them", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-destination-symlink-"));
     const target = path.join(dir, "target");
-    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdef.tmp");
+    const backup = path.join(dir, ".b2-replace-backup-file.bin-1-abcdefabcdefabcdefabcdef.tmp");
     const restored = path.join(dir, "file.bin");
     fs.mkdirSync(target);
 
@@ -2937,11 +3617,11 @@ suite("B2 transfer helpers", () => {
 
       await cleanupStaleDestinationTempFiles({
         directory: dir,
-        maxAgeMs: Number.POSITIVE_INFINITY,
+        maxAgeMs: -1,
       });
 
       assert.strictEqual(fs.existsSync(restored), false);
-      assert.strictEqual(fs.lstatSync(backup).isSymbolicLink(), true);
+      assert.strictEqual(fs.existsSync(backup), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

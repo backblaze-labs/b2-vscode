@@ -11,16 +11,13 @@
   retry with backoff, and an SSRF guard.
 - Raised the minimum supported VS Code to 1.101, whose extension host runs
   Node 22, matching the SDK's runtime requirement.
-- Download and temp-open paths now preserve natural B2 object basenames while
-  sanitizing traversal and platform-unsafe path segments before writing locally.
-  Characters that are unsafe on Windows, such as `:`, `?`, and `*`, are encoded
-  on every host so downloaded names remain portable.
-- Copilot `downloadFile` / `uploadFile` local paths are workspace-relative;
-  absolute local paths are no longer accepted, download destinations are
-  sanitized before writing, and existing local files are not overwritten.
-- Streaming downloads stage temporary files beside the final destination by
-  default, avoiding RAM-backed system temp directories and cross-device recopy
-  for large downloads.
+- `presignUrl` now requires an integer expiration from 1 to 3600 seconds,
+  defaults to 300 seconds, and rejects empty paths, folder-like paths, and paths
+  that `listFiles` cannot
+  verify as one existing downloadable B2 file with no current same-prefix
+  sibling files before issuing a prefix-based download authorization. The
+  token-bearing link is returned in the structured `url` field rather than
+  repeated in the human-readable message.
 
 ### Fixed
 
@@ -48,37 +45,28 @@
   modal warning plus exact bucket-name confirmation. Ambiguous failures after a
   public-affecting visibility request refresh the bucket tree and warn that the
   bucket may already be public.
-- Activation now runs a bounded, sequential cleanup sweep across buckets to
-  reclaim stale unfinished multipart uploads only when B2 file info matches a
-  locally persisted owner marker. Failed uploads still cancel unfinished uploads
-  that match the active upload session, and stale same-key extension-owned
-  uploads are cleaned before a retry. Configure a B2 lifecycle rule as a
-  backstop for stale unfinished large files after deleted local state, older
-  extension versions, deleted workstations, or failed cleanup.
-- Workspace downloads and open-file cache downloads now enforce a 1 GiB default
-  size cap, abort oversized streams, and remove partial local files.
+- Automatic global cleanup of stale unfinished multipart uploads has been
+  removed because B2 file info is caller-controlled. Failed uploads cancel
+  unfinished uploads that match the active upload session only. Activation-time
+  stale cleanup is limited to uploads with locally persisted session markers so
+  another live VS Code window or machine is not touched. Operators should
+  configure a B2 lifecycle rule or use B2 tools to clean legacy unfinished
+  multipart uploads so older extension versions, crashes, or power-loss orphans
+  cannot accumulate storage cost.
+- Open-file cache downloads now enforce a 1 GiB default size cap, abort
+  oversized streams, and remove partial local files.
 - Interactive open-file downloads now stream with the same 5-minute stall
   timeout as other local transfer paths.
-- Copilot download tools now reject absolute, symlinked, or directory
-  destinations that would write outside the active workspace or create unsafe
-  local filenames.
-- LM `downloadFile` writes only to workspace-relative paths and refuses to
-  overwrite existing workspace files. LM `uploadFile` reads only
-  workspace-relative files.
-- `presignUrl` now rejects empty or slash-terminated paths, validates
-  `expiresIn` between 1 and 3600 seconds, checks that the requested path
-  currently names exactly one downloadable object with no adjacent same-prefix
-  object, and explicitly reports that B2 download authorization tokens remain
-  name-prefix scoped for current and future matching names. It now requires B2
-  keys with both `listFiles` and `shareFiles`. Presigned URLs default to 300
-  seconds; longer-lived links require an explicit `expiresIn`.
-- Temp-open downloads now use a private per-process cache directory with
-  owner-only file permissions. Stale temp-root cleanup preserves active roots
-  with live owner markers or recently updated child files.
-- Interrupted large uploads persist a local owner marker before multipart
-  transfer starts, so matching stale unfinished uploads can be reclaimed after
-  restart. Configure a B2 bucket lifecycle rule as a backstop for stale
-  unfinished large files after deleted local state or host termination.
+- `downloadFile` now confines workspace-relative `localPath` destinations to the
+  first open workspace folder, rejecting absolute paths, traversal attempts, and
+  symlink escapes before writing downloaded object data. Downloads enforce a
+  512 MiB limit and stream into extension-owned temporary files before publishing
+  the final path without overwriting an existing workspace file.
+- `uploadFile` now confines workspace-relative `localPath` sources to the first
+  open workspace folder, rejecting absolute paths, traversal attempts, and
+  symlink escapes before reading and uploading local file content.
+- Temporary download caching now rejects bucket or file names that normalize
+  outside the cache root or traverse through symlinked cache parents.
 
 ## [0.0.1] — 2026-03-25
 

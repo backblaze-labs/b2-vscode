@@ -39,6 +39,7 @@ interface DownloadFileResult {
 
 const WORKSPACE_REQUIRED_MESSAGE =
   "No workspace folder open. The downloadFile tool requires an open workspace folder because localPath must be workspace-relative.";
+const LM_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
 
 function assertNoControlDirectoryTarget(workspaceRoot: string, destinationPath: string): void {
   const blocked = findWorkspaceControlDirectory(workspaceRoot, destinationPath);
@@ -159,7 +160,7 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
         { title: `Downloading b2://${params.bucket}/${remotePath}...`, token },
         async ({ progress, signal }) => {
           const reporter = createTransferProgressReporter(progress);
-          const { body } = await withTransferStallTimeout(
+          const download = await withTransferStallTimeout(
             `Download request for b2://${params.bucket}/${remotePath}`,
             { signal },
             (requestSignal, markActivity) =>
@@ -172,9 +173,16 @@ export const downloadFileOperation: B2ToolOperation<DownloadFileParams, Download
               }),
           );
 
-          return downloadStreamToNewFileWithinRoot(body, savePath, destination.workspaceRoot, {
-            signal,
-          });
+          return downloadStreamToNewFileWithinRoot(
+            download.body,
+            savePath,
+            destination.workspaceRoot,
+            {
+              signal,
+              maxBytes: LM_DOWNLOAD_MAX_BYTES,
+              knownBytes: download.headers?.contentLength,
+            },
+          );
         },
       );
     } catch (error) {

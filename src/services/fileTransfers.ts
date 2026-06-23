@@ -24,21 +24,39 @@ import {
   type UploadWriteHandle,
 } from "@backblaze-labs/b2-sdk";
 import { log, logError } from "../logger";
+import { isMissingCapabilityError } from "../utils/b2Errors";
 import { humanSize } from "../utils/humanSize";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 import {
   ensureContainedDirectoryPath,
-  assertSafeFileWritePath,
   assertPrivateDirectory,
   ensurePrivateDirectory,
   ensureRealDirectory,
   pathExistsAsRealDirectory,
   prepareSafeFileWritePath,
-  replaceFileNoFollow,
   writeNewFileNoFollow,
   writeNewFileNoFollowWithinRoot,
 } from "./pathSafety";
+import {
+  DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+  abortPromise,
+  createActivityAbortSignal,
+  normalizeTransferError,
+  withTimeout,
+  type TransferTimeoutOptions,
+} from "./transferTimeout";
 
-export const DEFAULT_TRANSFER_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+export {
+  DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
+  TransferStallTimeoutError,
+  abortPromise,
+  createActivityAbortSignal,
+  normalizeTransferError,
+  withTransferStallTimeout,
+  type ActivityAbortSignal,
+  type TransferTimeoutOptions,
+} from "./transferTimeout";
+
 export const DEFAULT_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 export const STREAMING_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
 
@@ -47,11 +65,15 @@ const TRANSFER_TEMP_PREFIX = "b2-transfer-";
 const TRANSFER_TEMP_SUFFIX = ".tmp";
 const TRANSFER_TEMP_RANDOM_BYTES = 12;
 const TRANSFER_TEMP_RANDOM_HEX_LENGTH = TRANSFER_TEMP_RANDOM_BYTES * 2;
+const DESTINATION_TEMP_RANDOM_BYTES = 12;
+const DESTINATION_TEMP_RANDOM_HEX_LENGTH = DESTINATION_TEMP_RANDOM_BYTES * 2;
 const CROSS_DEVICE_MOVE_TEMP_PREFIX = ".b2-cross-device-";
 const REPLACE_BACKUP_TEMP_PREFIX = ".b2-replace-backup-";
 const STALE_TRANSFER_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_TRANSFER_TEMP_CLEANUP_BUDGET_MS = 2_000;
 const WORKSPACE_TRANSFER_TEMP_CLEANUP_MAX_ENTRIES = 2_000;
+const WORKSPACE_DESTINATION_CLEANUP_BUDGET_MS = 2_000;
+const WORKSPACE_DESTINATION_CLEANUP_MAX_ENTRIES = 2_000;
 const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const STALE_CLEANUP_THROTTLE_MAX_ENTRIES = 256;
 const UNFINISHED_UPLOAD_CLEANUP_MAX_PAGES = 20;
@@ -95,13 +117,10 @@ const TRANSFER_TEMP_FILE_PATTERN = new RegExp(
   `^${escapeRegExp(TRANSFER_TEMP_PREFIX)}\\d+-[a-f0-9]{${TRANSFER_TEMP_RANDOM_HEX_LENGTH}}${escapeRegExp(TRANSFER_TEMP_SUFFIX)}$`,
   "u",
 );
-
-export class TransferStallTimeoutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TransferStallTimeoutError";
-  }
-}
+const DESTINATION_TEMP_PAYLOAD_PATTERN = new RegExp(
+  `^[\\s\\S]+-\\d+-[a-f0-9]{${DESTINATION_TEMP_RANDOM_HEX_LENGTH}}$`,
+  "u",
+);
 
 export class DownloadSizeLimitError extends Error {
   constructor(message: string) {
@@ -110,21 +129,18 @@ export class DownloadSizeLimitError extends Error {
   }
 }
 
-export interface TransferTimeoutOptions {
-  readonly signal?: AbortSignal;
-  readonly stallTimeoutMs?: number;
-}
-
 export interface DownloadStreamToFileOptions extends TransferTimeoutOptions {
   readonly temporaryDirectory?: string;
   readonly overwrite?: boolean;
   readonly allowedRootDirectory?: string;
   readonly maxBytes?: number;
+  readonly knownBytes?: number;
 }
 
 export interface DownloadStreamToNewFileWithinRootOptions extends TransferTimeoutOptions {
   readonly temporaryDirectory?: string;
   readonly maxBytes?: number;
+  readonly knownBytes?: number;
 }
 
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
@@ -147,6 +163,7 @@ export interface StaleUnfinishedUploadCleanupOptions extends Pick<
   readonly remotePath?: string;
   readonly unfinishedCleanupMaxAgeMs?: number;
   readonly skipUploadSessionMarkerCleanup?: boolean;
+  readonly onMissingCapability?: (description: string, error: unknown) => void;
 }
 
 export interface StaleUnfinishedUploadCleanupResult {
@@ -193,87 +210,32 @@ export interface UploadSourceFile {
   readonly stats: fs.Stats;
 }
 
-interface ActivityAbortSignal {
-  readonly signal: AbortSignal;
-  markActivity(): void;
-  timeoutError(): TransferStallTimeoutError | undefined;
-  dispose(): void;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}
-
-function createActivityAbortSignal(
-  parentSignal: AbortSignal | undefined,
-  stallTimeoutMs: number,
-  description: string,
-): ActivityAbortSignal {
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  let timedOut: TransferStallTimeoutError | undefined;
-
-  const clearTimer = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-  };
-
-  const markActivity = () => {
-    clearTimer();
-    if (stallTimeoutMs <= 0 || controller.signal.aborted) {
-      return;
-    }
-
-    timer = setTimeout(() => {
-      timedOut = new TransferStallTimeoutError(
-        `${description} stalled for ${stallTimeoutMs} ms with no transfer activity.`,
-      );
-      controller.abort(timedOut);
-    }, stallTimeoutMs);
-    timer.unref?.();
-  };
-
-  const abortFromParent = () => {
-    if (!controller.signal.aborted) {
-      controller.abort(parentSignal?.reason ?? new DOMException("Aborted", "AbortError"));
-    }
-  };
-
-  if (parentSignal?.aborted) {
-    abortFromParent();
-  } else {
-    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-    markActivity();
-  }
-
-  return {
-    signal: controller.signal,
-    markActivity,
-    timeoutError: () => timedOut,
-    dispose() {
-      clearTimer();
-      parentSignal?.removeEventListener("abort", abortFromParent);
-    },
-  };
-}
-
-function normalizeTransferError(error: unknown, activity: ActivityAbortSignal): never {
-  const timeoutError = activity.timeoutError();
-  if (timeoutError && (activity.signal.aborted || isAbortLikeError(error))) {
-    throw timeoutError;
-  }
-
-  throw error;
-}
-
 function normalizedMaxBytes(maxBytes: number | undefined): number {
   const normalized = maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
   if (!Number.isFinite(normalized) || normalized < 0) {
     throw new Error("Download maximum byte count must be a non-negative finite number.");
   }
   return normalized;
+}
+
+function assertKnownDownloadSizeWithinLimit(
+  knownBytes: number | undefined,
+  maxBytes: number,
+  destinationPath: string,
+): void {
+  if (knownBytes === undefined) {
+    return;
+  }
+
+  if (!Number.isFinite(knownBytes) || knownBytes < 0) {
+    throw new Error("Download known byte count must be a non-negative finite number.");
+  }
+
+  if (knownBytes > maxBytes) {
+    throw new DownloadSizeLimitError(
+      `Download to ${path.basename(destinationPath)} is ${humanSize(knownBytes)}, exceeding the configured size limit of ${humanSize(maxBytes)}.`,
+    );
+  }
 }
 
 function createDownloadSizeLimitTransform(
@@ -297,41 +259,6 @@ function createDownloadSizeLimitTransform(
       callback(null, chunk);
     },
   });
-}
-
-function abortPromise(signal: AbortSignal): Promise<never> {
-  const abortReason = () => signal.reason ?? new DOMException("Aborted", "AbortError");
-
-  if (signal.aborted) {
-    return Promise.reject(abortReason());
-  }
-
-  return new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(abortReason()), { once: true });
-  });
-}
-
-export async function withTransferStallTimeout<T>(
-  description: string,
-  options: TransferTimeoutOptions,
-  run: (signal: AbortSignal, markActivity: () => void) => Promise<T>,
-): Promise<T> {
-  const activity = createActivityAbortSignal(
-    options.signal,
-    options.stallTimeoutMs ?? DEFAULT_TRANSFER_STALL_TIMEOUT_MS,
-    description,
-  );
-
-  try {
-    return await Promise.race([
-      run(activity.signal, activity.markActivity),
-      abortPromise(activity.signal),
-    ]);
-  } catch (error) {
-    return normalizeTransferError(error, activity);
-  } finally {
-    activity.dispose();
-  }
 }
 
 function transferTempDirectory(
@@ -382,7 +309,7 @@ function transferTempPath(directory: string): string {
 }
 
 function destinationMoveTempPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -391,7 +318,7 @@ function destinationMoveTempPath(destinationPath: string): string {
 }
 
 function destinationReplaceBackupPath(destinationPath: string): string {
-  const random = crypto.randomBytes(12).toString("hex");
+  const random = crypto.randomBytes(DESTINATION_TEMP_RANDOM_BYTES).toString("hex");
   const parsed = path.parse(destinationPath);
   return path.join(
     parsed.dir,
@@ -404,24 +331,29 @@ function isTransferTempFile(name: string): boolean {
 }
 
 function isDestinationTempFile(name: string): boolean {
-  return (
-    (name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX) ||
-      name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) &&
-    name.endsWith(TRANSFER_TEMP_SUFFIX)
-  );
-}
-
-function backupDestinationPath(directory: string, name: string): string | undefined {
-  if (!name.startsWith(REPLACE_BACKUP_TEMP_PREFIX) || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
-    return undefined;
+  const prefix = name.startsWith(CROSS_DEVICE_MOVE_TEMP_PREFIX)
+    ? CROSS_DEVICE_MOVE_TEMP_PREFIX
+    : name.startsWith(REPLACE_BACKUP_TEMP_PREFIX)
+      ? REPLACE_BACKUP_TEMP_PREFIX
+      : undefined;
+  if (prefix === undefined || !name.endsWith(TRANSFER_TEMP_SUFFIX)) {
+    return false;
   }
 
-  const encoded = name.slice(
-    REPLACE_BACKUP_TEMP_PREFIX.length,
-    name.length - TRANSFER_TEMP_SUFFIX.length,
-  );
-  const match = /^(.*)-\d+-[a-f0-9]+$/u.exec(encoded);
-  return match ? path.join(directory, match[1]) : undefined;
+  const payload = name.slice(prefix.length, -TRANSFER_TEMP_SUFFIX.length);
+  return DESTINATION_TEMP_PAYLOAD_PATTERN.test(payload);
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function shouldRunThrottledCleanup(key: string): boolean {
@@ -595,6 +527,46 @@ export async function cleanupWorkspaceTransferTempFiles(options: {
   }
 }
 
+async function cleanupDestinationTempEntry(
+  directory: string,
+  entry: string,
+  cutoff: number,
+): Promise<boolean> {
+  if (!isDestinationTempFile(entry)) {
+    return false;
+  }
+
+  const filePath = path.join(directory, entry);
+  try {
+    const stats = await fs.promises.lstat(filePath);
+    if (stats.mtimeMs > cutoff) {
+      return false;
+    }
+
+    // A stale replace backup may be the only surviving copy after a crash
+    // between overwrite renames. Do not restore workspace files from name-only
+    // state: forged backups are untrusted workspace content.
+    if (entry.startsWith(REPLACE_BACKUP_TEMP_PREFIX)) {
+      log(`Discarding stale destination backup temp file without automatic restore: ${filePath}`);
+    }
+    await fs.promises.rm(filePath, { force: true });
+    return true;
+  } catch (error) {
+    logError(`Could not clean stale destination temp file: ${filePath}`, error);
+  }
+
+  return false;
+}
+
+async function closeDirectoryBestEffort(dir: fs.Dir): Promise<void> {
+  try {
+    await dir.close();
+  } catch {
+    // The async iterator closes Dir on normal completion and break. This close
+    // is a defensive fallback for early exits and errors.
+  }
+}
+
 export async function cleanupStaleDestinationTempFiles(options: {
   directory: string;
   maxAgeMs?: number;
@@ -611,43 +583,135 @@ export async function cleanupStaleDestinationTempFiles(options: {
     return;
   }
 
-  let entries: string[];
+  const cutoff = Date.now() - maxAgeMs;
   try {
-    entries = await fs.promises.readdir(directory);
+    const beforeOpenStats = await fs.promises.lstat(directory);
+    if (beforeOpenStats.isSymbolicLink() || !beforeOpenStats.isDirectory()) {
+      return;
+    }
+    const dir = await fs.promises.opendir(directory);
+    try {
+      const afterOpenStats = await fs.promises.lstat(directory);
+      if (afterOpenStats.isSymbolicLink() || !afterOpenStats.isDirectory()) {
+        return;
+      }
+      for await (const entry of dir) {
+        await cleanupDestinationTempEntry(directory, entry.name, cutoff);
+      }
+    } finally {
+      await closeDirectoryBestEffort(dir);
+    }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") {
       logError(`Could not inspect destination directory: ${directory}`, error);
     }
+  }
+}
+
+export async function cleanupWorkspaceDestinationTempFiles(options: {
+  readonly workspaceRoot: string;
+  readonly maxAgeMs?: number;
+  readonly budgetMs?: number;
+  readonly maxEntries?: number;
+}): Promise<void> {
+  const workspaceRoot = path.resolve(options.workspaceRoot);
+  try {
+    if (!(await pathExistsAsRealDirectory(workspaceRoot, "Workspace root"))) {
+      return;
+    }
+  } catch (error) {
+    logError(
+      `Could not inspect workspace root for destination temp cleanup: ${workspaceRoot}`,
+      error,
+    );
     return;
   }
 
-  const cutoff = Date.now() - maxAgeMs;
-  for (const entry of entries) {
-    if (!isDestinationTempFile(entry)) {
-      continue;
+  const deadlineMs =
+    Date.now() + Math.max(0, options.budgetMs ?? WORKSPACE_DESTINATION_CLEANUP_BUDGET_MS);
+  const maxEntries = Math.max(0, options.maxEntries ?? WORKSPACE_DESTINATION_CLEANUP_MAX_ENTRIES);
+  const cutoff = Date.now() - (options.maxAgeMs ?? STALE_TRANSFER_TEMP_MAX_AGE_MS);
+  const stack = [workspaceRoot];
+  let scannedEntries = 0;
+  let cleanedFiles = 0;
+  let budgetHit = false;
+  let maxEntriesHit = false;
+
+  while (stack.length > 0) {
+    if (Date.now() >= deadlineMs) {
+      budgetHit = true;
+      break;
+    }
+    if (scannedEntries >= maxEntries) {
+      maxEntriesHit = true;
+      break;
     }
 
-    const filePath = path.join(directory, entry);
+    const directory = stack.pop() as string;
+    let dir: fs.Dir | undefined;
     try {
-      const stats = await fs.promises.lstat(filePath);
-      const restorePath = backupDestinationPath(directory, entry);
-      if (restorePath && !fs.existsSync(restorePath)) {
-        if (!stats.isFile()) {
-          if (stats.mtimeMs <= cutoff) {
-            await fs.promises.rm(filePath, { force: true });
-          }
-          continue;
-        }
-        await fs.promises.rename(filePath, restorePath);
-      } else if (stats.mtimeMs <= cutoff) {
-        await fs.promises.rm(filePath, { force: true });
-      } else {
+      const directoryStats = await fs.promises.lstat(directory);
+      if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
+        continue;
+      }
+      dir = await fs.promises.opendir(directory);
+      const openedDirectoryStats = await fs.promises.lstat(directory);
+      if (openedDirectoryStats.isSymbolicLink() || !openedDirectoryStats.isDirectory()) {
+        await closeDirectoryBestEffort(dir);
         continue;
       }
     } catch (error) {
-      logError(`Could not clean stale destination temp file: ${filePath}`, error);
+      if (dir) {
+        await closeDirectoryBestEffort(dir);
+      }
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") {
+        logError(
+          `Could not inspect workspace directory for destination cleanup: ${directory}`,
+          error,
+        );
+      }
+      continue;
     }
+    if (!dir) {
+      continue;
+    }
+
+    try {
+      for await (const entry of dir) {
+        if (Date.now() >= deadlineMs) {
+          budgetHit = true;
+          break;
+        }
+        if (scannedEntries >= maxEntries) {
+          maxEntriesHit = true;
+          break;
+        }
+
+        scannedEntries += 1;
+        if (await cleanupDestinationTempEntry(directory, entry.name, cutoff)) {
+          cleanedFiles += 1;
+          continue;
+        }
+
+        if (
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          !isWorkspaceControlDirectorySegment(entry.name)
+        ) {
+          stack.push(path.join(directory, entry.name));
+        }
+      }
+    } finally {
+      await closeDirectoryBestEffort(dir);
+    }
+  }
+
+  if (scannedEntries > 0 || cleanedFiles > 0 || budgetHit || maxEntriesHit) {
+    log(
+      `Workspace destination temp cleanup for ${workspaceRoot} scanned ${scannedEntries} entr${scannedEntries === 1 ? "y" : "ies"}, cleaned ${cleanedFiles} temp file${cleanedFiles === 1 ? "" : "s"}, budgetHit=${budgetHit}, maxEntriesHit=${maxEntriesHit}.`,
+    );
   }
 }
 
@@ -671,6 +735,12 @@ async function removeTempFile(filePath: string): Promise<void> {
   }
 }
 
+function cancelUnconsumedDownloadStream(stream: ReadableStream<Uint8Array>, error: unknown): void {
+  void stream.cancel(error).catch((cancelError) => {
+    logError("Could not cancel rejected download stream", cancelError);
+  });
+}
+
 export function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
@@ -685,63 +755,85 @@ async function copyIntoPlaceNoFollow(
     if (options.overwrite !== false) {
       throw new Error("Root-bound downloads must be written without overwrite.");
     }
-    await linkRootBoundCompleteTempIntoPlace(sourcePath, destinationPath, allowedRootDirectory);
-  } else {
-    if (options.overwrite === false) {
-      await writeNewFileNoFollow(destinationPath, fs.createReadStream(sourcePath));
-    } else {
-      await replaceFileNoFollow(destinationPath, fs.createReadStream(sourcePath));
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    if (await pathExists(destinationPath)) {
+      const error = new Error(`Download destination file already exists: ${destinationPath}`);
+      (error as NodeJS.ErrnoException).code = "EEXIST";
+      throw error;
     }
+    // Re-check after the existence probe so a parent swap between validation and
+    // no-overwrite publish is caught before opening the final path.
+    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
+    await publishNewFileNoOverwrite(sourcePath, destinationPath, {
+      allowedRootDirectory,
+      preferHardlink: false,
+    });
+    await removeTempFile(sourcePath);
+    return;
   }
-  await removeTempFile(sourcePath);
+
+  const destinationTempPath = destinationMoveTempPath(destinationPath);
+  let destinationTempCreated = false;
+
+  try {
+    await writeNewFileNoFollow(destinationTempPath, fs.createReadStream(sourcePath));
+
+    destinationTempCreated = true;
+    if (options.overwrite === false && (await pathExists(destinationPath))) {
+      const error = new Error(`Download destination file already exists: ${destinationPath}`);
+      (error as NodeJS.ErrnoException).code = "EEXIST";
+      throw error;
+    }
+    if (options.overwrite === false) {
+      await publishNewFileNoOverwrite(destinationTempPath, destinationPath, {
+        preferHardlink: true,
+      });
+      await removeTempFile(destinationTempPath);
+    } else {
+      await renameIntoPlace(destinationTempPath, destinationPath, options);
+    }
+    destinationTempCreated = false;
+    await removeTempFile(sourcePath);
+  } catch (error) {
+    if (destinationTempCreated) {
+      await removeTempFile(destinationTempPath);
+    }
+    throw error;
+  }
 }
 
-async function copyToRootBoundPlacementTemp(
+async function publishNewFileNoOverwrite(
   sourcePath: string,
   destinationPath: string,
-  allowedRootDirectory: string,
-): Promise<string> {
-  const placementTempPath = transferTempPath(path.dirname(destinationPath));
-  try {
+  options: {
+    readonly allowedRootDirectory?: string;
+    readonly preferHardlink: boolean;
+  },
+): Promise<void> {
+  if (options.allowedRootDirectory !== undefined) {
     await writeNewFileNoFollowWithinRoot(
-      allowedRootDirectory,
-      placementTempPath,
+      options.allowedRootDirectory,
+      destinationPath,
       fs.createReadStream(sourcePath),
       {
-        label: "download placement temp",
+        label: "download target",
       },
     );
-    return placementTempPath;
-  } catch (error) {
-    await removeTempFile(placementTempPath);
-    throw error;
+    return;
   }
-}
 
-async function linkRootBoundCompleteTempIntoPlace(
-  sourcePath: string,
-  destinationPath: string,
-  allowedRootDirectory: string,
-): Promise<void> {
-  const placementTempPath = await copyToRootBoundPlacementTemp(
-    sourcePath,
-    destinationPath,
-    allowedRootDirectory,
-  );
-  let linkedDestination = false;
-  try {
-    await prepareSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
-    await fs.promises.link(placementTempPath, destinationPath);
-    linkedDestination = true;
-    await assertSafeFileWritePath(allowedRootDirectory, destinationPath, "download target");
-  } catch (error) {
-    if (linkedDestination) {
-      await removeTempFile(destinationPath);
+  if (options.preferHardlink) {
+    try {
+      await fs.promises.link(sourcePath, destinationPath);
+      return;
+    } catch (error) {
+      if (!shouldFallbackToCopyAfterHardlinkError(error)) {
+        throw error;
+      }
     }
-    throw error;
-  } finally {
-    await removeTempFile(placementTempPath);
   }
+
+  await fs.promises.copyFile(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
 }
 
 async function replaceExistingDestination(
@@ -938,9 +1030,11 @@ async function downloadStreamToFileInternal(
       }
     | undefined;
   let temporaryPath = "";
+  let sourceStreamOwnedByPipeline = false;
 
   try {
     const maxBytes = normalizedMaxBytes(options.maxBytes);
+    assertKnownDownloadSizeWithinLimit(options.knownBytes, maxBytes, destinationPath);
     const destinationDirectory = await ensureDownloadDestinationDirectory(
       destinationPath,
       options.allowedRootDirectory,
@@ -958,6 +1052,7 @@ async function downloadStreamToFileInternal(
 
     temporaryPath = transferTempPath(temporaryDirectory);
     const readable = Readable.fromWeb(stream as unknown as Parameters<typeof Readable.fromWeb>[0]);
+    sourceStreamOwnedByPipeline = true;
     readable.on("data", activity.markActivity);
     await pipeline(
       readable,
@@ -981,6 +1076,9 @@ async function downloadStreamToFileInternal(
     temporaryPath = "";
     return stats.size;
   } catch (error) {
+    if (!sourceStreamOwnedByPipeline) {
+      cancelUnconsumedDownloadStream(stream, error);
+    }
     if (temporaryPath) {
       await removeTempFile(temporaryPath);
     }
@@ -1120,30 +1218,12 @@ async function withAbortableTimeout<T>(
   timeoutMs: number,
   description: string,
 ): Promise<T> {
-  if (timeoutMs <= 0) {
-    return operation(new AbortController().signal);
-  }
-
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new CleanupOperationTimeoutError(
-        `${description} timed out after ${timeoutMs} ms.`,
-      );
-      controller.abort(error);
-      reject(error);
-    }, timeoutMs);
-    timer.unref?.();
+  return withTimeout(operation, timeoutMs, description, {
+    createTimeoutError: (timeoutDescription, timeoutMsValue) =>
+      new CleanupOperationTimeoutError(
+        `${timeoutDescription} timed out after ${timeoutMsValue} ms.`,
+      ),
   });
-
-  try {
-    return await Promise.race([operation(controller.signal), timeout]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
 }
 
 function recordUnfinishedUploadCleanupTimeout(description: string, error: unknown): void {
@@ -1154,17 +1234,23 @@ function recordUnfinishedUploadCleanupTimeout(description: string, error: unknow
   );
 }
 
-function remainingCleanupBudget(startedAt: number, budgetMs: number): number {
-  return Math.max(0, startedAt + budgetMs - Date.now());
-}
-
-function isMissingCapabilityError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
+function recordUnfinishedUploadCleanupMissingCapability(
+  description: string,
+  error: unknown,
+  onMissingCapability: ((description: string, error: unknown) => void) | undefined,
+): void {
+  if (onMissingCapability) {
+    onMissingCapability(description, error);
+    return;
   }
 
-  const details = error as Error & { code?: string };
-  return String(details.code ?? "").toLowerCase() === "missing_capability";
+  log(
+    `${description} cleanup skipped because the B2 key lacks the required unfinished-upload listing capability.`,
+  );
+}
+
+function remainingCleanupBudget(startedAt: number, budgetMs: number): number {
+  return Math.max(0, startedAt + budgetMs - Date.now());
 }
 
 function startedMsFromFileInfo(fileInfo: Record<string, string> | undefined): number | undefined {
@@ -1172,8 +1258,6 @@ function startedMsFromFileInfo(fileInfo: Record<string, string> | undefined): nu
   return Number.isFinite(startedMs) ? startedMs : undefined;
 }
 
-// Upload-session marker storage. The cleanup paths below only trust markers
-// from this private directory when authorizing B2 unfinished-upload cancellation.
 interface UploadSessionMarker {
   readonly remotePath: string;
   readonly uploadSessionId: string;
@@ -1310,8 +1394,6 @@ async function readUploadSessionMarker(markerPath: string): Promise<Partial<Uplo
   }
 }
 
-// Unfinished multipart cleanup orchestration. Keep marker authorization and B2
-// cancellation policy together so ownership checks stay visible at call sites.
 async function cancelLargeFileSafely(
   bucket: UploadBucketHandle,
   fileId: LargeFileId,
@@ -1348,7 +1430,7 @@ export async function cleanupStaleUnfinishedUploads(
   bucket: UploadBucketHandle,
   options: StaleUnfinishedUploadCleanupOptions = {},
 ): Promise<StaleUnfinishedUploadCleanupResult> {
-  if (options.skipUploadSessionMarkerCleanup !== true) {
+  if (!options.skipUploadSessionMarkerCleanup) {
     await cleanupStaleUploadSessionMarkers().catch((error) => {
       logError("Could not clean stale upload session markers", error);
     });
@@ -1489,7 +1571,8 @@ async function cleanupMatchingUnfinishedUploads(
     | "unfinishedCleanupMaxCancels"
     | "unfinishedCleanupTimeoutMs"
     | "unfinishedCleanupBudgetMs"
-  > = {},
+  > &
+    Pick<StaleUnfinishedUploadCleanupOptions, "onMissingCapability"> = {},
   description: string,
   shouldCancel: (file: UnfinishedLargeFile) => boolean | undefined | Promise<boolean | undefined>,
 ): Promise<number> {
@@ -1545,7 +1628,11 @@ async function cleanupMatchingUnfinishedUploads(
       if (error instanceof CleanupOperationTimeoutError) {
         recordUnfinishedUploadCleanupTimeout(`${description} list`, error);
       } else if (isMissingCapabilityError(error)) {
-        log(`${description} cleanup skipped because the B2 key lacks the required capability.`);
+        recordUnfinishedUploadCleanupMissingCapability(
+          `${description} list`,
+          error,
+          options.onMissingCapability,
+        );
       } else {
         logError(`${description} list failed`, error);
       }
