@@ -52,6 +52,7 @@ import {
   type UploadBucketHandle,
 } from "../../services/fileTransfers";
 import { withCancellableTransferProgress } from "../../services/transferProgress";
+import { withTimeout } from "../../services/transferTimeout";
 import { cleanupStaleTempFileCache, TempFileManager } from "../../services/tempFileManager";
 import {
   ensurePrivateDirectory,
@@ -3013,6 +3014,30 @@ suite("B2 transfer helpers", () => {
         ),
       TransferStallTimeoutError,
     );
+  });
+
+  test("propagates parent aborts through fixed transfer timeouts", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("caller cancelled transfer");
+    let runSignal: AbortSignal | undefined;
+
+    const pending = withTimeout(
+      (signal) => {
+        runSignal = signal;
+        return new Promise<never>(() => undefined);
+      },
+      100,
+      "request setup",
+      { signal: controller.signal },
+    );
+
+    controller.abort(abortReason);
+
+    await assert.rejects(
+      () => pending,
+      (error) => error === abortReason,
+    );
+    assert.strictEqual(runSignal?.aborted, true);
   });
 
   test("cleans stale managed transfer temp files", async () => {

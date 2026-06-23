@@ -177,7 +177,7 @@ export async function withTimeout<T>(
   void operation.catch(() => undefined);
 
   try {
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([operation, timeout, abortPromise(controller.signal)]);
   } finally {
     if (timer) {
       clearTimeout(timer);
