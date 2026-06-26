@@ -17,6 +17,7 @@ import type { TempFileManager } from "../services/tempFileManager";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
+import { ApplicationKeyTreeItem } from "../models/applicationKeyTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
 import { createConfiguredB2Client } from "../services/b2";
 import {
@@ -52,6 +53,19 @@ import {
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 import { renameFileVersion } from "./renameFile";
+import {
+  createKeyCommand,
+  deleteKeyCommand,
+  type ApplicationKeysRefreshProvider,
+} from "./applicationKeys";
+
+export {
+  createKeyCommand,
+  deleteKeyCommand,
+  type ApplicationKeyCommandServices,
+  type ApplicationKeyManagementClient,
+  type ApplicationKeysRefreshProvider,
+} from "./applicationKeys";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
@@ -253,6 +267,9 @@ export interface CreateBucketCommandServices extends BucketCommandServices {
 export interface CommandServices extends CreateBucketCommandServices {
   authService: AuthService;
   treeProvider: B2TreeProvider;
+  applicationKeysProvider?: ApplicationKeysRefreshProvider & {
+    setClient(client: B2Client | null): void;
+  };
   tempFileManager: TempFileManager;
   context: vscode.ExtensionContext;
   getClient: () => B2Client | null;
@@ -322,7 +339,7 @@ export async function openFileCommand(
 }
 
 export async function authenticateCommand(services: CommandServices): Promise<void> {
-  const { authService, context, treeProvider, setClient } = services;
+  const { authService, context, treeProvider, applicationKeysProvider, setClient } = services;
   const createClient = services.createClient ?? createConfiguredB2Client;
   const keyId = await vscode.window.showInputBox({
     title: "B2 Application Key ID",
@@ -351,6 +368,7 @@ export async function authenticateCommand(services: CommandServices): Promise<vo
     await authService.storeCredentials(keyId, appKey);
     setClient(client);
     treeProvider.setClient(client);
+    applicationKeysProvider?.setClient(client);
 
     await authService.setAuthState({
       isAuthenticated: true,
@@ -630,7 +648,15 @@ export async function changeBucketVisibilityCommand(
  * Register all B2 commands.
  */
 export function registerCommands(services: CommandServices): void {
-  const { context, authService, treeProvider, tempFileManager, getClient, setClient } = services;
+  const {
+    context,
+    authService,
+    treeProvider,
+    applicationKeysProvider,
+    tempFileManager,
+    getClient,
+    setClient,
+  } = services;
 
   // ── Authenticate ────────────────────────────────────────────────────────
   context.subscriptions.push(
@@ -640,6 +666,11 @@ export function registerCommands(services: CommandServices): void {
   // ── Create Bucket ─────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.createBucket", () => createBucketCommand(services)),
+  );
+
+  // ── Create Application Key ───────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("b2.createKey", () => createKeyCommand(services)),
   );
 
   // ── Change Bucket Visibility ─────────────────────────────────────────
@@ -825,6 +856,7 @@ export function registerCommands(services: CommandServices): void {
       await authService.clearCredentials();
       setClient(null);
       treeProvider.setClient(null);
+      applicationKeysProvider?.setClient(null);
       await authService.setAuthState({ isAuthenticated: false });
       vscode.window.showInformationMessage("B2: Logged out.");
     }),
@@ -834,6 +866,7 @@ export function registerCommands(services: CommandServices): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("b2.refresh", () => {
       treeProvider.refresh();
+      applicationKeysProvider?.refresh();
     }),
   );
 
@@ -875,6 +908,13 @@ export function registerCommands(services: CommandServices): void {
       await vscode.env.clipboard.writeText(item.file.fileId);
       vscode.window.showInformationMessage(`Copied file ID: ${item.file.fileId}`);
     }),
+  );
+
+  // ── Delete Application Key ───────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("b2.deleteKey", (item?: ApplicationKeyTreeItem) =>
+      deleteKeyCommand(item, services),
+    ),
   );
 
   // ── Open File ───────────────────────────────────────────────────────────

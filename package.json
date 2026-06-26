@@ -90,6 +90,12 @@
           "name": "Buckets",
           "icon": "$(backblaze-flame)",
           "contextualTitle": "Backblaze B2"
+        },
+        {
+          "id": "b2ApplicationKeys",
+          "name": "Application Keys",
+          "icon": "$(key)",
+          "contextualTitle": "Backblaze B2"
         }
       ]
     },
@@ -98,6 +104,16 @@
         "view": "b2Buckets",
         "contents": "Welcome to Backblaze B2.\n[Authenticate](command:b2.authenticate) to view your buckets and files.\n\nYou can also set the environment variables B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY.",
         "when": "!b2.authenticated"
+      },
+      {
+        "view": "b2ApplicationKeys",
+        "contents": "Welcome to Backblaze B2.\n[Authenticate](command:b2.authenticate) to view your application keys.\n\nYou can also set the environment variables B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY.",
+        "when": "!b2.authenticated"
+      },
+      {
+        "view": "b2ApplicationKeys",
+        "contents": "No application keys found.\n[Create Application Key](command:b2.createKey)",
+        "when": "b2.authenticated"
       }
     ],
     "commands": [
@@ -150,6 +166,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "b2.createKey",
+        "title": "Create Application Key",
+        "category": "B2",
+        "icon": "$(key)"
+      },
+      {
         "command": "b2.changeBucketVisibility",
         "title": "Change Bucket Visibility",
         "category": "B2"
@@ -175,6 +197,12 @@
       {
         "command": "b2.deleteFile",
         "title": "Delete File",
+        "category": "B2",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "b2.deleteKey",
+        "title": "Delete Application Key",
         "category": "B2",
         "icon": "$(trash)"
       },
@@ -224,6 +252,10 @@
           "when": "false"
         },
         {
+          "command": "b2.deleteKey",
+          "when": "false"
+        },
+        {
           "command": "b2.renameFile",
           "when": "false"
         }
@@ -247,6 +279,26 @@
         {
           "command": "b2.logout",
           "when": "view == b2Buckets && b2.authenticated",
+          "group": "navigation@4"
+        },
+        {
+          "command": "b2.refresh",
+          "when": "view == b2ApplicationKeys",
+          "group": "navigation@1"
+        },
+        {
+          "command": "b2.authenticate",
+          "when": "view == b2ApplicationKeys && !b2.authenticated",
+          "group": "navigation@2"
+        },
+        {
+          "command": "b2.createKey",
+          "when": "view == b2ApplicationKeys && b2.authenticated",
+          "group": "navigation@2"
+        },
+        {
+          "command": "b2.logout",
+          "when": "view == b2ApplicationKeys && b2.authenticated",
           "group": "navigation@4"
         }
       ],
@@ -320,6 +372,11 @@
           "command": "b2.copyFileId",
           "when": "view == b2Buckets && viewItem == file",
           "group": "1_copy@2"
+        },
+        {
+          "command": "b2.deleteKey",
+          "when": "view == b2ApplicationKeys && viewItem == applicationKey",
+          "group": "3_destructive@1"
         }
       ]
     },

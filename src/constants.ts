@@ -23,6 +23,7 @@ export const CTX_AUTHENTICATED = "b2.authenticated";
 // ── View IDs ────────────────────────────────────────────────────────────────
 
 export const VIEW_BUCKETS = "b2Buckets";
+export const VIEW_APPLICATION_KEYS = "b2ApplicationKeys";
 
 // ── Temp File Directory ─────────────────────────────────────────────────────
 

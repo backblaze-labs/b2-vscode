@@ -142,6 +142,18 @@ export async function withWindowUiStubs(
       labels: itemArray.map(labelForQuickPickItem),
       options: quickPickOptions,
     });
+    if (quickPickOptions?.canPickMany) {
+      if (selectedLabel === undefined) {
+        return undefined;
+      }
+      const selectedLabels = new Set(
+        selectedLabel
+          .split(",")
+          .map((label) => label.trim())
+          .filter(Boolean),
+      );
+      return itemArray.filter((item) => selectedLabels.has(labelForQuickPickItem(item)));
+    }
     return selectedLabel === undefined
       ? undefined
       : itemArray.find((item) => labelForQuickPickItem(item) === selectedLabel);

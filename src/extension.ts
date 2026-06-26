@@ -23,10 +23,11 @@ import { withTimeout } from "./services/transferTimeout";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
+import { ApplicationKeysProvider } from "./providers/applicationKeysProvider";
 import { B2StatusBar } from "./ui/statusBar";
 import { registerCommands } from "./commands";
 import { registerB2Tools } from "./tools/registration";
-import { TEMP_DIR_NAME, VIEW_BUCKETS } from "./constants";
+import { TEMP_DIR_NAME, VIEW_APPLICATION_KEYS, VIEW_BUCKETS } from "./constants";
 import { initLogger, log, logError } from "./logger";
 import { formatB2UserMessage } from "./errors";
 import { cleanupStalePrivateTempRoots } from "./utils/privateTempRoot";
@@ -208,13 +209,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const authService = new AuthService(context.secrets);
   const tempFileManager = new TempFileManager();
 
-  // 2. Tree provider
+  // 2. Tree providers
   const treeProvider = new B2TreeProvider(authService);
+  const applicationKeysProvider = new ApplicationKeysProvider(authService);
 
-  // 3. Register tree view
+  // 3. Register tree views
   const treeView = vscode.window.createTreeView(VIEW_BUCKETS, {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
+  });
+  const applicationKeysView = vscode.window.createTreeView(VIEW_APPLICATION_KEYS, {
+    treeDataProvider: applicationKeysProvider,
   });
 
   // 4. Status bar
@@ -226,6 +231,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context,
     authService,
     treeProvider,
+    applicationKeysProvider,
     tempFileManager,
     isAuthenticated: () => currentClient !== null,
     getClient: () => currentClient,
@@ -234,7 +240,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerB2Tools(context, () => currentClient);
 
   // 6. Track disposables
-  context.subscriptions.push(treeView, statusBar, authService, tempFileManager);
+  context.subscriptions.push(
+    treeView,
+    applicationKeysView,
+    statusBar,
+    authService,
+    tempFileManager,
+  );
   scheduleTempCleanups(context);
 
   // 7. Auto-auth: try to resolve stored/env credentials
@@ -249,6 +261,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       setAuthenticatedClient(client);
       treeProvider.setClient(client);
+      applicationKeysProvider.setClient(client);
 
       await authService.setAuthState({
         isAuthenticated: true,
