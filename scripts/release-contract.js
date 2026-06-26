@@ -43,13 +43,13 @@ const manifestContract = {
     "b2.copyFileId",
     "b2.openFile",
     "b2.createBucket",
-    "b2.createKey",
+    "b2.createApplicationKey",
     "b2.changeBucketVisibility",
     "b2.createFolder",
     "b2.deleteBucket",
     "b2.deleteFolder",
     "b2.deleteFile",
-    "b2.deleteKey",
+    "b2.deleteApplicationKey",
     "b2.renameFile",
   ],
   languageModelToolNames: [
@@ -61,7 +61,7 @@ const manifestContract = {
     "b2_deleteFile",
     "b2_presignUrl",
   ],
-  contributesSha256: "7a844959a428b36d30bfa8dc4a88bf619115087c0a3cf77213ae124abce9ba5b",
+  contributesSha256: "ae42dd89b0b890d5758ef369e2d197e52dbe062a0ea301d3e805983d88c534ac",
 };
 
 function stableStringify(value) {

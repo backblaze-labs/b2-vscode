@@ -209,7 +209,7 @@ suite("B2 commands error handling", () => {
       },
     } as unknown as B2Client;
     const scheduledClients: B2Client[] = [];
-    const treeClients: Array<B2Client | null> = [];
+    const viewClients: Array<B2Client | null> = [];
     const storedCredentials: Array<{ keyId: string; appKey: string }> = [];
     const authStates: unknown[] = [];
     const setClient = createAuthenticatedClientSetter((client) => {
@@ -228,9 +228,13 @@ suite("B2 commands error handling", () => {
         extension: { packageJSON: { version: "1.2.3" } },
       },
       treeProvider: {
+        refresh() {},
+      },
+      viewProviders: {
         setClient(client: B2Client | null) {
-          treeClients.push(client);
+          viewClients.push(client);
         },
+        refresh() {},
       },
       tempFileManager: {},
       isAuthenticated: () => false,
@@ -253,7 +257,7 @@ suite("B2 commands error handling", () => {
 
       assert.deepStrictEqual(storedCredentials, [{ keyId: "key-id", appKey: "app-key" }]);
       assert.deepStrictEqual(scheduledClients, [fakeClient]);
-      assert.deepStrictEqual(treeClients, [fakeClient]);
+      assert.deepStrictEqual(viewClients, [fakeClient]);
       assert.strictEqual(authStates.length, 1);
       assert.deepStrictEqual(ui.errors, []);
       assert.deepStrictEqual(ui.infos, ["B2: Authenticated as account-id"]);

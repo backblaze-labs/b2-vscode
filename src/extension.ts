@@ -24,6 +24,7 @@ import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
 import { ApplicationKeysProvider } from "./providers/applicationKeysProvider";
+import { AuthenticatedViewProviderCollection } from "./providers/authenticatedViewProviders";
 import { B2StatusBar } from "./ui/statusBar";
 import { registerCommands } from "./commands";
 import { registerB2Tools } from "./tools/registration";
@@ -212,6 +213,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 2. Tree providers
   const treeProvider = new B2TreeProvider(authService);
   const applicationKeysProvider = new ApplicationKeysProvider(authService);
+  const viewProviders = new AuthenticatedViewProviderCollection([
+    treeProvider,
+    applicationKeysProvider,
+  ]);
 
   // 3. Register tree views
   const treeView = vscode.window.createTreeView(VIEW_BUCKETS, {
@@ -231,7 +236,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context,
     authService,
     treeProvider,
-    applicationKeysProvider,
+    viewProviders,
     tempFileManager,
     isAuthenticated: () => currentClient !== null,
     getClient: () => currentClient,
@@ -260,8 +265,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await client.authorize();
 
       setAuthenticatedClient(client);
-      treeProvider.setClient(client);
-      applicationKeysProvider.setClient(client);
+      viewProviders.setClient(client);
 
       await authService.setAuthState({
         isAuthenticated: true,

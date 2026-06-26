@@ -21,7 +21,11 @@ import {
   formatApplicationKeyExpiry,
   formatApplicationKeyScope,
 } from "../../models/applicationKeyTreeItem";
-import { ApplicationKeysProvider } from "../../providers/applicationKeysProvider";
+import { ApplicationKeyListLimitTreeItem } from "../../models/applicationKeyListLimitTreeItem";
+import {
+  APPLICATION_KEY_TREE_HARD_CAP,
+  ApplicationKeysProvider,
+} from "../../providers/applicationKeysProvider";
 import type { AuthService } from "../../services/authService";
 import { withWindowUiStubs } from "./windowStubs";
 
@@ -69,6 +73,20 @@ function warningSecretOccurrences(warning: string, secret: string): number {
   return warning.split(secret).length - 1;
 }
 
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 suite("B2 application key tree", () => {
   test("formats key capabilities, scope, and expiry in tree metadata", () => {
     const expiresAt = Date.UTC(2026, 0, 2, 3, 4, 5);
@@ -106,14 +124,112 @@ suite("B2 application key tree", () => {
     const children = await provider.getChildren();
 
     assert.deepStrictEqual(
-      children.map((child) => child.keyName),
+      children.map((child) => child.label),
       ["first-key", "second-key"],
     );
+  });
+
+  test("caps endless application key listings without draining the paginator", async () => {
+    let yielded = 0;
+    const client = {
+      accountInfo: { getAccountId: () => "account-id" },
+      async *paginateKeys({ signal }: { readonly signal?: AbortSignal } = {}) {
+        while (true) {
+          signal?.throwIfAborted();
+          yielded++;
+          yield makeKey({
+            applicationKeyId: applicationKeyId(`key-${yielded}`),
+            keyName: `key-${yielded}`,
+          });
+        }
+      },
+    } as unknown as B2Client;
+    const provider = new ApplicationKeysProvider(fakeAuthService());
+    provider.setClient(client);
+
+    const children = await provider.getChildren();
+
+    assert.strictEqual(yielded, APPLICATION_KEY_TREE_HARD_CAP + 1);
+    assert.strictEqual(children.length, APPLICATION_KEY_TREE_HARD_CAP + 1);
+    assert.ok(children[APPLICATION_KEY_TREE_HARD_CAP] instanceof ApplicationKeyListLimitTreeItem);
+  });
+
+  test("times out slow application key listings", async () => {
+    const client = {
+      accountInfo: { getAccountId: () => "account-id" },
+      async *paginateKeys() {
+        await new Promise(() => undefined);
+      },
+    } as unknown as B2Client;
+    const provider = new ApplicationKeysProvider(fakeAuthService(), { listTimeoutMs: 5 });
+    provider.setClient(client);
+
+    const ui = await withWindowUiStubs({}, async () => {
+      const children = await provider.getChildren();
+      assert.deepStrictEqual(children, []);
+    });
+
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+  });
+
+  test("drops stale application key results after client changes", async () => {
+    const releaseListing = deferred();
+    const oldClient = {
+      accountInfo: { getAccountId: () => "old-account-id" },
+      async *paginateKeys() {
+        await releaseListing.promise;
+        yield makeKey({ keyName: "old-key" });
+      },
+    } as unknown as B2Client;
+    const newClient = {
+      accountInfo: { getAccountId: () => "new-account-id" },
+      async *paginateKeys() {
+        yield makeKey({ keyName: "new-key" });
+      },
+    } as unknown as B2Client;
+    const provider = new ApplicationKeysProvider(fakeAuthService());
+    provider.setClient(oldClient);
+
+    const oldLoad = provider.getChildren();
+    provider.setClient(newClient);
+    releaseListing.resolve(undefined);
+    const oldChildren = await oldLoad;
+    const newChildren = await provider.getChildren();
+
+    assert.deepStrictEqual(oldChildren, []);
+    assert.deepStrictEqual(
+      newChildren.map((child) => child.label),
+      ["new-key"],
+    );
+  });
+
+  test("suppresses stale application key listing errors after refresh", async () => {
+    const releaseListing = deferred();
+    const client = {
+      accountInfo: { getAccountId: () => "account-id" },
+      async *paginateKeys() {
+        await releaseListing.promise;
+        throw new Error("stale listing failure");
+      },
+    } as unknown as B2Client;
+    const provider = new ApplicationKeysProvider(fakeAuthService());
+    provider.setClient(client);
+
+    const ui = await withWindowUiStubs({}, async () => {
+      const load = provider.getChildren();
+      provider.refresh();
+      releaseListing.resolve(undefined);
+      const children = await load;
+      assert.deepStrictEqual(children, []);
+    });
+
+    assert.deepStrictEqual(ui.errors, []);
   });
 });
 
 suite("B2 application key commands", () => {
-  test("creates a scoped key and shows the secret once with copy warning", async () => {
+  test("creates a scoped key and preserves prefix spaces", async () => {
     const bucket = makeBucket("photos", "bucket-id");
     const createCalls: CreateKeyOptions[] = [];
     let refreshes = 0;
@@ -139,14 +255,14 @@ suite("B2 application key commands", () => {
 
     const ui = await withWindowUiStubs(
       {
-        inputValues: ["scoped-key", "uploads/"],
+        inputValues: ["scoped-key", " uploads/ "],
         quickPickLabels: ["readFiles, writeFiles", "photos", "1 day"],
         warningValues: ["Close"],
       },
       () =>
         createKeyCommand({
           getClient: () => client,
-          applicationKeysProvider: { refresh: () => refreshes++ },
+          viewProviders: { refresh: () => refreshes++ },
         }),
     );
 
@@ -155,7 +271,7 @@ suite("B2 application key commands", () => {
         bucketId: bucketId("bucket-id"),
         capabilities: [Capability.ReadFiles, Capability.WriteFiles],
         keyName: "scoped-key",
-        namePrefix: "uploads/",
+        namePrefix: " uploads/ ",
         validDurationInSeconds: 24 * 60 * 60,
       },
     ]);
@@ -166,6 +282,81 @@ suite("B2 application key commands", () => {
     assert.deepStrictEqual(ui.warnings[0]?.items, ["Copy Secret", "Close"]);
     assert.strictEqual(warningSecretOccurrences(ui.warnings[0]?.message ?? "", "secret-value"), 1);
     assert.match(ui.warnings[0]?.message ?? "", /shown only once/i);
+  });
+
+  test("warns about unknown state when key creation times out", async () => {
+    const bucket = makeBucket("photos", "bucket-id");
+    const createCalls: CreateKeyOptions[] = [];
+    let refreshes = 0;
+    const client = {
+      async listBuckets() {
+        return [bucket];
+      },
+      async createKey(options: CreateKeyOptions) {
+        createCalls.push(options);
+        return new Promise<FullApplicationKey>(() => undefined);
+      },
+      async deleteKey() {
+        return makeKey();
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["timeout-key", "uploads/"],
+        quickPickLabels: ["readFiles", "photos", "1 hour"],
+      },
+      () =>
+        createKeyCommand({
+          getClient: () => client,
+          viewProviders: { refresh: () => refreshes++ },
+          applicationKeyMutationTimeoutMs: 5,
+          applicationKeyMutationPostTimeoutSettleMs: 0,
+        }),
+    );
+
+    assert.strictEqual(createCalls.length, 1);
+    assert.strictEqual(refreshes, 1);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.warnings[0]?.message ?? "", /could not confirm/i);
+    assert.match(ui.warnings[0]?.message ?? "", /secret cannot be retrieved/i);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Could not confirm application key creation/);
+  });
+
+  test("rejects forged application key delete command arguments", async () => {
+    const deleteCalls: string[] = [];
+    const client = {
+      async listBuckets() {
+        return [];
+      },
+      async createKey() {
+        return makeFullKey();
+      },
+      async deleteKey(id: ApplicationKey["applicationKeyId"]) {
+        deleteCalls.push(id);
+        return makeKey();
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        warningValues: ["Delete"],
+      },
+      () =>
+        deleteKeyCommand(
+          {
+            keyName: "forged-key",
+            key: { applicationKeyId: applicationKeyId("forged-key-id") },
+          },
+          { getClient: () => client },
+        ),
+    );
+
+    assert.deepStrictEqual(deleteCalls, []);
+    assert.deepStrictEqual(ui.warnings, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Application Keys view/);
   });
 
   test("deletes an application key only after confirmation", async () => {
@@ -192,7 +383,7 @@ suite("B2 application key commands", () => {
       () =>
         deleteKeyCommand(new ApplicationKeyTreeItem(key), {
           getClient: () => client,
-          applicationKeysProvider: { refresh: () => refreshes++ },
+          viewProviders: { refresh: () => refreshes++ },
         }),
     );
 
@@ -200,7 +391,48 @@ suite("B2 application key commands", () => {
     assert.strictEqual(refreshes, 1);
     assert.strictEqual(ui.warnings.length, 1);
     assert.strictEqual(ui.warnings[0]?.options?.modal, true);
+    assert.match(ui.warnings[0]?.message ?? "", /delete-key-id/);
     assert.match(ui.warnings[0]?.message ?? "", /cannot be undone/i);
     assert.deepStrictEqual(ui.infos, ['B2: Application key "key-name" deleted.']);
+  });
+
+  test("warns about unknown state when key deletion times out", async () => {
+    const deleteCalls: string[] = [];
+    let refreshes = 0;
+    const key = makeKey({ applicationKeyId: applicationKeyId("delete-timeout-key-id") });
+    const client = {
+      async listBuckets() {
+        return [];
+      },
+      async createKey() {
+        return makeFullKey();
+      },
+      async deleteKey(id: ApplicationKey["applicationKeyId"]) {
+        deleteCalls.push(id);
+        return new Promise<ApplicationKey>(() => undefined);
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        warningValues: ["Delete"],
+      },
+      () =>
+        deleteKeyCommand(new ApplicationKeyTreeItem(key), {
+          getClient: () => client,
+          viewProviders: { refresh: () => refreshes++ },
+          applicationKeyMutationTimeoutMs: 5,
+          applicationKeyMutationPostTimeoutSettleMs: 0,
+        }),
+    );
+
+    assert.deepStrictEqual(deleteCalls, ["delete-timeout-key-id"]);
+    assert.strictEqual(refreshes, 1);
+    assert.strictEqual(ui.warnings.length, 2);
+    assert.match(ui.warnings[0]?.message ?? "", /delete-timeout-key-id/);
+    assert.match(ui.warnings[1]?.message ?? "", /could not confirm/i);
+    assert.match(ui.warnings[1]?.message ?? "", /before any retry/i);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Could not confirm application key deletion/);
   });
 });

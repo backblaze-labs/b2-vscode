@@ -15,12 +15,18 @@ import {
   type Capability as B2Capability,
   type FullApplicationKey,
 } from "@backblaze-labs/b2-sdk";
-import { formatB2UserMessage } from "../errors";
-import { logError } from "../logger";
+import {
+  B2MutationTimeoutError,
+  formatB2UserMessage,
+  isPostRequestB2MutationStateAmbiguous,
+} from "../errors";
+import { log, logError } from "../logger";
 import { ApplicationKeyTreeItem } from "../models/applicationKeyTreeItem";
 
 const COPY_SECRET_LABEL = "Copy Secret";
 const DELETE_KEY_LABEL = "Delete";
+const APPLICATION_KEY_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
+const APPLICATION_KEY_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
 
 type CreateKeyOptions = Parameters<B2Client["createKey"]>[0];
 type CreateKeyResult = ReturnType<B2Client["createKey"]>;
@@ -39,7 +45,9 @@ export interface ApplicationKeyManagementClient {
 
 export interface ApplicationKeyCommandServices {
   getClient: () => ApplicationKeyManagementClient | null;
-  applicationKeysProvider?: ApplicationKeysRefreshProvider;
+  viewProviders?: ApplicationKeysRefreshProvider;
+  applicationKeyMutationTimeoutMs?: number;
+  applicationKeyMutationPostTimeoutSettleMs?: number;
 }
 
 interface CapabilityQuickPickItem extends vscode.QuickPickItem {
@@ -211,6 +219,97 @@ function showApplicationKeyCommandError(prefix: string, error: unknown): void {
   vscode.window.showErrorMessage(`${prefix}. ${formatB2UserMessage(error)}`);
 }
 
+async function showApplicationKeyUnknownStateWarning(message: string): Promise<void> {
+  await vscode.window.showWarningMessage(message, { modal: true });
+}
+
+function buildCreateUnknownStateWarning(keyName: string): string {
+  return (
+    `B2: Could not confirm whether application key "${keyName}" was created. ` +
+    "The Application Keys view is being refreshed. If the key was created, its secret cannot be retrieved; delete it and create a replacement key if needed."
+  );
+}
+
+function buildDeleteUnknownStateWarning(keyName: string, applicationKeyId: string): string {
+  return (
+    `B2: Could not confirm whether application key "${keyName}" (${applicationKeyId}) was deleted. ` +
+    "The Application Keys view is being refreshed before any retry."
+  );
+}
+
+async function withApplicationKeyMutationTimeout<T>(
+  description: string,
+  timeoutMs: number,
+  postTimeoutSettleMs: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return operation();
+  }
+
+  const operationPromise = Promise.resolve().then(operation);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new B2MutationTimeoutError(`${description} timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([operationPromise, timeout]);
+  } catch (error) {
+    const observeLateSettlement = () => {
+      void operationPromise.then(
+        () => {
+          log(`${description} completed after the client-side timeout`);
+        },
+        (lateError) => {
+          logError(`${description} failed after the client-side timeout`, lateError);
+        },
+      );
+    };
+
+    if (!(error instanceof B2MutationTimeoutError)) {
+      throw error;
+    }
+
+    if (postTimeoutSettleMs <= 0) {
+      observeLateSettlement();
+      throw error;
+    }
+
+    let settleTimer: NodeJS.Timeout | undefined;
+    let settleTimedOut = false;
+    const settleTimeout = new Promise<never>((_resolve, reject) => {
+      settleTimer = setTimeout(() => {
+        settleTimedOut = true;
+        reject(error);
+      }, postTimeoutSettleMs);
+      settleTimer.unref?.();
+    });
+
+    try {
+      return await Promise.race([operationPromise, settleTimeout]);
+    } catch (settleError) {
+      if (settleTimedOut) {
+        observeLateSettlement();
+      } else {
+        logError(`${description} failed while settling after the client-side timeout`, settleError);
+      }
+      throw error;
+    } finally {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+      }
+    }
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function pickCapabilities(): Promise<B2Capability[] | undefined> {
   const selected = await vscode.window.showQuickPick(CAPABILITY_ITEMS, {
     title: "Application Key Capabilities",
@@ -329,7 +428,7 @@ async function pickNamePrefix(scope: BucketScopeSelection): Promise<string | und
     return undefined;
   }
 
-  return namePrefix.trim();
+  return namePrefix;
 }
 
 async function pickExpiry(): Promise<ExpirySelection | undefined> {
@@ -444,26 +543,44 @@ export async function createKeyCommand(services: ApplicationKeyCommandServices):
         title: `Creating application key "${options.keyName}"...`,
         cancellable: false,
       },
-      () => client.createKey(options),
+      () =>
+        withApplicationKeyMutationTimeout(
+          `Creating B2 application key "${options.keyName}"`,
+          services.applicationKeyMutationTimeoutMs ?? APPLICATION_KEY_MUTATION_TIMEOUT_MS,
+          services.applicationKeyMutationPostTimeoutSettleMs ??
+            APPLICATION_KEY_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          () => client.createKey(options),
+        ),
     );
-    services.applicationKeysProvider?.refresh();
+    services.viewProviders?.refresh();
     await showCreatedKeySecret(createdKey);
   } catch (error) {
+    if (isPostRequestB2MutationStateAmbiguous(error)) {
+      services.viewProviders?.refresh();
+      await showApplicationKeyUnknownStateWarning(buildCreateUnknownStateWarning(options.keyName));
+      showApplicationKeyCommandError("B2: Could not confirm application key creation", error);
+      return;
+    }
     showApplicationKeyCommandError("B2: Failed to create application key", error);
   }
 }
 
 export async function deleteKeyCommand(
-  item: ApplicationKeyTreeItem | undefined,
+  item: unknown,
   services: ApplicationKeyCommandServices,
 ): Promise<void> {
   const client = services.getClient();
-  if (!client || !item) {
+  if (!client) {
+    return;
+  }
+  if (!(item instanceof ApplicationKeyTreeItem)) {
+    vscode.window.showErrorMessage("B2: Select an application key from the Application Keys view.");
     return;
   }
 
+  const applicationKeyId = item.key.applicationKeyId;
   const answer = await vscode.window.showWarningMessage(
-    `Delete application key "${item.keyName}"? This cannot be undone.`,
+    `Delete application key "${item.keyName}" (${applicationKeyId})? This cannot be undone.`,
     { modal: true },
     DELETE_KEY_LABEL,
   );
@@ -478,11 +595,26 @@ export async function deleteKeyCommand(
         title: `Deleting application key "${item.keyName}"...`,
         cancellable: false,
       },
-      () => client.deleteKey(item.key.applicationKeyId),
+      () =>
+        withApplicationKeyMutationTimeout(
+          `Deleting B2 application key "${item.keyName}" (${applicationKeyId})`,
+          services.applicationKeyMutationTimeoutMs ?? APPLICATION_KEY_MUTATION_TIMEOUT_MS,
+          services.applicationKeyMutationPostTimeoutSettleMs ??
+            APPLICATION_KEY_MUTATION_POST_TIMEOUT_SETTLE_MS,
+          () => client.deleteKey(applicationKeyId),
+        ),
     );
-    services.applicationKeysProvider?.refresh();
+    services.viewProviders?.refresh();
     vscode.window.showInformationMessage(`B2: Application key "${item.keyName}" deleted.`);
   } catch (error) {
+    if (isPostRequestB2MutationStateAmbiguous(error)) {
+      services.viewProviders?.refresh();
+      await showApplicationKeyUnknownStateWarning(
+        buildDeleteUnknownStateWarning(item.keyName, applicationKeyId),
+      );
+      showApplicationKeyCommandError("B2: Could not confirm application key deletion", error);
+      return;
+    }
     showApplicationKeyCommandError("B2: Failed to delete application key", error);
   }
 }

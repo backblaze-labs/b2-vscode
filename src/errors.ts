@@ -453,7 +453,7 @@ export function formatB2UserMessage(error: unknown): string {
   }
 
   if (isMutationTimeout(error)) {
-    return "The B2 request timed out before the extension could confirm the final state. Refresh the bucket tree and verify the bucket in Backblaze before retrying.";
+    return "The B2 request timed out before the extension could confirm the final state. Refresh the relevant B2 view and verify the resource in Backblaze before retrying.";
   }
 
   if (

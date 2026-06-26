@@ -112,7 +112,7 @@
       },
       {
         "view": "b2ApplicationKeys",
-        "contents": "No application keys found.\n[Create Application Key](command:b2.createKey)",
+        "contents": "No application keys found.\n[Create Application Key](command:b2.createApplicationKey)",
         "when": "b2.authenticated"
       }
     ],
@@ -166,7 +166,7 @@
         "icon": "$(add)"
       },
       {
-        "command": "b2.createKey",
+        "command": "b2.createApplicationKey",
         "title": "Create Application Key",
         "category": "B2",
         "icon": "$(key)"
@@ -201,7 +201,7 @@
         "icon": "$(trash)"
       },
       {
-        "command": "b2.deleteKey",
+        "command": "b2.deleteApplicationKey",
         "title": "Delete Application Key",
         "category": "B2",
         "icon": "$(trash)"
@@ -252,7 +252,7 @@
           "when": "false"
         },
         {
-          "command": "b2.deleteKey",
+          "command": "b2.deleteApplicationKey",
           "when": "false"
         },
         {
@@ -292,7 +292,7 @@
           "group": "navigation@2"
         },
         {
-          "command": "b2.createKey",
+          "command": "b2.createApplicationKey",
           "when": "view == b2ApplicationKeys && b2.authenticated",
           "group": "navigation@2"
         },
@@ -374,7 +374,7 @@
           "group": "1_copy@2"
         },
         {
-          "command": "b2.deleteKey",
+          "command": "b2.deleteApplicationKey",
           "when": "view == b2ApplicationKeys && viewItem == applicationKey",
           "group": "3_destructive@1"
         }
