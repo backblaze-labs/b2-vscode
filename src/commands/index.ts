@@ -18,7 +18,7 @@ import type { TempFileManager } from "../services/tempFileManager";
 import { BucketTreeItem } from "../models/bucketTreeItem";
 import { FolderTreeItem } from "../models/folderTreeItem";
 import { FileTreeItem } from "../models/fileTreeItem";
-import { ApplicationKeyTreeItem } from "../models/applicationKeyTreeItem";
+import type { ApplicationKeyTreeItem } from "../models/applicationKeyTreeItem";
 import { LoadMoreTreeItem } from "../models/loadMoreTreeItem";
 import { createConfiguredB2Client } from "../services/b2";
 import {

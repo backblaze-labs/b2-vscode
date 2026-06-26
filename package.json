@@ -112,7 +112,7 @@
       },
       {
         "view": "b2ApplicationKeys",
-        "contents": "No application keys found.\n[Create Application Key](command:b2.createApplicationKey)",
+        "contents": "No application keys are currently shown.\n[Create Application Key](command:b2.createApplicationKey)",
         "when": "b2.authenticated"
       }
     ],
