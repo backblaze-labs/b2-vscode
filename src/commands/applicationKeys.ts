@@ -571,6 +571,7 @@ export async function deleteKeyCommand(
 ): Promise<void> {
   const client = services.getClient();
   if (!client) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
     return;
   }
   if (!(item instanceof ApplicationKeyTreeItem)) {

@@ -359,6 +359,45 @@ suite("B2 application key commands", () => {
     assert.match(ui.errors[0] ?? "", /Application Keys view/);
   });
 
+  test("shows an error when deleting without authentication", async () => {
+    const ui = await withWindowUiStubs({}, () =>
+      deleteKeyCommand(new ApplicationKeyTreeItem(makeKey()), {
+        getClient: () => null,
+      }),
+    );
+
+    assert.deepStrictEqual(ui.warnings, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Not authenticated/);
+  });
+
+  test("shows an error when deleting without a selected application key", async () => {
+    const deleteCalls: string[] = [];
+    const client = {
+      async listBuckets() {
+        return [];
+      },
+      async createKey() {
+        return makeFullKey();
+      },
+      async deleteKey(id: ApplicationKey["applicationKeyId"]) {
+        deleteCalls.push(id);
+        return makeKey();
+      },
+    };
+
+    const ui = await withWindowUiStubs({}, () =>
+      deleteKeyCommand(undefined, {
+        getClient: () => client,
+      }),
+    );
+
+    assert.deepStrictEqual(deleteCalls, []);
+    assert.deepStrictEqual(ui.warnings, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Application Keys view/);
+  });
+
   test("deletes an application key only after confirmation", async () => {
     const deleteCalls: string[] = [];
     let refreshes = 0;
