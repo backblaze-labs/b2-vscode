@@ -256,8 +256,8 @@ suite("B2 application key commands", () => {
     const ui = await withWindowUiStubs(
       {
         inputValues: ["scoped-key", " uploads/ "],
-        quickPickLabels: ["readFiles, writeFiles", "photos", "1 day"],
-        warningValues: ["Close"],
+        quickPickLabels: [["readFiles", "writeFiles"], "photos", "1 day"],
+        warningValues: ["I Saved It"],
       },
       () =>
         createKeyCommand({
@@ -279,9 +279,126 @@ suite("B2 application key commands", () => {
     assert.strictEqual(ui.progress.length, 1);
     assert.match(ui.progress[0]?.title ?? "", /Creating application key "scoped-key"/);
     assert.strictEqual(ui.warnings.length, 1);
-    assert.deepStrictEqual(ui.warnings[0]?.items, ["Copy Secret", "Close"]);
+    assert.deepStrictEqual(ui.warnings[0]?.items, ["Copy Secret", "I Saved It"]);
     assert.strictEqual(warningSecretOccurrences(ui.warnings[0]?.message ?? "", "secret-value"), 1);
     assert.match(ui.warnings[0]?.message ?? "", /shown only once/i);
+  });
+
+  test("keeps showing a created secret until it is copied or saved", async () => {
+    const bucket = makeBucket("photos", "bucket-id");
+    const client = {
+      async listBuckets() {
+        return [bucket];
+      },
+      async createKey(options: CreateKeyOptions) {
+        return makeFullKey({
+          applicationKeyId: applicationKeyId("new-key-id"),
+          bucketId: options.bucketId ?? null,
+          capabilities: options.capabilities,
+          keyName: options.keyName,
+          namePrefix: options.namePrefix ?? null,
+        });
+      },
+      async deleteKey() {
+        return makeKey();
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["secret-key", "uploads/"],
+        quickPickLabels: [["readFiles"], "photos", "Never expires"],
+        warningValues: [undefined, "Close", "I Saved It"],
+      },
+      () =>
+        createKeyCommand({
+          getClient: () => client,
+          viewProviders: { refresh() {} },
+        }),
+    );
+
+    assert.strictEqual(ui.warnings.length, 3);
+    assert.deepStrictEqual(ui.warnings[0]?.items, ["Copy Secret", "I Saved It"]);
+    assert.deepStrictEqual(ui.warnings[1]?.items, ["Copy Secret", "I Saved It"]);
+    assert.deepStrictEqual(ui.warnings[2]?.items, ["Copy Secret", "I Saved It"]);
+    assert.strictEqual(warningSecretOccurrences(ui.warnings[0]?.message ?? "", "secret-value"), 1);
+    assert.strictEqual(warningSecretOccurrences(ui.warnings[1]?.message ?? "", "secret-value"), 1);
+    assert.strictEqual(warningSecretOccurrences(ui.warnings[2]?.message ?? "", "secret-value"), 1);
+  });
+
+  test("creates an all-bucket prefix-scoped key with whitespace-only prefix", async () => {
+    const createCalls: CreateKeyOptions[] = [];
+    const client = {
+      async listBuckets() {
+        return [];
+      },
+      async createKey(options: CreateKeyOptions) {
+        createCalls.push(options);
+        return makeFullKey({
+          capabilities: options.capabilities,
+          keyName: options.keyName,
+          namePrefix: options.namePrefix ?? null,
+        });
+      },
+      async deleteKey() {
+        return makeKey();
+      },
+    };
+
+    await withWindowUiStubs(
+      {
+        inputValues: ["prefix-key", "   "],
+        quickPickLabels: [["readFiles"], "All buckets", "Never expires"],
+        warningValues: ["I Saved It"],
+      },
+      () =>
+        createKeyCommand({
+          getClient: () => client,
+          viewProviders: { refresh() {} },
+        }),
+    );
+
+    assert.deepStrictEqual(createCalls, [
+      {
+        capabilities: [Capability.ReadFiles],
+        keyName: "prefix-key",
+        namePrefix: "   ",
+      },
+    ]);
+  });
+
+  test("aborts key creation when bucket listing fails and fallback is dismissed", async () => {
+    const createCalls: CreateKeyOptions[] = [];
+    const client = {
+      async listBuckets() {
+        throw new Error("missing listBuckets capability");
+      },
+      async createKey(options: CreateKeyOptions) {
+        createCalls.push(options);
+        return makeFullKey();
+      },
+      async deleteKey() {
+        return makeKey();
+      },
+    };
+
+    const ui = await withWindowUiStubs(
+      {
+        inputValues: ["scope-key"],
+        quickPickLabels: [["readFiles"]],
+        warningValues: [undefined],
+      },
+      () =>
+        createKeyCommand({
+          getClient: () => client,
+          viewProviders: { refresh() {} },
+        }),
+    );
+
+    assert.deepStrictEqual(createCalls, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.match(ui.warnings[0]?.message ?? "", /Could not list buckets/);
+    assert.deepStrictEqual(ui.warnings[0]?.items, ["Enter Bucket ID", "Use All Buckets"]);
   });
 
   test("warns about unknown state when key creation times out", async () => {

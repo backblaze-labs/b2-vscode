@@ -32,7 +32,7 @@ export interface WindowUiStubOptions {
    * Tests should assert the recorded calls when prompt ordering matters.
    */
   readonly inputValues?: readonly (string | undefined)[];
-  readonly quickPickLabels?: readonly (string | undefined)[];
+  readonly quickPickLabels?: readonly (string | readonly string[] | undefined)[];
   readonly warningValues?: readonly (string | undefined)[];
 }
 
@@ -146,12 +146,14 @@ export async function withWindowUiStubs(
       if (selectedLabel === undefined) {
         return undefined;
       }
-      const selectedLabels = new Set(
-        selectedLabel
-          .split(",")
-          .map((label) => label.trim())
-          .filter(Boolean),
-      );
+      const selectedLabelItems =
+        typeof selectedLabel === "string"
+          ? selectedLabel
+              .split(",")
+              .map((label) => label.trim())
+              .filter(Boolean)
+          : selectedLabel;
+      const selectedLabels = new Set(selectedLabelItems);
       return itemArray.filter((item) => selectedLabels.has(labelForQuickPickItem(item)));
     }
     return selectedLabel === undefined

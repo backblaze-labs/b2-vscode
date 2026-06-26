@@ -24,7 +24,10 @@ import { log, logError } from "../logger";
 import { ApplicationKeyTreeItem } from "../models/applicationKeyTreeItem";
 
 const COPY_SECRET_LABEL = "Copy Secret";
+const SECRET_SAVED_LABEL = "I Saved It";
 const DELETE_KEY_LABEL = "Delete";
+const ENTER_BUCKET_ID_LABEL = "Enter Bucket ID";
+const USE_ALL_BUCKETS_LABEL = "Use All Buckets";
 const APPLICATION_KEY_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const APPLICATION_KEY_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
 
@@ -339,19 +342,15 @@ async function loadBucketScopeItems(
     },
   ];
 
-  try {
-    const buckets = await client.listBuckets();
-    items.push(
-      ...buckets.map((bucket: Bucket) => ({
-        label: bucket.name,
-        description: bucket.id,
-        bucketId: bucket.id,
-        bucketName: bucket.name,
-      })),
-    );
-  } catch (error) {
-    logError("B2: Could not list buckets while preparing application key scope choices", error);
-  }
+  const buckets = await client.listBuckets();
+  items.push(
+    ...buckets.map((bucket: Bucket) => ({
+      label: bucket.name,
+      description: bucket.id,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+    })),
+  );
 
   items.push({
     label: "Enter bucket ID...",
@@ -362,10 +361,51 @@ async function loadBucketScopeItems(
   return items;
 }
 
+async function enterBucketIdScope(): Promise<BucketScopeSelection | undefined> {
+  const bucketIdInput = await vscode.window.showInputBox({
+    title: "Application Key Bucket Scope",
+    prompt: "Enter the B2 bucket ID to restrict this key to",
+    placeHolder: "bucket-id",
+    ignoreFocusOut: true,
+    validateInput: validateBucketIdInput,
+  });
+  if (bucketIdInput === undefined) {
+    return undefined;
+  }
+  const bucketIdValidation = validateBucketIdInput(bucketIdInput);
+  if (bucketIdValidation) {
+    vscode.window.showErrorMessage(`B2: ${bucketIdValidation}`);
+    return undefined;
+  }
+  const trimmedBucketId = bucketIdInput.trim();
+  return { bucketId: toBucketId(trimmedBucketId), label: `bucket ${trimmedBucketId}` };
+}
+
 async function pickBucketScope(
   client: ApplicationKeyManagementClient,
 ): Promise<BucketScopeSelection | undefined> {
-  const selected = await vscode.window.showQuickPick(loadBucketScopeItems(client), {
+  let scopeItems: BucketScopeQuickPickItem[];
+  try {
+    scopeItems = await loadBucketScopeItems(client);
+  } catch (error) {
+    logError("B2: Could not list buckets while preparing application key scope choices", error);
+    const fallback = await vscode.window.showWarningMessage(
+      "B2: Could not list buckets while choosing application key scope. Enter a bucket ID manually, or explicitly continue with an all-buckets key.",
+      { modal: true },
+      ENTER_BUCKET_ID_LABEL,
+      USE_ALL_BUCKETS_LABEL,
+    );
+
+    if (fallback === ENTER_BUCKET_ID_LABEL) {
+      return enterBucketIdScope();
+    }
+    if (fallback === USE_ALL_BUCKETS_LABEL) {
+      return { label: "all buckets" };
+    }
+    return undefined;
+  }
+
+  const selected = await vscode.window.showQuickPick(scopeItems, {
     title: "Application Key Bucket Scope",
     placeHolder: "Select a bucket scope",
     ignoreFocusOut: true,
@@ -376,23 +416,7 @@ async function pickBucketScope(
   }
 
   if (selected.enterBucketId) {
-    const bucketIdInput = await vscode.window.showInputBox({
-      title: "Application Key Bucket Scope",
-      prompt: "Enter the B2 bucket ID to restrict this key to",
-      placeHolder: "bucket-id",
-      ignoreFocusOut: true,
-      validateInput: validateBucketIdInput,
-    });
-    if (bucketIdInput === undefined) {
-      return undefined;
-    }
-    const bucketIdValidation = validateBucketIdInput(bucketIdInput);
-    if (bucketIdValidation) {
-      vscode.window.showErrorMessage(`B2: ${bucketIdValidation}`);
-      return undefined;
-    }
-    const trimmedBucketId = bucketIdInput.trim();
-    return { bucketId: toBucketId(trimmedBucketId), label: `bucket ${trimmedBucketId}` };
+    return enterBucketIdScope();
   }
 
   if (selected.bucketId) {
@@ -406,13 +430,12 @@ async function pickBucketScope(
 }
 
 async function pickNamePrefix(scope: BucketScopeSelection): Promise<string | undefined> {
-  if (!scope.bucketId) {
-    return "";
-  }
-
   const namePrefix = await vscode.window.showInputBox({
     title: "Application Key Name Prefix",
-    prompt: `Optionally restrict this key to a file name prefix in ${scope.label}`,
+    prompt:
+      scope.bucketId === undefined
+        ? "Optionally restrict this key to a file name prefix across all buckets"
+        : `Optionally restrict this key to a file name prefix in ${scope.label}`,
     placeHolder: "uploads/",
     ignoreFocusOut: true,
     validateInput: validateNamePrefix,
@@ -468,19 +491,31 @@ async function pickExpiry(): Promise<ExpirySelection | undefined> {
 }
 
 async function showCreatedKeySecret(createdKey: FullApplicationKey): Promise<void> {
-  const choice = await vscode.window.showWarningMessage(
+  const message =
     `B2 application key "${createdKey.keyName}" was created.\n\n` +
-      `Application key ID: ${createdKey.applicationKeyId}\n\n` +
-      `Secret: ${createdKey.applicationKey}\n\n` +
-      "Copy this secret now. It is shown only once and cannot be retrieved later.",
-    { modal: true },
-    COPY_SECRET_LABEL,
-    "Close",
-  );
+    `Application key ID: ${createdKey.applicationKeyId}\n\n` +
+    `Secret: ${createdKey.applicationKey}\n\n` +
+    "Copy this secret now. It is shown only once and cannot be retrieved later.";
 
-  if (choice === COPY_SECRET_LABEL) {
-    await vscode.env.clipboard.writeText(createdKey.applicationKey);
-    vscode.window.showInformationMessage("B2: Application key secret copied to clipboard.");
+  while (true) {
+    const choice = await vscode.window.showWarningMessage(
+      message,
+      { modal: true },
+      COPY_SECRET_LABEL,
+      SECRET_SAVED_LABEL,
+    );
+
+    if (choice === COPY_SECRET_LABEL) {
+      try {
+        await vscode.env.clipboard.writeText(createdKey.applicationKey);
+        vscode.window.showInformationMessage("B2: Application key secret copied to clipboard.");
+        return;
+      } catch (error) {
+        showApplicationKeyCommandError("B2: Failed to copy application key secret", error);
+      }
+    } else if (choice === SECRET_SAVED_LABEL) {
+      return;
+    }
   }
 }
 
