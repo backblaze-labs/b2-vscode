@@ -107,6 +107,23 @@ suite("B2 application key tree", () => {
     assert.strictEqual(formatApplicationKeyExpiry(null), "never expires");
   });
 
+  test("renders tooltip metadata as literal code spans", () => {
+    const item = new ApplicationKeyTreeItem(
+      makeKey({
+        keyName: "[key](https://example.invalid)",
+        namePrefix: "   [prefix](https://example.invalid)   ",
+      }),
+    );
+    const tooltip = item.tooltip as { readonly value: string; readonly isTrusted?: boolean };
+
+    assert.strictEqual(tooltip.isTrusted, false);
+    assert.match(tooltip.value, /Application key `\[key\]\(https:\/\/example\.invalid\)`/);
+    assert.match(
+      tooltip.value,
+      /- Scope: `all buckets, prefix "   \[prefix\]\(https:\/\/example\.invalid\)   "`/,
+    );
+  });
+
   test("lists application keys from the SDK paginator", async () => {
     const keys = [
       makeKey({ applicationKeyId: applicationKeyId("key-1"), keyName: "first-key" }),

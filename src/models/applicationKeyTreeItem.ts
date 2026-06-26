@@ -29,6 +29,15 @@ function formatCapabilitySummary(key: ApplicationKey): string {
   return capabilities || "no capabilities";
 }
 
+function markdownCodeSpan(value: string): string {
+  const longestBacktickRun = Math.max(
+    0,
+    ...Array.from(value.matchAll(/`+/gu), (run) => run[0].length),
+  );
+  const delimiter = "`".repeat(longestBacktickRun + 1);
+  return `${delimiter}${value}${delimiter}`;
+}
+
 /**
  * A leaf tree item for application key metadata returned by b2_list_keys.
  *
@@ -55,11 +64,12 @@ export class ApplicationKeyTreeItem extends vscode.TreeItem {
 
     this.description = `${capabilities} - ${scope} - ${expiry}`;
     this.tooltip = new vscode.MarkdownString(
-      `**${key.keyName}**\n\n` +
-        `- ID: \`${key.applicationKeyId}\`\n` +
-        `- Capabilities: \`${capabilities}\`\n` +
-        `- Scope: ${scope}\n` +
-        `- Expiry: ${expiry}`,
+      `Application key ${markdownCodeSpan(key.keyName)}\n\n` +
+        `- ID: ${markdownCodeSpan(key.applicationKeyId)}\n` +
+        `- Capabilities: ${markdownCodeSpan(capabilities)}\n` +
+        `- Scope: ${markdownCodeSpan(scope)}\n` +
+        `- Expiry: ${markdownCodeSpan(expiry)}`,
     );
+    this.tooltip.isTrusted = false;
   }
 }
