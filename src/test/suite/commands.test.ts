@@ -21,6 +21,7 @@ import {
   authenticateCommand,
   buildCommandErrorMessage,
   changeBucketVisibilityCommand,
+  copyShareLinkCommand,
   createBucketCommand,
   createFolderCommand,
   openFileCommand,
@@ -260,6 +261,273 @@ suite("B2 commands error handling", () => {
     } finally {
       setClient(null);
     }
+  });
+
+  test("copy share link uses selected TTL and exact file prefix", async () => {
+    const listCalls: Array<{ prefix: string; pageSize: number }> = [];
+    const authorizationCalls: Array<{ fileNamePrefix: string; validDurationInSeconds: number }> =
+      [];
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "reports/Q4 plan.pdf",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async listFileNames(options: { prefix: string; pageSize: number }) {
+          listCalls.push(options);
+          return {
+            files: [{ fileName: "reports/Q4 plan.pdf" }],
+            nextFileName: null,
+          };
+        },
+        async getDownloadAuthorization(
+          fileNamePrefix: string,
+          validDurationInSeconds: number,
+        ): Promise<{ authorizationToken: string }> {
+          authorizationCalls.push({ fileNamePrefix, validDurationInSeconds });
+          return { authorizationToken: "token value+" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com/",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["604800"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+        now: () => new Date("2026-07-01T00:00:00.000Z"),
+      }),
+    );
+
+    assert.deepStrictEqual(listCalls, [{ prefix: "reports/Q4 plan.pdf", pageSize: 2 }]);
+    assert.deepStrictEqual(authorizationCalls, [
+      { fileNamePrefix: "reports/Q4 plan.pdf", validDurationInSeconds: 604800 },
+    ]);
+    assert.deepStrictEqual(writes, [
+      "https://download.example.com/file/share-bucket/reports/Q4%20plan.pdf?Authorization=token%20value%2B",
+    ]);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.deepStrictEqual(ui.errors, []);
+    assert.strictEqual(ui.infos.length, 1);
+    assert.match(ui.infos[0] ?? "", /Expires at 2026-07-08T00:00:00\.000Z/);
+    assert.match(ui.infos[0] ?? "", /Future same-prefix objects/i);
+  });
+
+  test("copy share link rejects adjacent same-prefix objects before authorization", async () => {
+    for (const [selectedPath, adjacentPath] of [
+      ["report/report.pdf", "report/report.pdf.secret"],
+      ["report.pdf", "report.pdf/report.pdf.secret"],
+    ] as const) {
+      let authorizationCalled = false;
+      const item = {
+        bucketName: "share-bucket",
+        file: {
+          fileName: selectedPath,
+          fileId: "file-id",
+          contentLength: 42,
+        },
+        bucket: {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepStrictEqual(options, { prefix: selectedPath, pageSize: 2 });
+            return {
+              files: [{ fileName: selectedPath }, { fileName: adjacentPath }],
+              nextFileName: null,
+            };
+          },
+          async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+            authorizationCalled = true;
+            return { authorizationToken: "token" };
+          },
+        },
+      } as unknown as FileTreeItem;
+      const client = {
+        accountInfo: {
+          getDownloadUrl: () => "https://download.example.com",
+        },
+      } as unknown as Pick<B2Client, "accountInfo">;
+      const writes: string[] = [];
+
+      const ui = await withWindowUiStubs({ inputValues: ["300"] }, () =>
+        copyShareLinkCommand(item, {
+          getClient: () => client,
+          writeClipboardText: (value) => {
+            writes.push(value);
+            return Promise.resolve();
+          },
+        }),
+      );
+
+      assert.strictEqual(authorizationCalled, false);
+      assert.deepStrictEqual(writes, []);
+      assert.deepStrictEqual(ui.infos, []);
+      assert.strictEqual(ui.errors.length, 1);
+      assert.match(ui.errors[0] ?? "", /additional current objects sharing this prefix/i);
+    }
+  });
+
+  test("copy share link rejects TTL above B2 maximum before authorization", async () => {
+    let authorizationCalled = false;
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.txt",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return { authorizationToken: "token" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["604801"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, false);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.progress, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /1 to 604800/);
+  });
+
+  test("copy share link rejects an empty TTL before authorization", async () => {
+    let authorizationCalled = false;
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.txt",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return { authorizationToken: "token" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: [""] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, false);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.progress, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /1 to 604800/);
+  });
+
+  test("copy share link times out stalled authorization and logs late completion", async () => {
+    let resolveAuthorization:
+      | ((value: { readonly authorizationToken: string }) => void)
+      | undefined;
+    let authorizationCalled = false;
+    const lateEvents: Array<{ status: string; filePath: string; reason?: unknown }> = [];
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.pdf",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async listFileNames() {
+          return {
+            files: [{ fileName: "report.pdf" }],
+            nextFileName: null,
+          };
+        },
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return new Promise((resolve) => {
+            resolveAuthorization = resolve;
+          });
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["300"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        shareLinkTimeoutMs: 5,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+        onLateAuthorization: (event) => {
+          lateEvents.push({
+            status: event.status,
+            filePath: event.filePath,
+            reason: event.reason,
+          });
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, true);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.infos, []);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+    assert.match(ui.errors[0] ?? "", /1 second/);
+    assert.doesNotMatch(ui.errors[0] ?? "", /\bms\b/);
+
+    assert.ok(resolveAuthorization);
+    resolveAuthorization({ authorizationToken: "late-token-that-must-not-be-logged" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(lateEvents.length, 1);
+    assert.strictEqual(lateEvents[0]?.status, "completed");
+    assert.strictEqual(lateEvents[0]?.filePath, "report.pdf");
+    assert.ok(lateEvents[0]?.reason instanceof Error);
+    assert.doesNotMatch(String(lateEvents[0]?.reason), /late-token/);
   });
 
   test("create folder times out stalled folder marker uploads", async () => {
