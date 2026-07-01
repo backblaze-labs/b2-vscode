@@ -20,7 +20,7 @@ import {
   presignUrlOperation,
   setPresignUrlLateAuthorizationLoggerForTest,
 } from "../../tools/operations/presignUrl";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import type { ToolExtras } from "../../tools/types";
 import {

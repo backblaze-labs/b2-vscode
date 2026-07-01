@@ -49,7 +49,7 @@ import { withTimeout } from "../services/transferTimeout";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-} from "../tools/presignUrlLimits";
+} from "../services/shareLinkLimits";
 import {
   bucketTypeLabel,
   buildPublicBucketUnknownStateWarningMessage,
