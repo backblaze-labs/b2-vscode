@@ -357,6 +357,11 @@ function logShareLinkLateAuthorization(event: LateShareLinkAuthorizationEvent): 
   log(`${safeMessage} - ${formatB2DiagnosticMessage(detail)}`);
 }
 
+function formatShareLinkTimeoutForUser(timeoutMs: number): string {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
 export async function openFileCommand(
   item: FileTreeItem,
   services: OpenFileCommandServices,
@@ -482,7 +487,9 @@ export async function copyShareLinkCommand(
             {
               signal: cancellation.signal,
               createTimeoutError: (description, timeoutMs) =>
-                new B2ShareLinkError(`${description} timed out after ${timeoutMs} ms.`),
+                new B2ShareLinkError(
+                  `${description} timed out after ${formatShareLinkTimeoutForUser(timeoutMs)}.`,
+                ),
             },
           );
         } finally {

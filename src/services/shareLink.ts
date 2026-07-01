@@ -92,7 +92,7 @@ export async function assertExactCurrentObjectWithoutAdjacentPrefix(
   const exactMatches = currentMatches.filter((file) => file.fileName === filePath);
   if (exactMatches.length !== 1) {
     throw new B2ShareLinkError(
-      "path must exactly match one downloadable B2 file before a presigned URL can be created.",
+      "path must exactly match one downloadable B2 file before a temporary download link can be created.",
     );
   }
 
