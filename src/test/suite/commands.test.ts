@@ -516,6 +516,8 @@ suite("B2 commands error handling", () => {
     assert.strictEqual(ui.progress[0]?.cancellable, true);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /timed out/i);
+    assert.match(ui.errors[0] ?? "", /1 second/);
+    assert.doesNotMatch(ui.errors[0] ?? "", /\bms\b/);
 
     assert.ok(resolveAuthorization);
     resolveAuthorization({ authorizationToken: "late-token-that-must-not-be-logged" });
