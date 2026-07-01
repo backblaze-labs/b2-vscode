@@ -416,6 +416,46 @@ suite("B2 commands error handling", () => {
     assert.match(ui.errors[0] ?? "", /1 to 604800/);
   });
 
+  test("copy share link rejects an empty TTL before authorization", async () => {
+    let authorizationCalled = false;
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.txt",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return { authorizationToken: "token" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: [""] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, false);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.progress, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /1 to 604800/);
+  });
+
   test("copy share link times out stalled authorization and logs late completion", async () => {
     let resolveAuthorization:
       | ((value: { readonly authorizationToken: string }) => void)
