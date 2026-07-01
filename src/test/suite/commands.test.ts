@@ -264,6 +264,7 @@ suite("B2 commands error handling", () => {
   });
 
   test("copy share link uses selected TTL and exact file prefix", async () => {
+    const listCalls: Array<{ prefix: string; pageSize: number }> = [];
     const authorizationCalls: Array<{ fileNamePrefix: string; validDurationInSeconds: number }> =
       [];
     const item = {
@@ -274,6 +275,13 @@ suite("B2 commands error handling", () => {
         contentLength: 42,
       },
       bucket: {
+        async listFileNames(options: { prefix: string; pageSize: number }) {
+          listCalls.push(options);
+          return {
+            files: [{ fileName: "reports/Q4 plan.pdf" }],
+            nextFileName: null,
+          };
+        },
         async getDownloadAuthorization(
           fileNamePrefix: string,
           validDurationInSeconds: number,
@@ -301,6 +309,7 @@ suite("B2 commands error handling", () => {
       }),
     );
 
+    assert.deepStrictEqual(listCalls, [{ prefix: "reports/Q4 plan.pdf", pageSize: 2 }]);
     assert.deepStrictEqual(authorizationCalls, [
       { fileNamePrefix: "reports/Q4 plan.pdf", validDurationInSeconds: 604800 },
     ]);
@@ -308,10 +317,63 @@ suite("B2 commands error handling", () => {
       "https://download.example.com/file/share-bucket/reports/Q4%20plan.pdf?Authorization=token%20value%2B",
     ]);
     assert.strictEqual(ui.progress.length, 1);
-    assert.strictEqual(ui.progress[0]?.cancellable, false);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
     assert.deepStrictEqual(ui.errors, []);
     assert.strictEqual(ui.infos.length, 1);
     assert.match(ui.infos[0] ?? "", /Expires at 2026-07-08T00:00:00\.000Z/);
+    assert.match(ui.infos[0] ?? "", /Future same-prefix objects/i);
+  });
+
+  test("copy share link rejects adjacent same-prefix objects before authorization", async () => {
+    for (const [selectedPath, adjacentPath] of [
+      ["report/report.pdf", "report/report.pdf.secret"],
+      ["report.pdf", "report.pdf/report.pdf.secret"],
+    ] as const) {
+      let authorizationCalled = false;
+      const item = {
+        bucketName: "share-bucket",
+        file: {
+          fileName: selectedPath,
+          fileId: "file-id",
+          contentLength: 42,
+        },
+        bucket: {
+          async listFileNames(options: { prefix: string; pageSize: number }) {
+            assert.deepStrictEqual(options, { prefix: selectedPath, pageSize: 2 });
+            return {
+              files: [{ fileName: selectedPath }, { fileName: adjacentPath }],
+              nextFileName: null,
+            };
+          },
+          async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+            authorizationCalled = true;
+            return { authorizationToken: "token" };
+          },
+        },
+      } as unknown as FileTreeItem;
+      const client = {
+        accountInfo: {
+          getDownloadUrl: () => "https://download.example.com",
+        },
+      } as unknown as Pick<B2Client, "accountInfo">;
+      const writes: string[] = [];
+
+      const ui = await withWindowUiStubs({ inputValues: ["300"] }, () =>
+        copyShareLinkCommand(item, {
+          getClient: () => client,
+          writeClipboardText: (value) => {
+            writes.push(value);
+            return Promise.resolve();
+          },
+        }),
+      );
+
+      assert.strictEqual(authorizationCalled, false);
+      assert.deepStrictEqual(writes, []);
+      assert.deepStrictEqual(ui.infos, []);
+      assert.strictEqual(ui.errors.length, 1);
+      assert.match(ui.errors[0] ?? "", /additional current objects sharing this prefix/i);
+    }
   });
 
   test("copy share link rejects TTL above B2 maximum before authorization", async () => {
@@ -352,6 +414,78 @@ suite("B2 commands error handling", () => {
     assert.deepStrictEqual(ui.progress, []);
     assert.strictEqual(ui.errors.length, 1);
     assert.match(ui.errors[0] ?? "", /1 to 604800/);
+  });
+
+  test("copy share link times out stalled authorization and logs late completion", async () => {
+    let resolveAuthorization:
+      | ((value: { readonly authorizationToken: string }) => void)
+      | undefined;
+    let authorizationCalled = false;
+    const lateEvents: Array<{ status: string; filePath: string; reason?: unknown }> = [];
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.pdf",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async listFileNames() {
+          return {
+            files: [{ fileName: "report.pdf" }],
+            nextFileName: null,
+          };
+        },
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return new Promise((resolve) => {
+            resolveAuthorization = resolve;
+          });
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["300"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        shareLinkTimeoutMs: 5,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+        onLateAuthorization: (event) => {
+          lateEvents.push({
+            status: event.status,
+            filePath: event.filePath,
+            reason: event.reason,
+          });
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, true);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.infos, []);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /timed out/i);
+
+    assert.ok(resolveAuthorization);
+    resolveAuthorization({ authorizationToken: "late-token-that-must-not-be-logged" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(lateEvents.length, 1);
+    assert.strictEqual(lateEvents[0]?.status, "completed");
+    assert.strictEqual(lateEvents[0]?.filePath, "report.pdf");
+    assert.ok(lateEvents[0]?.reason instanceof Error);
+    assert.doesNotMatch(String(lateEvents[0]?.reason), /late-token/);
   });
 
   test("create folder times out stalled folder marker uploads", async () => {
