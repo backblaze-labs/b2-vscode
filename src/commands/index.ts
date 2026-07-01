@@ -430,7 +430,7 @@ export async function copyShareLinkCommand(
     ignoreFocusOut: true,
     validateInput: validateShareLinkExpiresInInput,
   });
-  if (!expiresInInput) {
+  if (expiresInInput === undefined) {
     return;
   }
 
