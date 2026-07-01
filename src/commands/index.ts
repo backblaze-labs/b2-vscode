@@ -31,12 +31,21 @@ import {
 import {
   B2MutationTimeoutError,
   B2PartialFailureError,
+  B2ShareLinkError,
+  formatB2DiagnosticMessage,
   formatB2UserMessage,
   isBucketRevisionConflict,
   isPostRequestB2MutationStateAmbiguous,
+  redactSensitiveText,
 } from "../errors";
 import { log, logError } from "../logger";
-import { buildB2DownloadUrl } from "../utils/urlEncoding";
+import {
+  createPrefixScopedDownloadUrl,
+  SHARE_LINK_AUTHORIZATION_TIMEOUT_MS,
+  throwIfAborted,
+  type LateShareLinkAuthorizationEvent,
+} from "../services/shareLink";
+import { withTimeout } from "../services/transferTimeout";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
@@ -273,6 +282,8 @@ export interface OpenFileCommandServices {
 export interface CopyShareLinkCommandServices {
   getClient: () => Pick<B2Client, "accountInfo"> | null;
   writeClipboardText?: (value: string) => Thenable<void>;
+  shareLinkTimeoutMs?: number;
+  onLateAuthorization?: (event: LateShareLinkAuthorizationEvent) => void;
   now?: () => Date;
 }
 
@@ -297,6 +308,53 @@ export function validateShareLinkExpiresInInput(value: string): string | undefin
     return `Enter a whole number of seconds from 1 to ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS}.`;
   }
   return undefined;
+}
+
+function signalFromCancellationToken(token: vscode.CancellationToken): {
+  readonly signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(new vscode.CancellationError());
+    }
+  };
+  if (token.isCancellationRequested) {
+    abort();
+  }
+  const subscription = token.onCancellationRequested(abort);
+  return {
+    signal: controller.signal,
+    dispose: () => subscription.dispose(),
+  };
+}
+
+function redactedCommandLateAuthorizationError(error: unknown): unknown {
+  if (error instanceof Error) {
+    const redactedError = new Error(redactSensitiveText(error.message));
+    redactedError.name = error.name;
+    return redactedError;
+  }
+  return error === undefined ? undefined : redactSensitiveText(String(error));
+}
+
+function logShareLinkLateAuthorization(event: LateShareLinkAuthorizationEvent): void {
+  const message =
+    event.status === "completed"
+      ? `Share-link download authorization completed after timeout or cancellation for prefix ${event.filePath}; the discarded B2 token may remain valid until expiry.`
+      : `Share-link download authorization failed after timeout or cancellation for prefix ${event.filePath}`;
+  const detail = redactedCommandLateAuthorizationError(
+    event.status === "completed" ? event.reason : event.error,
+  );
+  const safeMessage = redactSensitiveText(message);
+
+  if (detail === undefined) {
+    log(safeMessage);
+    return;
+  }
+
+  log(`${safeMessage} - ${formatB2DiagnosticMessage(detail)}`);
 }
 
 export async function openFileCommand(
@@ -393,34 +451,56 @@ export async function copyShareLinkCommand(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Creating share link for "${item.file.fileName}"...`,
-        cancellable: false,
+        cancellable: true,
       },
-      async () => {
-        const { authorizationToken } = await item.bucket.getDownloadAuthorization(
-          item.file.fileName,
-          expiresIn,
-        );
-        const url = buildB2DownloadUrl(
-          client.accountInfo.getDownloadUrl(),
-          item.bucketName,
-          item.file.fileName,
-          authorizationToken,
-        );
+      async (_progress, token) => {
         const writeClipboardText =
           services.writeClipboardText ?? ((value: string) => vscode.env.clipboard.writeText(value));
-        await writeClipboardText(url);
-        const now = services.now?.() ?? new Date();
-        return {
-          expiresAt: new Date(now.getTime() + expiresIn * 1000).toISOString(),
-        };
+        const cancellation = signalFromCancellationToken(token);
+        try {
+          return await withTimeout(
+            async (signal) => {
+              const shareLink = await createPrefixScopedDownloadUrl({
+                bucket: item.bucket,
+                bucketName: item.bucketName,
+                filePath: item.file.fileName,
+                downloadUrl: client.accountInfo.getDownloadUrl(),
+                expiresIn,
+                signal,
+                onLateAuthorization: services.onLateAuthorization ?? logShareLinkLateAuthorization,
+              });
+              throwIfAborted(signal);
+              await writeClipboardText(shareLink.url);
+              throwIfAborted(signal);
+              const now = services.now?.() ?? new Date();
+              return {
+                expiresAt: new Date(now.getTime() + expiresIn * 1000).toISOString(),
+              };
+            },
+            services.shareLinkTimeoutMs ?? SHARE_LINK_AUTHORIZATION_TIMEOUT_MS,
+            `Share link for b2://${item.bucketName}/${item.file.fileName}`,
+            {
+              signal: cancellation.signal,
+              createTimeoutError: (description, timeoutMs) =>
+                new B2ShareLinkError(`${description} timed out after ${timeoutMs} ms.`),
+            },
+          );
+        } finally {
+          cancellation.dispose();
+        }
       },
     );
 
     log(
       `Created prefix-scoped share link for b2://${item.bucketName}/${item.file.fileName} expiring at ${expiresAt}.`,
     );
-    vscode.window.showInformationMessage(`B2: Share link copied. Expires at ${expiresAt}.`);
+    vscode.window.showInformationMessage(
+      `B2: Share link copied. Expires at ${expiresAt}. Future same-prefix objects may also be downloadable until then.`,
+    );
   } catch (error) {
+    if (error instanceof vscode.CancellationError) {
+      return;
+    }
     showCommandError("B2: Failed to create share link", error);
   }
 }

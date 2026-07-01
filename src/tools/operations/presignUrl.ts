@@ -12,9 +12,13 @@ import {
   formatB2DiagnosticMessage,
   redactSensitiveText,
 } from "../../errors";
+import {
+  createPrefixScopedDownloadUrl,
+  SHARE_LINK_AUTHORIZATION_TIMEOUT_MS,
+  throwIfAborted,
+  type LateShareLinkAuthorizationEvent,
+} from "../../services/shareLink";
 import { withTimeout } from "../../services/transferTimeout";
-import { isMissingCapabilityError } from "../../utils/b2Errors";
-import { buildB2DownloadUrl } from "../../utils/urlEncoding";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
@@ -35,8 +39,6 @@ interface PresignUrlResult {
 }
 
 type PresignUrlLateAuthorizationLogger = (message: string, error?: unknown) => void;
-
-const PRESIGN_URL_OPERATION_TIMEOUT_MS = 30_000;
 
 let presignUrlLateAuthorizationLogger: PresignUrlLateAuthorizationLogger = (message, error) => {
   const safeMessage = redactSensitiveText(message);
@@ -76,6 +78,21 @@ function logPresignUrlLateAuthorization(message: string, error?: unknown): void 
   presignUrlLateAuthorizationLogger(
     redactSensitiveText(message),
     redactedLateAuthorizationError(error),
+  );
+}
+
+function logPresignUrlLateAuthorizationEvent(event: LateShareLinkAuthorizationEvent): void {
+  if (event.status === "completed") {
+    logPresignUrlLateAuthorization(
+      `presignUrl download authorization completed after timeout or cancellation for prefix ${event.filePath}; the discarded B2 token may remain valid until expiry.`,
+      event.reason,
+    );
+    return;
+  }
+
+  logPresignUrlLateAuthorization(
+    `presignUrl download authorization failed after timeout or cancellation for prefix ${event.filePath}`,
+    event.error,
   );
 }
 
@@ -130,95 +147,6 @@ function signalFromCancellationToken(token: CancellationToken | undefined): {
   };
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) {
-    throw signal.reason ?? new DOMException("Aborted", "AbortError");
-  }
-}
-
-interface PresignableBucket {
-  listFileNames(options: { prefix: string; pageSize: number }): Promise<{
-    files: readonly { fileName: string; action?: string }[];
-    nextFileName?: string | null;
-  }>;
-  getDownloadAuthorization(
-    filePath: string,
-    expiresIn: number,
-  ): Promise<{ authorizationToken: string }>;
-}
-
-function isCurrentDownloadableFile(file: { action?: string }): boolean {
-  return file.action !== "folder" && file.action !== "hide";
-}
-
-async function assertExactCurrentObjectWithoutAdjacentPrefix(
-  bucket: PresignableBucket,
-  filePath: string,
-  signal: AbortSignal,
-): Promise<void> {
-  let page: Awaited<ReturnType<PresignableBucket["listFileNames"]>>;
-  try {
-    throwIfAborted(signal);
-    // The current B2 SDK list/auth helpers do not accept AbortSignal. The
-    // surrounding withTimeout still bounds tool latency and this explicit check
-    // prevents issuing later calls after a timeout or LM cancellation. Calls
-    // are sequential, so at most one SDK request per presign invocation can
-    // continue in the background after the bounded tool result returns.
-    page = await bucket.listFileNames({ prefix: filePath, pageSize: 2 });
-    throwIfAborted(signal);
-  } catch (error) {
-    if (isMissingCapabilityError(error)) {
-      throw new Error(
-        "presignUrl requires the listFiles capability to verify the object before issuing B2's prefix-scoped download authorization.",
-      );
-    }
-    throw error;
-  }
-
-  const currentMatches = page.files.filter(isCurrentDownloadableFile);
-  const exactMatches = currentMatches.filter((file) => file.fileName === filePath);
-  if (exactMatches.length !== 1) {
-    throw new Error(
-      "path must exactly match one downloadable B2 file before a presigned URL can be created.",
-    );
-  }
-
-  if (currentMatches.some((file) => file.fileName !== filePath) || page.nextFileName) {
-    throw new Error(
-      "path matches additional current objects sharing this prefix; B2 would authorize ALL object names beginning with that value, not just this file.",
-    );
-  }
-}
-
-async function getDownloadAuthorizationWithAbortLogging(
-  bucket: PresignableBucket,
-  filePath: string,
-  expiresIn: number,
-  signal: AbortSignal,
-): Promise<{ authorizationToken: string }> {
-  const authorizationPromise = bucket.getDownloadAuthorization(filePath, expiresIn);
-  void authorizationPromise.then(
-    () => {
-      if (signal.aborted) {
-        logPresignUrlLateAuthorization(
-          `presignUrl download authorization completed after timeout or cancellation for prefix ${filePath}; the discarded B2 token may remain valid until expiry.`,
-          signal.reason,
-        );
-      }
-    },
-    (error) => {
-      if (signal.aborted) {
-        logPresignUrlLateAuthorization(
-          `presignUrl download authorization failed after timeout or cancellation for prefix ${filePath}`,
-          error,
-        );
-      }
-    },
-  );
-
-  return authorizationPromise;
-}
-
 export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlResult> = {
   async execute(
     params: PresignUrlParams,
@@ -260,25 +188,29 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
             throw new B2ResourceNotFoundError(`Bucket "${params.bucket}" not found.`);
           }
 
-          await assertExactCurrentObjectWithoutAdjacentPrefix(bucket, filePath, signal);
-          throwIfAborted(signal);
-          authorizationInFlight = true;
-          const { authorizationToken } = await getDownloadAuthorizationWithAbortLogging(
+          const presigned = await createPrefixScopedDownloadUrl({
             bucket,
+            bucketName: params.bucket,
             filePath,
+            downloadUrl: client.accountInfo.getDownloadUrl(),
             expiresIn,
             signal,
-          ).finally(() => {
-            authorizationInFlight = false;
+            missingListCapabilityMessage:
+              "presignUrl requires the listFiles capability to verify the object before issuing B2's prefix-scoped download authorization.",
+            onAuthorizationStarted: () => {
+              authorizationInFlight = true;
+            },
+            onAuthorizationSettled: () => {
+              authorizationInFlight = false;
+            },
+            onLateAuthorization: logPresignUrlLateAuthorizationEvent,
           });
           throwIfAborted(signal);
-          const downloadUrl = client.accountInfo.getDownloadUrl();
-          const url = buildB2DownloadUrl(downloadUrl, params.bucket, filePath, authorizationToken);
 
           return {
-            url,
-            expiresIn,
-            authorizedPrefix: filePath,
+            url: presigned.url,
+            expiresIn: presigned.expiresIn,
+            authorizedPrefix: presigned.authorizedPrefix,
             message:
               `Pre-signed URL created for B2 file-name prefix ${filePath}; it authorizes ALL B2 object names beginning with ${filePath}, not just this file, for ${expiresIn}s. ` +
               "Current bucket contents were checked and no adjacent same-prefix object was found. " +
@@ -286,7 +218,7 @@ export const presignUrlOperation: B2ToolOperation<PresignUrlParams, PresignUrlRe
               "Use the dedicated url field for the token-bearing link.",
           };
         },
-        PRESIGN_URL_OPERATION_TIMEOUT_MS,
+        SHARE_LINK_AUTHORIZATION_TIMEOUT_MS,
         `presignUrl for b2://${params.bucket}/${filePath}`,
         { signal: cancellation.signal },
       );
