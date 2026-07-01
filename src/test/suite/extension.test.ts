@@ -53,6 +53,7 @@ suite("B2 Extension Test Suite", () => {
       "b2.loadMore",
       "b2.copyPath",
       "b2.copyFileId",
+      "b2.copyShareLink",
       "b2.openFile",
       "b2.createBucket",
       "b2.changeBucketVisibility",
@@ -81,6 +82,21 @@ suite("B2 Extension Test Suite", () => {
     for (const entry of copyPathMenus) {
       assert.strictEqual(entry.when, "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/");
     }
+  });
+
+  test("Copy share link menu is scoped to files", async () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const viewItemMenus = extension.packageJSON.contributes.menus[
+      "view/item/context"
+    ] as MenuContribution[];
+    const copyShareLinkMenus = viewItemMenus.filter(
+      (entry) => entry.command === "b2.copyShareLink",
+    );
+
+    assert.strictEqual(copyShareLinkMenus.length, 1);
+    assert.strictEqual(copyShareLinkMenus[0]?.when, "view == b2Buckets && viewItem == file");
   });
 
   test("listFiles package contribution declares an integer limit schema", () => {
