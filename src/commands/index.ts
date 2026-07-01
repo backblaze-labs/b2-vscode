@@ -36,6 +36,11 @@ import {
   isPostRequestB2MutationStateAmbiguous,
 } from "../errors";
 import { log, logError } from "../logger";
+import { buildB2DownloadUrl } from "../utils/urlEncoding";
+import {
+  DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
+  MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
+} from "../tools/presignUrlLimits";
 import {
   bucketTypeLabel,
   buildPublicBucketUnknownStateWarningMessage,
@@ -265,9 +270,33 @@ export interface OpenFileCommandServices {
   getClient: () => B2Client | null;
 }
 
+export interface CopyShareLinkCommandServices {
+  getClient: () => Pick<B2Client, "accountInfo"> | null;
+  writeClipboardText?: (value: string) => Thenable<void>;
+  now?: () => Date;
+}
+
 export interface CreateFolderCommandServices {
   treeProvider: Pick<B2TreeProvider, "refresh">;
   getClient: () => B2Client | null;
+}
+
+function parseShareLinkExpiresIn(input: string): number | undefined {
+  const trimmed = input.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  const expiresIn = Number(trimmed);
+  return Number.isSafeInteger(expiresIn) ? expiresIn : undefined;
+}
+
+export function validateShareLinkExpiresInInput(value: string): string | undefined {
+  const expiresIn = parseShareLinkExpiresIn(value);
+  if (expiresIn === undefined || expiresIn < 1 || expiresIn > MAX_PRESIGN_URL_EXPIRES_IN_SECONDS) {
+    return `Enter a whole number of seconds from 1 to ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS}.`;
+  }
+  return undefined;
 }
 
 export async function openFileCommand(
@@ -318,6 +347,81 @@ export async function openFileCommand(
       return;
     }
     showCommandError("B2: Failed to open file", error);
+  }
+}
+
+export async function copyShareLinkCommand(
+  item: FileTreeItem | undefined,
+  services: CopyShareLinkCommandServices,
+): Promise<void> {
+  const client = services.getClient();
+  if (!client) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showErrorMessage("B2: Select a file first.");
+    return;
+  }
+
+  const expiresInInput = await vscode.window.showInputBox({
+    title: "Copy Share Link",
+    prompt: `Enter link TTL in seconds (1-${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS})`,
+    value: String(DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS),
+    placeHolder: "3600",
+    ignoreFocusOut: true,
+    validateInput: validateShareLinkExpiresInInput,
+  });
+  if (!expiresInInput) {
+    return;
+  }
+
+  const validationError = validateShareLinkExpiresInInput(expiresInInput);
+  if (validationError) {
+    vscode.window.showErrorMessage(`B2: ${validationError}`);
+    return;
+  }
+
+  const expiresIn = parseShareLinkExpiresIn(expiresInInput);
+  if (expiresIn === undefined) {
+    vscode.window.showErrorMessage("B2: Invalid share link TTL.");
+    return;
+  }
+
+  try {
+    const { expiresAt } = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Creating share link for "${item.file.fileName}"...`,
+        cancellable: false,
+      },
+      async () => {
+        const { authorizationToken } = await item.bucket.getDownloadAuthorization(
+          item.file.fileName,
+          expiresIn,
+        );
+        const url = buildB2DownloadUrl(
+          client.accountInfo.getDownloadUrl(),
+          item.bucketName,
+          item.file.fileName,
+          authorizationToken,
+        );
+        const writeClipboardText =
+          services.writeClipboardText ?? ((value: string) => vscode.env.clipboard.writeText(value));
+        await writeClipboardText(url);
+        const now = services.now?.() ?? new Date();
+        return {
+          expiresAt: new Date(now.getTime() + expiresIn * 1000).toISOString(),
+        };
+      },
+    );
+
+    log(
+      `Created prefix-scoped share link for b2://${item.bucketName}/${item.file.fileName} expiring at ${expiresAt}.`,
+    );
+    vscode.window.showInformationMessage(`B2: Share link copied. Expires at ${expiresAt}.`);
+  } catch (error) {
+    showCommandError("B2: Failed to create share link", error);
   }
 }
 
@@ -875,6 +979,13 @@ export function registerCommands(services: CommandServices): void {
       await vscode.env.clipboard.writeText(item.file.fileId);
       vscode.window.showInformationMessage(`Copied file ID: ${item.file.fileId}`);
     }),
+  );
+
+  // ── Copy Share Link ─────────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("b2.copyShareLink", (item?: FileTreeItem) =>
+      copyShareLinkCommand(item, { getClient }),
+    ),
   );
 
   // ── Open File ───────────────────────────────────────────────────────────

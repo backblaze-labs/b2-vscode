@@ -27,6 +27,7 @@ import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import { registerB2Tools } from "../../tools/registration";
 import { withWindowUiStubs } from "./windowStubs";
@@ -557,10 +558,14 @@ suite("B2 LM tool failure handling", () => {
     await assert.rejects(
       () =>
         presignUrlOperation.execute(
-          { bucket: "b", path: "a.txt", expiresIn: 3_601 },
+          {
+            bucket: "b",
+            path: "a.txt",
+            expiresIn: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS + 1,
+          },
           { getClient: () => client },
         ),
-      /between 1 and 3600 seconds/i,
+      new RegExp(`between 1 and ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} seconds`, "i"),
     );
   });
 

@@ -48,7 +48,7 @@ export const presignUrlTool: B2ToolDefinition = {
         minimum: 1,
         maximum: MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
         default: DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
-        description: `URL validity duration in seconds. Default: ${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} (5 minutes). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (1 hour).`,
+        description: `URL validity duration in seconds. Default: ${DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS} (5 minutes). Maximum: ${MAX_PRESIGN_URL_EXPIRES_IN_SECONDS} (7 days).`,
       },
     },
     required: ["bucket", "path"],

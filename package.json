@@ -138,6 +138,12 @@
         "icon": "$(key)"
       },
       {
+        "command": "b2.copyShareLink",
+        "title": "Copy Share Link",
+        "category": "B2",
+        "icon": "$(link)"
+      },
+      {
         "command": "b2.openFile",
         "title": "Open File",
         "category": "B2",
@@ -193,6 +199,10 @@
         },
         {
           "command": "b2.copyFileId",
+          "when": "false"
+        },
+        {
+          "command": "b2.copyShareLink",
           "when": "false"
         },
         {
@@ -320,6 +330,11 @@
           "command": "b2.copyFileId",
           "when": "view == b2Buckets && viewItem == file",
           "group": "1_copy@2"
+        },
+        {
+          "command": "b2.copyShareLink",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "1_copy@3"
         }
       ]
     },
@@ -546,9 +561,9 @@
             "expiresIn": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 3600,
+              "maximum": 604800,
               "default": 300,
-              "description": "URL validity duration in seconds. Default: 300 (5 minutes). Maximum: 3600 (1 hour)."
+              "description": "URL validity duration in seconds. Default: 300 (5 minutes). Maximum: 604800 (7 days)."
             }
           },
           "required": [

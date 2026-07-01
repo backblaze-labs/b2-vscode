@@ -21,6 +21,7 @@ import {
   authenticateCommand,
   buildCommandErrorMessage,
   changeBucketVisibilityCommand,
+  copyShareLinkCommand,
   createBucketCommand,
   createFolderCommand,
   openFileCommand,
@@ -260,6 +261,97 @@ suite("B2 commands error handling", () => {
     } finally {
       setClient(null);
     }
+  });
+
+  test("copy share link uses selected TTL and exact file prefix", async () => {
+    const authorizationCalls: Array<{ fileNamePrefix: string; validDurationInSeconds: number }> =
+      [];
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "reports/Q4 plan.pdf",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async getDownloadAuthorization(
+          fileNamePrefix: string,
+          validDurationInSeconds: number,
+        ): Promise<{ authorizationToken: string }> {
+          authorizationCalls.push({ fileNamePrefix, validDurationInSeconds });
+          return { authorizationToken: "token value+" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com/",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["604800"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+        now: () => new Date("2026-07-01T00:00:00.000Z"),
+      }),
+    );
+
+    assert.deepStrictEqual(authorizationCalls, [
+      { fileNamePrefix: "reports/Q4 plan.pdf", validDurationInSeconds: 604800 },
+    ]);
+    assert.deepStrictEqual(writes, [
+      "https://download.example.com/file/share-bucket/reports/Q4%20plan.pdf?Authorization=token%20value%2B",
+    ]);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, false);
+    assert.deepStrictEqual(ui.errors, []);
+    assert.strictEqual(ui.infos.length, 1);
+    assert.match(ui.infos[0] ?? "", /Expires at 2026-07-08T00:00:00\.000Z/);
+  });
+
+  test("copy share link rejects TTL above B2 maximum before authorization", async () => {
+    let authorizationCalled = false;
+    const item = {
+      bucketName: "share-bucket",
+      file: {
+        fileName: "report.txt",
+        fileId: "file-id",
+        contentLength: 42,
+      },
+      bucket: {
+        async getDownloadAuthorization(): Promise<{ authorizationToken: string }> {
+          authorizationCalled = true;
+          return { authorizationToken: "token" };
+        },
+      },
+    } as unknown as FileTreeItem;
+    const client = {
+      accountInfo: {
+        getDownloadUrl: () => "https://download.example.com",
+      },
+    } as unknown as Pick<B2Client, "accountInfo">;
+    const writes: string[] = [];
+
+    const ui = await withWindowUiStubs({ inputValues: ["604801"] }, () =>
+      copyShareLinkCommand(item, {
+        getClient: () => client,
+        writeClipboardText: (value) => {
+          writes.push(value);
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    assert.strictEqual(authorizationCalled, false);
+    assert.deepStrictEqual(writes, []);
+    assert.deepStrictEqual(ui.progress, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /1 to 604800/);
   });
 
   test("create folder times out stalled folder marker uploads", async () => {
