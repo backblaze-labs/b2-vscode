@@ -22,7 +22,7 @@ import { withTimeout } from "../../services/transferTimeout";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-} from "../presignUrlLimits";
+} from "../../services/shareLinkLimits";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
 
 interface PresignUrlParams {

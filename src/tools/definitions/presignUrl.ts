@@ -9,7 +9,7 @@ import { inputText } from "./inputText";
 import {
   DEFAULT_PRESIGN_URL_EXPIRES_IN_SECONDS,
   MAX_PRESIGN_URL_EXPIRES_IN_SECONDS,
-} from "../presignUrlLimits";
+} from "../../services/shareLinkLimits";
 
 function describeExpiresIn(value: unknown): string {
   if (value === undefined) {

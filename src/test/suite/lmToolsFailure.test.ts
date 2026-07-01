@@ -27,7 +27,7 @@ import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listBucketsOperation } from "../../tools/operations/listBuckets";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
 import { registerB2Tools } from "../../tools/registration";
 import { withWindowUiStubs } from "./windowStubs";

@@ -22,7 +22,7 @@ import { createPrivateTempRoot, releasePrivateTempRoot } from "../../utils/priva
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 import type { ToolExtras } from "../../tools/types";
 
 const PROPERTY_RUNS = 1000;

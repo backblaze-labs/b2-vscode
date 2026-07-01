@@ -11,7 +11,7 @@ import { createAuthenticatedClientSetter } from "../../extension";
 import { downloadFileTool } from "../../tools/definitions/downloadFile";
 import { presignUrlTool } from "../../tools/definitions/presignUrl";
 import { uploadFileTool } from "../../tools/definitions/uploadFile";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 
 interface MenuContribution {
   command: string;
