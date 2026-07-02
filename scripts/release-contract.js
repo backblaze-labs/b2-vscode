@@ -45,6 +45,7 @@ const manifestContract = {
     "b2.createBucket",
     "b2.changeBucketVisibility",
     "b2.createFolder",
+    "b2.uploadFiles",
     "b2.deleteBucket",
     "b2.deleteFolder",
     "b2.deleteFile",
@@ -59,7 +60,7 @@ const manifestContract = {
     "b2_deleteFile",
     "b2_presignUrl",
   ],
-  contributesSha256: "40a5f09a30986dfcb974032113ec6afaa2a694fa9fd12421b222955dac64eda7",
+  contributesSha256: "1d1b39b1cf126691c0b01d073a264c0ef545f29a817fc89f892f5601d83e32cc",
 };
 
 function stableStringify(value) {

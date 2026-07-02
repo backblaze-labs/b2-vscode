@@ -21,7 +21,9 @@ export interface WindowUiCalls {
   readonly inputs: readonly vscode.InputBoxOptions[];
   readonly quickPicks: readonly QuickPickCall[];
   readonly warnings: readonly WarningMessageCall[];
+  readonly openDialogs: readonly vscode.OpenDialogOptions[];
   readonly progress: readonly vscode.ProgressOptions[];
+  readonly progressReports: readonly { readonly message?: string; readonly increment?: number }[];
   readonly errors: readonly string[];
   readonly infos: readonly string[];
 }
@@ -34,6 +36,11 @@ export interface WindowUiStubOptions {
   readonly inputValues?: readonly (string | undefined)[];
   readonly quickPickLabels?: readonly (string | undefined)[];
   readonly warningValues?: readonly (string | undefined)[];
+  readonly openDialogValues?: readonly (readonly vscode.Uri[] | undefined)[];
+  readonly onProgressReport?: (report: {
+    readonly message?: string;
+    readonly increment?: number;
+  }) => void;
 }
 
 function labelForQuickPickItem(item: unknown): string {
@@ -107,6 +114,7 @@ export async function withWindowUiStubs(
     showInputBox: typeof vscode.window.showInputBox;
     showQuickPick: typeof vscode.window.showQuickPick;
     showWarningMessage: typeof vscode.window.showWarningMessage;
+    showOpenDialog: typeof vscode.window.showOpenDialog;
     showErrorMessage: typeof vscode.window.showErrorMessage;
     showInformationMessage: typeof vscode.window.showInformationMessage;
     withProgress: typeof vscode.window.withProgress;
@@ -114,16 +122,20 @@ export async function withWindowUiStubs(
   const originalShowInputBox = mutableWindow.showInputBox;
   const originalShowQuickPick = mutableWindow.showQuickPick;
   const originalShowWarningMessage = mutableWindow.showWarningMessage;
+  const originalShowOpenDialog = mutableWindow.showOpenDialog;
   const originalShowErrorMessage = mutableWindow.showErrorMessage;
   const originalShowInformationMessage = mutableWindow.showInformationMessage;
   const originalWithProgress = mutableWindow.withProgress;
   const inputValues = [...(options.inputValues ?? [])];
   const quickPickLabels = [...(options.quickPickLabels ?? [])];
   const warningValues = [...(options.warningValues ?? [])];
+  const openDialogValues = [...(options.openDialogValues ?? [])];
   const inputs: vscode.InputBoxOptions[] = [];
   const quickPicks: QuickPickCall[] = [];
   const warnings: WarningMessageCall[] = [];
+  const openDialogs: vscode.OpenDialogOptions[] = [];
   const progress: vscode.ProgressOptions[] = [];
+  const progressReports: Array<{ readonly message?: string; readonly increment?: number }> = [];
   const errors: string[] = [];
   const infos: string[] = [];
 
@@ -156,6 +168,11 @@ export async function withWindowUiStubs(
     return Promise.resolve(warningValues.shift());
   }) as typeof vscode.window.showWarningMessage;
 
+  mutableWindow.showOpenDialog = ((openDialogOptions?: vscode.OpenDialogOptions) => {
+    openDialogs.push(openDialogOptions ?? {});
+    return Promise.resolve(openDialogValues.shift());
+  }) as typeof vscode.window.showOpenDialog;
+
   mutableWindow.showErrorMessage = ((message: string) => {
     errors.push(message);
     return Promise.resolve(undefined);
@@ -176,7 +193,15 @@ export async function withWindowUiStubs(
     progress.push(progressOptions);
     const tokenSource = new vscode.CancellationTokenSource();
     try {
-      return await task({ report() {} }, tokenSource.token);
+      return await task(
+        {
+          report: (report) => {
+            progressReports.push(report);
+            options.onProgressReport?.(report);
+          },
+        },
+        tokenSource.token,
+      );
     } finally {
       tokenSource.dispose();
     }
@@ -184,11 +209,12 @@ export async function withWindowUiStubs(
 
   try {
     await callback();
-    return { inputs, quickPicks, warnings, progress, errors, infos };
+    return { inputs, quickPicks, warnings, openDialogs, progress, progressReports, errors, infos };
   } finally {
     mutableWindow.withProgress = originalWithProgress;
     mutableWindow.showInformationMessage = originalShowInformationMessage;
     mutableWindow.showErrorMessage = originalShowErrorMessage;
+    mutableWindow.showOpenDialog = originalShowOpenDialog;
     mutableWindow.showWarningMessage = originalShowWarningMessage;
     mutableWindow.showQuickPick = originalShowQuickPick;
     mutableWindow.showInputBox = originalShowInputBox;

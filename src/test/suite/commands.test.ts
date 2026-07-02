@@ -5,6 +5,8 @@
  */
 
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import {
   B2Client,
@@ -33,7 +35,14 @@ import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "..
 import { createAuthenticatedClientSetter } from "../../extension";
 import { BucketTreeItem } from "../../models/bucketTreeItem";
 import type { FileTreeItem } from "../../models/fileTreeItem";
+import { FolderTreeItem } from "../../models/folderTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
+import { tempDir } from "../../testSupport/tempDir";
+import {
+  collectLocalUploadEntries,
+  uploadFilesCommand,
+  uploadLocalUrisToTarget,
+} from "../../commands/uploadFiles";
 import { withWindowUiStubs } from "./windowStubs";
 
 type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
@@ -47,6 +56,8 @@ const PRIVATE_VISIBILITY_LABEL = "Private";
 const PUBLIC_VISIBILITY_LABEL = "Public";
 const CONFIRM_PUBLIC_VISIBILITY_LABEL = "Change to Public";
 const CONFIRM_PRIVATE_VISIBILITY_LABEL = "Change to Private";
+const EXPECTED_AUTO_CONTENT_TYPE = "b2/x-auto";
+const OVERWRITE_UPLOAD_LABEL = "Overwrite";
 
 function makeCommandServices<TClient>(
   client: TClient | null,
@@ -143,6 +154,125 @@ function assertAbortSignalIsEnumerable(options: { readonly signal?: AbortSignal 
   assert.ok(options.signal);
   assert.strictEqual(Object.prototype.propertyIsEnumerable.call(options, "signal"), true);
   assert.strictEqual({ ...options }.signal, options.signal);
+}
+
+interface UploadCall {
+  readonly kind: "stream" | "empty";
+  readonly fileName: string;
+  readonly contentType: string | undefined;
+  readonly signal: AbortSignal | undefined;
+  readonly bytes: number;
+}
+
+function notFoundError(): Error & { status: number; code: string } {
+  const error = new Error("not found") as Error & { status: number; code: string };
+  error.status = 404;
+  error.code = "not_found";
+  return error;
+}
+
+function makeUploadBucket(existingPaths: readonly string[] = []): {
+  readonly bucket: Bucket;
+  readonly calls: UploadCall[];
+  readonly headSignals: Array<AbortSignal | undefined>;
+} {
+  const calls: UploadCall[] = [];
+  const headSignals: Array<AbortSignal | undefined> = [];
+  const existing = new Set(existingPaths);
+  const bucket = {
+    name: "bucket",
+    id: "bucket-id",
+    info: { bucketType: "allPrivate" },
+    async head(fileName: string, options?: { signal?: AbortSignal }) {
+      headSignals.push(options?.signal);
+      if (existing.has(fileName)) {
+        return {};
+      }
+      throw notFoundError();
+    },
+    async upload(options: {
+      fileName: string;
+      contentType?: string;
+      signal?: AbortSignal;
+      onProgress?: (event: { bytesTransferred: number; totalBytes?: number | null }) => void;
+    }) {
+      options.onProgress?.({ bytesTransferred: 0, totalBytes: 0 });
+      calls.push({
+        kind: "empty",
+        fileName: options.fileName,
+        contentType: options.contentType,
+        signal: options.signal,
+        bytes: 0,
+      });
+      return {
+        fileId: `id-${calls.length}`,
+        fileName: options.fileName,
+        contentLength: 0,
+      };
+    },
+    file(fileName: string) {
+      return {
+        createWriteStream(options?: {
+          contentType?: string;
+          signal?: AbortSignal;
+          onProgress?: (event: { bytesTransferred: number; totalBytes?: number | null }) => void;
+        }) {
+          let bytes = 0;
+          let resolveDone: (value: unknown) => void = () => undefined;
+          const done = new Promise((resolve) => {
+            resolveDone = resolve;
+          });
+          const writable = new WritableStream<Uint8Array>({
+            write(chunk) {
+              bytes += chunk.byteLength;
+              options?.onProgress?.({ bytesTransferred: bytes, totalBytes: null });
+            },
+            close() {
+              calls.push({
+                kind: "stream",
+                fileName,
+                contentType: options?.contentType,
+                signal: options?.signal,
+                bytes,
+              });
+              resolveDone({
+                fileId: `id-${calls.length}`,
+                fileName,
+                contentLength: bytes,
+              });
+            },
+          });
+          return { writable, done };
+        },
+      };
+    },
+  } as unknown as Bucket;
+
+  return { bucket, calls, headSignals };
+}
+
+function makeCancellationAmbiguousBucket(onUploadStarted: () => void): Bucket {
+  return {
+    name: "bucket",
+    id: "bucket-id",
+    info: { bucketType: "allPrivate" },
+    async head() {
+      throw notFoundError();
+    },
+    async upload(options: { signal?: AbortSignal }) {
+      onUploadStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(options.signal?.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      });
+    },
+    file() {
+      throw new Error("streaming upload should not be used for zero-byte entries");
+    },
+  } as unknown as Bucket;
 }
 
 suite("B2 commands error handling", () => {
@@ -326,6 +456,564 @@ suite("B2 commands error handling", () => {
       assert.deepStrictEqual(ui.infos, []);
       assert.strictEqual(ui.errors.length, 1);
       assert.match(ui.errors[0] ?? "", /Folder name/);
+    }
+  });
+
+  test("uploads picked files into the selected folder target", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls, headSignals } = makeUploadBucket();
+    const target = new FolderTreeItem(bucket, "incoming/");
+    let refreshes = 0;
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(undefined, {
+          getClient: () => ({}) as unknown as B2Client,
+          getSelectedUploadTarget: () => target,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(
+      calls.map((call) => ({
+        kind: call.kind,
+        fileName: call.fileName,
+        contentType: call.contentType,
+        bytes: call.bytes,
+      })),
+      [
+        {
+          kind: "stream",
+          fileName: "incoming/report.txt",
+          contentType: EXPECTED_AUTO_CONTENT_TYPE,
+          bytes: 8,
+        },
+      ],
+    );
+    assert.ok(calls[0]?.signal);
+    assert.ok(headSignals[0]);
+    assert.strictEqual(ui.openDialogs.length, 1);
+    assert.strictEqual(
+      ui.openDialogs[0]?.title,
+      "Upload Files or Folders to b2://bucket/incoming/",
+    );
+    assert.strictEqual(ui.openDialogs[0]?.canSelectFiles, true);
+    assert.strictEqual(ui.openDialogs[0]?.canSelectFolders, true);
+    assert.strictEqual(ui.openDialogs[0]?.canSelectMany, true);
+    assert.strictEqual(ui.progress.length, 2);
+    assert.match(ui.progress[0]?.title ?? "", /Preparing upload/);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[1]?.cancellable, true);
+    assert.strictEqual(refreshes, 1);
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("title upload lets users choose a bucket when no tree target is selected", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls } = makeUploadBucket();
+    let refreshes = 0;
+    const client = {
+      async listBuckets() {
+        return [bucket];
+      },
+    } as unknown as B2Client;
+
+    const ui = await withWindowUiStubs(
+      {
+        quickPickLabels: ["bucket"],
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(undefined, {
+          getClient: () => client,
+          getSelectedUploadTarget: () => undefined,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(ui.quickPicks[0]?.labels, ["bucket"]);
+    assert.strictEqual(ui.quickPicks[0]?.options?.title, "Upload Destination");
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files or Folders to b2://bucket");
+    assert.deepStrictEqual(
+      calls.map((call) => call.fileName),
+      ["report.txt"],
+    );
+    assert.strictEqual(refreshes, 1);
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("uploads local folders recursively and preserves empty folders", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    fs.mkdirSync(path.join(folderPath, "nested"), { recursive: true });
+    fs.mkdirSync(path.join(folderPath, "empty"));
+    fs.writeFileSync(path.join(folderPath, "cover.txt"), "cover");
+    fs.writeFileSync(path.join(folderPath, "nested", "raw.bin"), Buffer.from([1, 2, 3]));
+    const { bucket, calls } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(folderPath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+    );
+
+    assert.deepStrictEqual(
+      calls.map((call) => ({
+        kind: call.kind,
+        fileName: call.fileName,
+        contentType: call.contentType,
+        bytes: call.bytes,
+      })),
+      [
+        {
+          kind: "stream",
+          fileName: "photos/cover.txt",
+          contentType: EXPECTED_AUTO_CONTENT_TYPE,
+          bytes: 5,
+        },
+        {
+          kind: "empty",
+          fileName: "photos/empty/.bzEmpty",
+          contentType: "application/x-bzEmpty",
+          bytes: 0,
+        },
+        {
+          kind: "stream",
+          fileName: "photos/nested/raw.bin",
+          contentType: EXPECTED_AUTO_CONTENT_TYPE,
+          bytes: 3,
+        },
+      ],
+    );
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files or Folders to b2://bucket");
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("rejects symlinked folders during recursive upload", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    const secretPath = path.join(root, "secret");
+    fs.mkdirSync(folderPath);
+    fs.mkdirSync(secretPath);
+    fs.writeFileSync(path.join(secretPath, "credentials.txt"), "secret");
+    fs.symlinkSync(secretPath, path.join(folderPath, "secrets"), "dir");
+    const { bucket, calls } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(folderPath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+    );
+
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to upload files/);
+  });
+
+  test("rejects directories swapped to symlinks during folder discovery", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    const nestedPath = path.join(folderPath, "nested");
+    const secretPath = path.join(root, "secret");
+    fs.mkdirSync(nestedPath, { recursive: true });
+    fs.mkdirSync(secretPath);
+    fs.writeFileSync(path.join(secretPath, "credentials.txt"), "secret");
+    const { bucket, calls } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+    const originalReaddir = fs.promises.readdir;
+    const callOriginalReaddir = originalReaddir.bind(fs.promises) as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    const mutablePromises = fs.promises as unknown as {
+      readdir: (...args: unknown[]) => Promise<unknown>;
+    };
+    let swapped = false;
+
+    mutablePromises.readdir = async (...args: unknown[]): Promise<unknown> => {
+      const result = await callOriginalReaddir(...args);
+      if (String(args[0]) === folderPath && !swapped) {
+        fs.rmSync(nestedPath, { recursive: true, force: true });
+        fs.symlinkSync(secretPath, nestedPath, "dir");
+        swapped = true;
+      }
+      return result;
+    };
+
+    try {
+      const ui = await withWindowUiStubs(
+        {
+          openDialogValues: [[vscode.Uri.file(folderPath)]],
+        },
+        () =>
+          uploadFilesCommand(target, {
+            getClient: () => ({}) as unknown as B2Client,
+            treeProvider: { refresh: () => undefined },
+          }),
+      );
+
+      assert.strictEqual(swapped, true);
+      assert.deepStrictEqual(calls, []);
+      assert.strictEqual(ui.errors.length, 1);
+      assert.match(ui.errors[0] ?? "", /Failed to upload files/);
+    } finally {
+      mutablePromises.readdir = originalReaddir as unknown as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+    }
+  });
+
+  test("rejects files that escape after upload discovery", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    const nestedPath = path.join(folderPath, "nested");
+    const secretPath = path.join(root, "secret");
+    fs.mkdirSync(nestedPath, { recursive: true });
+    fs.mkdirSync(secretPath);
+    fs.writeFileSync(path.join(nestedPath, "inside.txt"), "inside");
+    fs.writeFileSync(path.join(secretPath, "inside.txt"), "secret");
+    const { bucket, calls } = makeUploadBucket();
+    const mutableBucket = bucket as unknown as {
+      head(fileName: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+    };
+    let swapped = false;
+    mutableBucket.head = async () => {
+      if (!swapped) {
+        fs.rmSync(nestedPath, { recursive: true, force: true });
+        fs.symlinkSync(secretPath, nestedPath, "dir");
+        swapped = true;
+      }
+      throw notFoundError();
+    };
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(folderPath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+    );
+
+    assert.strictEqual(swapped, true);
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.errors.length, 1);
+    assert.match(ui.errors[0] ?? "", /Failed to upload files/);
+  });
+
+  test("bounds collected upload entries", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "a.txt");
+    const secondPath = path.join(root, "b.txt");
+    fs.writeFileSync(firstPath, "a");
+    fs.writeFileSync(secondPath, "b");
+
+    await assert.rejects(
+      collectLocalUploadEntries([firstPath, secondPath], "", { maxEntries: 1 }),
+      /exceeds the 1 item limit/,
+    );
+  });
+
+  test("bounds collected upload depth", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    const nestedPath = path.join(folderPath, "nested");
+    fs.mkdirSync(nestedPath, { recursive: true });
+
+    await assert.rejects(
+      collectLocalUploadEntries([folderPath], "", { maxDepth: 0 }),
+      /deeper than 0 levels/,
+    );
+  });
+
+  test("cancels folder discovery before uploading", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    fs.mkdirSync(folderPath);
+    fs.writeFileSync(path.join(folderPath, "a.txt"), "a");
+    fs.writeFileSync(path.join(folderPath, "b.txt"), "b");
+    const tokenSource = new vscode.CancellationTokenSource();
+    const { bucket, calls } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+    let canceled = false;
+
+    try {
+      const ui = await withWindowUiStubs(
+        {
+          onProgressReport(report) {
+            if (!canceled && report.message?.startsWith("Preparing upload list")) {
+              canceled = true;
+              tokenSource.cancel();
+            }
+          },
+        },
+        () =>
+          uploadLocalUrisToTarget(
+            target,
+            [vscode.Uri.file(folderPath)],
+            {
+              getClient: () => ({}) as unknown as B2Client,
+              treeProvider: { refresh: () => undefined },
+            },
+            tokenSource.token,
+          ),
+      );
+
+      assert.strictEqual(canceled, true);
+      assert.deepStrictEqual(calls, []);
+      assert.deepStrictEqual(ui.errors, []);
+      assert.match(ui.progress[0]?.title ?? "", /Preparing upload/);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("reports aggregate upload progress without double-counting entries", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "a.txt");
+    const secondPath = path.join(root, "b.txt");
+    fs.writeFileSync(firstPath, "12345");
+    fs.writeFileSync(secondPath, "abcde");
+    const { bucket } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+    const positiveProgressReports = ui.progressReports.filter(
+      (report): report is { readonly message?: string; readonly increment: number } =>
+        typeof report.increment === "number" && report.increment > 0,
+    );
+
+    assert.deepStrictEqual(
+      positiveProgressReports.map((report) => report.increment),
+      [50, 50],
+    );
+    assert.match(positiveProgressReports[0]?.message ?? "", /a\.txt/);
+    assert.match(positiveProgressReports[1]?.message ?? "", /b\.txt/);
+  });
+
+  test("reports stable overwrite preflight check counters", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "a.txt");
+    const secondPath = path.join(root, "b.txt");
+    fs.writeFileSync(firstPath, "12345");
+    fs.writeFileSync(secondPath, "abcde");
+    const { bucket } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+    const checkCounters = ui.progressReports
+      .map((report) => report.message?.match(/Checking for existing B2 files (\d+\/2):/u)?.[1])
+      .filter((counter): counter is string => counter !== undefined);
+
+    assert.deepStrictEqual(checkCounters, ["1/2", "2/2"]);
+  });
+
+  test("cancels delayed overwrite checks before uploading", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const tokenSource = new vscode.CancellationTokenSource();
+    let uploadCalled = false;
+    let canceled = false;
+    const bucket = {
+      name: "bucket",
+      id: "bucket-id",
+      info: { bucketType: "allPrivate" },
+      async head(_fileName: string, options?: { signal?: AbortSignal }) {
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal?.reason ?? new vscode.CancellationError()),
+            { once: true },
+          );
+        });
+      },
+      async upload() {
+        uploadCalled = true;
+        return {};
+      },
+      file() {
+        uploadCalled = true;
+        throw new Error("upload should not start");
+      },
+    } as unknown as Bucket;
+    const target = new BucketTreeItem(bucket);
+
+    try {
+      const ui = await withWindowUiStubs(
+        {
+          onProgressReport(report) {
+            if (!canceled && report.message?.startsWith("Checking for existing B2 files")) {
+              canceled = true;
+              tokenSource.cancel();
+            }
+          },
+        },
+        () =>
+          uploadLocalUrisToTarget(
+            target,
+            [vscode.Uri.file(filePath)],
+            {
+              getClient: () => ({}) as unknown as B2Client,
+              treeProvider: { refresh: () => undefined },
+            },
+            tokenSource.token,
+          ),
+      );
+
+      assert.strictEqual(canceled, true);
+      assert.strictEqual(uploadCalled, false);
+      assert.deepStrictEqual(ui.errors, []);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("warns and cancels before overwriting existing B2 objects", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls } = makeUploadBucket(["incoming/report.txt"]);
+    const target = new FolderTreeItem(bucket, "incoming/");
+    let refreshes = 0;
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.deepStrictEqual(ui.warnings[0]?.items, [OVERWRITE_UPLOAD_LABEL]);
+    assert.match(ui.warnings[0]?.message ?? "", /incoming\/report\.txt/);
+    assert.strictEqual(ui.progress.length, 2);
+    assert.match(ui.progress[0]?.title ?? "", /Preparing upload/);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(ui.progress[1]?.cancellable, true);
+    assert.strictEqual(refreshes, 0);
+  });
+
+  test("sorts overwrite warning paths deterministically", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "z.txt");
+    const secondPath = path.join(root, "a.txt");
+    fs.writeFileSync(firstPath, "first");
+    fs.writeFileSync(secondPath, "second");
+    const { bucket } = makeUploadBucket(["z.txt", "a.txt"]);
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+
+    assert.match(ui.warnings[0]?.message ?? "", /\("a\.txt", "z\.txt"\)/);
+  });
+
+  test("warns and refreshes when canceling an in-flight zero-byte file upload", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "empty.txt");
+    fs.writeFileSync(filePath, "");
+    const tokenSource = new vscode.CancellationTokenSource();
+    const bucket = makeCancellationAmbiguousBucket(() => {
+      setImmediate(() => tokenSource.cancel());
+    });
+    const target = new BucketTreeItem(bucket);
+    let refreshes = 0;
+
+    try {
+      const ui = await withWindowUiStubs({}, () =>
+        uploadLocalUrisToTarget(
+          target,
+          [vscode.Uri.file(filePath)],
+          {
+            getClient: () => ({}) as unknown as B2Client,
+            treeProvider: { refresh: () => refreshes++ },
+          },
+          tokenSource.token,
+        ),
+      );
+
+      assert.strictEqual(refreshes, 1);
+      assert.strictEqual(ui.warnings.length, 1);
+      assert.match(ui.warnings[0]?.message ?? "", /empty\.txt/);
+      assert.match(ui.warnings[0]?.message ?? "", /may have been uploaded/i);
+      assert.deepStrictEqual(ui.errors, []);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("warns and refreshes when canceling an in-flight empty-folder marker upload", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "empty-folder");
+    fs.mkdirSync(folderPath);
+    const tokenSource = new vscode.CancellationTokenSource();
+    const bucket = makeCancellationAmbiguousBucket(() => {
+      setImmediate(() => tokenSource.cancel());
+    });
+    const target = new BucketTreeItem(bucket);
+    let refreshes = 0;
+
+    try {
+      const ui = await withWindowUiStubs({}, () =>
+        uploadLocalUrisToTarget(
+          target,
+          [vscode.Uri.file(folderPath)],
+          {
+            getClient: () => ({}) as unknown as B2Client,
+            treeProvider: { refresh: () => refreshes++ },
+          },
+          tokenSource.token,
+        ),
+      );
+
+      assert.strictEqual(refreshes, 1);
+      assert.strictEqual(ui.warnings.length, 1);
+      assert.match(ui.warnings[0]?.message ?? "", /empty-folder\/\.bzEmpty/);
+      assert.match(ui.warnings[0]?.message ?? "", /may have been uploaded/i);
+      assert.deepStrictEqual(ui.errors, []);
+    } finally {
+      tokenSource.dispose();
     }
   });
 
