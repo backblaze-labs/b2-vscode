@@ -42,6 +42,7 @@ import {
   B2_AUTO_CONTENT_TYPE,
   OVERWRITE_UPLOAD_LABEL,
   uploadFilesCommand,
+  uploadLocalUrisToTarget,
 } from "../../commands/uploadFiles";
 import { withWindowUiStubs } from "./windowStubs";
 
@@ -172,14 +173,17 @@ function notFoundError(): Error & { status: number; code: string } {
 function makeUploadBucket(existingPaths: readonly string[] = []): {
   readonly bucket: Bucket;
   readonly calls: UploadCall[];
+  readonly headSignals: Array<AbortSignal | undefined>;
 } {
   const calls: UploadCall[] = [];
+  const headSignals: Array<AbortSignal | undefined> = [];
   const existing = new Set(existingPaths);
   const bucket = {
     name: "bucket",
     id: "bucket-id",
     info: { bucketType: "allPrivate" },
-    async head(fileName: string) {
+    async head(fileName: string, options?: { signal?: AbortSignal }) {
+      headSignals.push(options?.signal);
       if (existing.has(fileName)) {
         return {};
       }
@@ -243,7 +247,31 @@ function makeUploadBucket(existingPaths: readonly string[] = []): {
     },
   } as unknown as Bucket;
 
-  return { bucket, calls };
+  return { bucket, calls, headSignals };
+}
+
+function makeCancellationAmbiguousBucket(onUploadStarted: () => void): Bucket {
+  return {
+    name: "bucket",
+    id: "bucket-id",
+    info: { bucketType: "allPrivate" },
+    async head() {
+      throw notFoundError();
+    },
+    async upload(options: { signal?: AbortSignal }) {
+      onUploadStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(options.signal?.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      });
+    },
+    file() {
+      throw new Error("streaming upload should not be used for zero-byte entries");
+    },
+  } as unknown as Bucket;
 }
 
 suite("B2 commands error handling", () => {
@@ -434,7 +462,7 @@ suite("B2 commands error handling", () => {
     const root = tempDir();
     const filePath = path.join(root, "report.txt");
     fs.writeFileSync(filePath, "hello b2");
-    const { bucket, calls } = makeUploadBucket();
+    const { bucket, calls, headSignals } = makeUploadBucket();
     const target = new FolderTreeItem(bucket, "incoming/");
     let refreshes = 0;
 
@@ -467,12 +495,50 @@ suite("B2 commands error handling", () => {
       ],
     );
     assert.ok(calls[0]?.signal);
+    assert.ok(headSignals[0]);
     assert.strictEqual(ui.openDialogs.length, 1);
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket/incoming/");
     assert.strictEqual(ui.openDialogs[0]?.canSelectFiles, true);
     assert.strictEqual(ui.openDialogs[0]?.canSelectFolders, true);
     assert.strictEqual(ui.openDialogs[0]?.canSelectMany, true);
     assert.strictEqual(ui.progress.length, 1);
     assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(refreshes, 1);
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("title upload lets users choose a bucket when no tree target is selected", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls } = makeUploadBucket();
+    let refreshes = 0;
+    const client = {
+      async listBuckets() {
+        return [bucket];
+      },
+    } as unknown as B2Client;
+
+    const ui = await withWindowUiStubs(
+      {
+        quickPickLabels: ["bucket"],
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(undefined, {
+          getClient: () => client,
+          getSelectedUploadTarget: () => undefined,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(ui.quickPicks[0]?.labels, ["bucket"]);
+    assert.strictEqual(ui.quickPicks[0]?.options?.title, "Upload Destination");
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket");
+    assert.deepStrictEqual(
+      calls.map((call) => call.fileName),
+      ["report.txt"],
+    );
     assert.strictEqual(refreshes, 1);
     assert.deepStrictEqual(ui.errors, []);
   });
@@ -526,6 +592,7 @@ suite("B2 commands error handling", () => {
         },
       ],
     );
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket");
     assert.deepStrictEqual(ui.errors, []);
   });
 
@@ -552,8 +619,77 @@ suite("B2 commands error handling", () => {
     assert.strictEqual(ui.warnings.length, 1);
     assert.deepStrictEqual(ui.warnings[0]?.items, [OVERWRITE_UPLOAD_LABEL]);
     assert.match(ui.warnings[0]?.message ?? "", /incoming\/report\.txt/);
-    assert.strictEqual(ui.progress.length, 0);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
     assert.strictEqual(refreshes, 0);
+  });
+
+  test("warns and refreshes when canceling an in-flight zero-byte file upload", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "empty.txt");
+    fs.writeFileSync(filePath, "");
+    const tokenSource = new vscode.CancellationTokenSource();
+    const bucket = makeCancellationAmbiguousBucket(() => {
+      setImmediate(() => tokenSource.cancel());
+    });
+    const target = new BucketTreeItem(bucket);
+    let refreshes = 0;
+
+    try {
+      const ui = await withWindowUiStubs({}, () =>
+        uploadLocalUrisToTarget(
+          target,
+          [vscode.Uri.file(filePath)],
+          {
+            getClient: () => ({}) as unknown as B2Client,
+            treeProvider: { refresh: () => refreshes++ },
+          },
+          tokenSource.token,
+        ),
+      );
+
+      assert.strictEqual(refreshes, 1);
+      assert.strictEqual(ui.warnings.length, 1);
+      assert.match(ui.warnings[0]?.message ?? "", /empty\.txt/);
+      assert.match(ui.warnings[0]?.message ?? "", /may have been uploaded/i);
+      assert.deepStrictEqual(ui.errors, []);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("warns and refreshes when canceling an in-flight empty-folder marker upload", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "empty-folder");
+    fs.mkdirSync(folderPath);
+    const tokenSource = new vscode.CancellationTokenSource();
+    const bucket = makeCancellationAmbiguousBucket(() => {
+      setImmediate(() => tokenSource.cancel());
+    });
+    const target = new BucketTreeItem(bucket);
+    let refreshes = 0;
+
+    try {
+      const ui = await withWindowUiStubs({}, () =>
+        uploadLocalUrisToTarget(
+          target,
+          [vscode.Uri.file(folderPath)],
+          {
+            getClient: () => ({}) as unknown as B2Client,
+            treeProvider: { refresh: () => refreshes++ },
+          },
+          tokenSource.token,
+        ),
+      );
+
+      assert.strictEqual(refreshes, 1);
+      assert.strictEqual(ui.warnings.length, 1);
+      assert.match(ui.warnings[0]?.message ?? "", /empty-folder\/\.bzEmpty/);
+      assert.match(ui.warnings[0]?.message ?? "", /may have been uploaded/i);
+      assert.deepStrictEqual(ui.errors, []);
+    } finally {
+      tokenSource.dispose();
+    }
   });
 
   test("classifies public mutation failures by certainty", () => {

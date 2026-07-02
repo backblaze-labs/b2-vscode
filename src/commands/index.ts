@@ -52,11 +52,8 @@ import {
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 import { renameFileVersion } from "./renameFile";
-import {
-  isUploadTargetTreeItem,
-  uploadFilesCommand,
-  type UploadTargetTreeItem,
-} from "./uploadFiles";
+import { isUploadTargetTreeItem, type UploadTargetTreeItem } from "../models/uploadTarget";
+import { uploadFilesCommand } from "./uploadFiles";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
