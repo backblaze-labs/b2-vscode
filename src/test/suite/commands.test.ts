@@ -5,6 +5,8 @@
  */
 
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import {
   B2Client,
@@ -33,7 +35,14 @@ import { B2PartialFailureError, isPostRequestB2MutationStateAmbiguous } from "..
 import { createAuthenticatedClientSetter } from "../../extension";
 import { BucketTreeItem } from "../../models/bucketTreeItem";
 import type { FileTreeItem } from "../../models/fileTreeItem";
+import { FolderTreeItem } from "../../models/folderTreeItem";
 import type { TempFileManager } from "../../services/tempFileManager";
+import { tempDir } from "../../testSupport/tempDir";
+import {
+  B2_AUTO_CONTENT_TYPE,
+  OVERWRITE_UPLOAD_LABEL,
+  uploadFilesCommand,
+} from "../../commands/uploadFiles";
 import { withWindowUiStubs } from "./windowStubs";
 
 type CreateBucketOptions = Parameters<B2Client["createBucket"]>[0];
@@ -143,6 +152,98 @@ function assertAbortSignalIsEnumerable(options: { readonly signal?: AbortSignal 
   assert.ok(options.signal);
   assert.strictEqual(Object.prototype.propertyIsEnumerable.call(options, "signal"), true);
   assert.strictEqual({ ...options }.signal, options.signal);
+}
+
+interface UploadCall {
+  readonly kind: "stream" | "empty";
+  readonly fileName: string;
+  readonly contentType: string | undefined;
+  readonly signal: AbortSignal | undefined;
+  readonly bytes: number;
+}
+
+function notFoundError(): Error & { status: number; code: string } {
+  const error = new Error("not found") as Error & { status: number; code: string };
+  error.status = 404;
+  error.code = "not_found";
+  return error;
+}
+
+function makeUploadBucket(existingPaths: readonly string[] = []): {
+  readonly bucket: Bucket;
+  readonly calls: UploadCall[];
+} {
+  const calls: UploadCall[] = [];
+  const existing = new Set(existingPaths);
+  const bucket = {
+    name: "bucket",
+    id: "bucket-id",
+    info: { bucketType: "allPrivate" },
+    async head(fileName: string) {
+      if (existing.has(fileName)) {
+        return {};
+      }
+      throw notFoundError();
+    },
+    async upload(options: {
+      fileName: string;
+      contentType?: string;
+      signal?: AbortSignal;
+      onProgress?: (event: { bytesTransferred: number; totalBytes?: number | null }) => void;
+    }) {
+      options.onProgress?.({ bytesTransferred: 0, totalBytes: 0 });
+      calls.push({
+        kind: "empty",
+        fileName: options.fileName,
+        contentType: options.contentType,
+        signal: options.signal,
+        bytes: 0,
+      });
+      return {
+        fileId: `id-${calls.length}`,
+        fileName: options.fileName,
+        contentLength: 0,
+      };
+    },
+    file(fileName: string) {
+      return {
+        createWriteStream(options?: {
+          contentType?: string;
+          signal?: AbortSignal;
+          onProgress?: (event: { bytesTransferred: number; totalBytes?: number | null }) => void;
+        }) {
+          let bytes = 0;
+          let resolveDone: (value: unknown) => void = () => undefined;
+          const done = new Promise((resolve) => {
+            resolveDone = resolve;
+          });
+          const writable = new WritableStream<Uint8Array>({
+            write(chunk) {
+              bytes += chunk.byteLength;
+              options?.onProgress?.({ bytesTransferred: bytes, totalBytes: null });
+            },
+            close() {
+              calls.push({
+                kind: "stream",
+                fileName,
+                contentType: options?.contentType,
+                signal: options?.signal,
+                bytes,
+              });
+              resolveDone({
+                fileId: `id-${calls.length}`,
+                fileName,
+                contentLength: bytes,
+              });
+            },
+          });
+          return { writable, done };
+        },
+      };
+    },
+  } as unknown as Bucket;
+
+  return { bucket, calls };
 }
 
 suite("B2 commands error handling", () => {
@@ -327,6 +428,132 @@ suite("B2 commands error handling", () => {
       assert.strictEqual(ui.errors.length, 1);
       assert.match(ui.errors[0] ?? "", /Folder name/);
     }
+  });
+
+  test("uploads picked files into the selected folder target", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls } = makeUploadBucket();
+    const target = new FolderTreeItem(bucket, "incoming/");
+    let refreshes = 0;
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(undefined, {
+          getClient: () => ({}) as unknown as B2Client,
+          getSelectedUploadTarget: () => target,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(
+      calls.map((call) => ({
+        kind: call.kind,
+        fileName: call.fileName,
+        contentType: call.contentType,
+        bytes: call.bytes,
+      })),
+      [
+        {
+          kind: "stream",
+          fileName: "incoming/report.txt",
+          contentType: B2_AUTO_CONTENT_TYPE,
+          bytes: 8,
+        },
+      ],
+    );
+    assert.ok(calls[0]?.signal);
+    assert.strictEqual(ui.openDialogs.length, 1);
+    assert.strictEqual(ui.openDialogs[0]?.canSelectFiles, true);
+    assert.strictEqual(ui.openDialogs[0]?.canSelectFolders, true);
+    assert.strictEqual(ui.openDialogs[0]?.canSelectMany, true);
+    assert.strictEqual(ui.progress.length, 1);
+    assert.strictEqual(ui.progress[0]?.cancellable, true);
+    assert.strictEqual(refreshes, 1);
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("uploads local folders recursively and preserves empty folders", async () => {
+    const root = tempDir();
+    const folderPath = path.join(root, "photos");
+    fs.mkdirSync(path.join(folderPath, "nested"), { recursive: true });
+    fs.mkdirSync(path.join(folderPath, "empty"));
+    fs.writeFileSync(path.join(folderPath, "cover.txt"), "cover");
+    fs.writeFileSync(path.join(folderPath, "nested", "raw.bin"), Buffer.from([1, 2, 3]));
+    const { bucket, calls } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(folderPath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => undefined },
+        }),
+    );
+
+    assert.deepStrictEqual(
+      calls.map((call) => ({
+        kind: call.kind,
+        fileName: call.fileName,
+        contentType: call.contentType,
+        bytes: call.bytes,
+      })),
+      [
+        {
+          kind: "stream",
+          fileName: "photos/cover.txt",
+          contentType: B2_AUTO_CONTENT_TYPE,
+          bytes: 5,
+        },
+        {
+          kind: "empty",
+          fileName: "photos/empty/.bzEmpty",
+          contentType: "application/x-bzEmpty",
+          bytes: 0,
+        },
+        {
+          kind: "stream",
+          fileName: "photos/nested/raw.bin",
+          contentType: B2_AUTO_CONTENT_TYPE,
+          bytes: 3,
+        },
+      ],
+    );
+    assert.deepStrictEqual(ui.errors, []);
+  });
+
+  test("warns and cancels before overwriting existing B2 objects", async () => {
+    const root = tempDir();
+    const filePath = path.join(root, "report.txt");
+    fs.writeFileSync(filePath, "hello b2");
+    const { bucket, calls } = makeUploadBucket(["incoming/report.txt"]);
+    const target = new FolderTreeItem(bucket, "incoming/");
+    let refreshes = 0;
+
+    const ui = await withWindowUiStubs(
+      {
+        openDialogValues: [[vscode.Uri.file(filePath)]],
+      },
+      () =>
+        uploadFilesCommand(target, {
+          getClient: () => ({}) as unknown as B2Client,
+          treeProvider: { refresh: () => refreshes++ },
+        }),
+    );
+
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(ui.warnings.length, 1);
+    assert.deepStrictEqual(ui.warnings[0]?.items, [OVERWRITE_UPLOAD_LABEL]);
+    assert.match(ui.warnings[0]?.message ?? "", /incoming\/report\.txt/);
+    assert.strictEqual(ui.progress.length, 0);
+    assert.strictEqual(refreshes, 0);
   });
 
   test("classifies public mutation failures by certainty", () => {

@@ -142,6 +142,7 @@ export interface DownloadStreamToNewFileWithinRootOptions extends TransferTimeou
 }
 
 export interface UploadFileFromDiskOptions extends TransferTimeoutOptions {
+  readonly contentType?: string;
   readonly onProgress?: ProgressListener;
   readonly partSize?: number;
   readonly finalizationTimeoutMs?: number;
@@ -196,6 +197,7 @@ export interface UploadBucketHandle {
   }): Promise<FileVersion>;
   file(fileName: string): {
     createWriteStream(options?: {
+      contentType?: string;
       partSize?: number;
       fileInfo?: Record<string, string>;
       signal?: AbortSignal;
@@ -1214,6 +1216,7 @@ export async function uploadFileFromDisk(
     }
 
     const { writable, done } = bucket.file(remotePath).createWriteStream({
+      ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
       partSize: options.partSize ?? STREAMING_UPLOAD_PART_SIZE,
       fileInfo: {
         [UPLOAD_OWNER_INFO_KEY]: "b2-vscode",
