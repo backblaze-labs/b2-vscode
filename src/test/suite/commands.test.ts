@@ -627,6 +627,28 @@ suite("B2 commands error handling", () => {
     assert.match(positiveProgressReports[1]?.message ?? "", /b\.txt/);
   });
 
+  test("reports stable overwrite preflight check counters", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "a.txt");
+    const secondPath = path.join(root, "b.txt");
+    fs.writeFileSync(firstPath, "12345");
+    fs.writeFileSync(secondPath, "abcde");
+    const { bucket } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+    const checkCounters = ui.progressReports
+      .map((report) => report.message?.match(/Checking for existing B2 files (\d+\/2):/u)?.[1])
+      .filter((counter): counter is string => counter !== undefined);
+
+    assert.deepStrictEqual(checkCounters, ["1/2", "2/2"]);
+  });
+
   test("warns and cancels before overwriting existing B2 objects", async () => {
     const root = tempDir();
     const filePath = path.join(root, "report.txt");

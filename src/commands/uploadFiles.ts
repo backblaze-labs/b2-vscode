@@ -295,7 +295,6 @@ async function existingRemotePaths(
 ): Promise<string[]> {
   const existing: string[] = [];
   let nextIndex = 0;
-  let checkedCount = 0;
 
   async function worker(): Promise<void> {
     while (true) {
@@ -310,12 +309,11 @@ async function existingRemotePaths(
 
       const remotePath = remotePaths[index];
       progress.report({
-        message: `Checking for existing B2 files ${checkedCount + 1}/${remotePaths.length}: ${remotePath}`,
+        message: `Checking for existing B2 files ${index + 1}/${remotePaths.length}: ${remotePath}`,
       });
       if (await remotePathExists(bucket, remotePath, signal)) {
         existing.push(remotePath);
       }
-      checkedCount++;
     }
   }
 
