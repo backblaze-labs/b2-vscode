@@ -591,7 +591,7 @@ export async function uploadFilesCommand(
   }
 
   const uris = await vscode.window.showOpenDialog({
-    title: `Upload Files to ${uploadTargetLabel(target)}`,
+    title: `Upload Files or Folders to ${uploadTargetLabel(target)}`,
     openLabel: "Upload",
     canSelectFiles: true,
     canSelectFolders: true,
