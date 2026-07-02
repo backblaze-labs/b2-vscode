@@ -22,9 +22,11 @@ import {
 import { withTimeout } from "./services/transferTimeout";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
-import { B2TreeProvider } from "./providers/b2TreeProvider";
+import { B2TreeProvider, type B2TreeItem } from "./providers/b2TreeProvider";
+import { B2TreeDragAndDropController } from "./providers/b2TreeDragAndDropController";
 import { B2StatusBar } from "./ui/statusBar";
 import { registerCommands } from "./commands";
+import { isUploadTargetTreeItem, uploadLocalUrisToTarget } from "./commands/uploadFiles";
 import { registerB2Tools } from "./tools/registration";
 import { TEMP_DIR_NAME, VIEW_BUCKETS } from "./constants";
 import { initLogger, log, logError } from "./logger";
@@ -210,10 +212,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 2. Tree provider
   const treeProvider = new B2TreeProvider(authService);
+  let treeView: vscode.TreeView<B2TreeItem>;
+  const uploadServices = {
+    treeProvider,
+    getClient: () => currentClient,
+    getSelectedUploadTarget: () => {
+      const selected = treeView.selection[0];
+      return isUploadTargetTreeItem(selected) ? selected : undefined;
+    },
+  };
+  const dragAndDropController = new B2TreeDragAndDropController((target, uris, token) =>
+    uploadLocalUrisToTarget(target, uris, uploadServices, token),
+  );
 
   // 3. Register tree view
-  const treeView = vscode.window.createTreeView(VIEW_BUCKETS, {
+  treeView = vscode.window.createTreeView(VIEW_BUCKETS, {
     treeDataProvider: treeProvider,
+    dragAndDropController,
     showCollapseAll: true,
   });
 
@@ -229,6 +244,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tempFileManager,
     isAuthenticated: () => currentClient !== null,
     getClient: () => currentClient,
+    getSelectedUploadTarget: uploadServices.getSelectedUploadTarget,
     setClient: setAuthenticatedClient,
   });
   registerB2Tools(context, () => currentClient);

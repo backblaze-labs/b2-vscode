@@ -57,6 +57,7 @@ suite("B2 Extension Test Suite", () => {
       "b2.createBucket",
       "b2.changeBucketVisibility",
       "b2.createFolder",
+      "b2.uploadFiles",
       "b2.deleteBucket",
       "b2.deleteFolder",
       "b2.deleteFile",
