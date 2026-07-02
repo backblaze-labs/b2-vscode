@@ -55,6 +55,18 @@ function itemWithFile(uri: vscode.Uri): vscode.DataTransferItem {
   } as unknown as vscode.DataTransferItem;
 }
 
+function itemWithValue(value: unknown): vscode.DataTransferItem {
+  return {
+    asFile() {
+      return undefined;
+    },
+    async asString() {
+      return "";
+    },
+    value,
+  } as unknown as vscode.DataTransferItem;
+}
+
 suite("B2 tree drag and drop", () => {
   test("ignores synthetic text/uri-list file URIs", async () => {
     let uploadCalled = false;
@@ -117,6 +129,38 @@ suite("B2 tree drag and drop", () => {
       );
 
       assert.deepStrictEqual(uploadedUris, [[uri]]);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("uploads local URIs from file transfer list values", async () => {
+    const uploadedUris: vscode.Uri[][] = [];
+    const tokenSource = new vscode.CancellationTokenSource();
+    const controller = new B2TreeDragAndDropController(async (_target, uris) => {
+      uploadedUris.push([...uris]);
+    });
+    const firstUri = vscode.Uri.file("/tmp/report.txt");
+    const secondUri = vscode.Uri.file("/tmp/photos");
+
+    try {
+      await controller.handleDrop(
+        makeBucketTreeItem(),
+        dataTransfer([
+          [
+            FILES_MIME_TYPE,
+            itemWithValue([
+              { uri: firstUri },
+              { uri: vscode.Uri.parse("https://example.com/a") },
+              { uri: secondUri },
+              { uri: firstUri },
+            ]),
+          ],
+        ]),
+        tokenSource.token,
+      );
+
+      assert.deepStrictEqual(uploadedUris, [[firstUri, secondUri]]);
     } finally {
       tokenSource.dispose();
     }
