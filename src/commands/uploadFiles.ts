@@ -710,8 +710,7 @@ export async function uploadLocalUrisToTarget(
   services: UploadFilesCommandServices,
   token?: vscode.CancellationToken,
 ): Promise<void> {
-  const client = services.getClient();
-  if (!client) {
+  if (!services.getClient()) {
     vscode.window.showErrorMessage("B2: Not authenticated.");
     return;
   }
