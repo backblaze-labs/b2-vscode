@@ -12,6 +12,8 @@ import {
   FILES_MIME_TYPE,
 } from "../../providers/b2TreeDragAndDropController";
 import { BucketTreeItem } from "../../models/bucketTreeItem";
+import { FileTreeItem } from "../../models/fileTreeItem";
+import { withWindowUiStubs } from "./windowStubs";
 
 function makeBucketTreeItem(): BucketTreeItem {
   return new BucketTreeItem({
@@ -115,6 +117,36 @@ suite("B2 tree drag and drop", () => {
       );
 
       assert.deepStrictEqual(uploadedUris, [[uri]]);
+    } finally {
+      tokenSource.dispose();
+    }
+  });
+
+  test("describes file and folder drops for invalid targets", async () => {
+    let uploadCalled = false;
+    const tokenSource = new vscode.CancellationTokenSource();
+    const controller = new B2TreeDragAndDropController(async () => {
+      uploadCalled = true;
+    });
+    const fileTarget = new FileTreeItem(makeBucketTreeItem().bucket, {
+      fileName: "remote/report.txt",
+      fileId: "file-id",
+      contentType: "text/plain",
+      contentLength: 1,
+      uploadTimestamp: 0,
+    } as ConstructorParameters<typeof FileTreeItem>[1]);
+
+    try {
+      const ui = await withWindowUiStubs({}, () =>
+        controller.handleDrop(
+          fileTarget,
+          dataTransfer([[FILES_MIME_TYPE, itemWithFile(vscode.Uri.file("/tmp/report.txt"))]]),
+          tokenSource.token,
+        ),
+      );
+
+      assert.strictEqual(uploadCalled, false);
+      assert.deepStrictEqual(ui.errors, ["B2: Drop files or folders onto a bucket or folder."]);
     } finally {
       tokenSource.dispose();
     }

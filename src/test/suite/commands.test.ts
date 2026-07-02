@@ -497,7 +497,10 @@ suite("B2 commands error handling", () => {
     assert.ok(calls[0]?.signal);
     assert.ok(headSignals[0]);
     assert.strictEqual(ui.openDialogs.length, 1);
-    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket/incoming/");
+    assert.strictEqual(
+      ui.openDialogs[0]?.title,
+      "Upload Files or Folders to b2://bucket/incoming/",
+    );
     assert.strictEqual(ui.openDialogs[0]?.canSelectFiles, true);
     assert.strictEqual(ui.openDialogs[0]?.canSelectFolders, true);
     assert.strictEqual(ui.openDialogs[0]?.canSelectMany, true);
@@ -534,7 +537,7 @@ suite("B2 commands error handling", () => {
 
     assert.deepStrictEqual(ui.quickPicks[0]?.labels, ["bucket"]);
     assert.strictEqual(ui.quickPicks[0]?.options?.title, "Upload Destination");
-    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket");
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files or Folders to b2://bucket");
     assert.deepStrictEqual(
       calls.map((call) => call.fileName),
       ["report.txt"],
@@ -592,7 +595,7 @@ suite("B2 commands error handling", () => {
         },
       ],
     );
-    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files to b2://bucket");
+    assert.strictEqual(ui.openDialogs[0]?.title, "Upload Files or Folders to b2://bucket");
     assert.deepStrictEqual(ui.errors, []);
   });
 

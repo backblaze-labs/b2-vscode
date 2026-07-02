@@ -55,7 +55,7 @@ export class B2TreeDragAndDropController implements vscode.TreeDragAndDropContro
     }
 
     if (!isUploadTargetTreeItem(target)) {
-      vscode.window.showErrorMessage("B2: Drop files onto a bucket or folder.");
+      vscode.window.showErrorMessage("B2: Drop files or folders onto a bucket or folder.");
       return;
     }
 
