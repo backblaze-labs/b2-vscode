@@ -19,19 +19,25 @@ import { B2PartialFailureError, formatB2UserMessage } from "../errors";
 import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
 import {
+  closeUploadSource,
+  openUploadSourceFile,
+  sameFileIdentity,
   uploadEmptyObject,
   uploadFileFromDisk,
   type UploadEmptyObjectOptions,
   type UploadFileFromDiskOptions,
+  type UploadSourceFile,
 } from "../services/fileTransfers";
 import { createTransferProgressReporter } from "../services/transferProgress";
 import { DEFAULT_TRANSFER_STALL_TIMEOUT_MS, withTimeout } from "../services/transferTimeout";
 
-export const B2_AUTO_CONTENT_TYPE = "b2/x-auto";
-export const OVERWRITE_UPLOAD_LABEL = "Overwrite";
+const B2_AUTO_CONTENT_TYPE = "b2/x-auto";
+const OVERWRITE_UPLOAD_LABEL = "Overwrite";
 
 const EMPTY_FOLDER_MARKER = ".bzEmpty";
 const EMPTY_FOLDER_MARKER_CONTENT_TYPE = "application/x-bzEmpty";
+const MAX_LOCAL_UPLOAD_ENTRIES = 10_000;
+const MAX_LOCAL_UPLOAD_DEPTH = 64;
 const OVERWRITE_PREFLIGHT_CONCURRENCY = 8;
 const OVERWRITE_PREFLIGHT_TIMEOUT_MS = DEFAULT_TRANSFER_STALL_TIMEOUT_MS;
 
@@ -48,6 +54,7 @@ export interface LocalFileUploadEntry {
   readonly localPath: string;
   readonly remotePath: string;
   readonly size: number;
+  readonly rootRealPath: string;
 }
 
 export interface EmptyDirectoryUploadEntry {
@@ -55,6 +62,23 @@ export interface EmptyDirectoryUploadEntry {
   readonly localPath: string;
   readonly remotePath: string;
   readonly size: 0;
+  readonly rootRealPath: string;
+}
+
+export interface LocalUploadCollectionOptions {
+  readonly signal?: AbortSignal;
+  readonly progress?: vscode.Progress<{ message?: string; increment?: number }>;
+  readonly maxEntries?: number;
+  readonly maxDepth?: number;
+}
+
+interface LocalUploadCollectionContext {
+  readonly entries: LocalUploadEntry[];
+  readonly signal?: AbortSignal;
+  readonly progress?: vscode.Progress<{ message?: string; increment?: number }>;
+  readonly maxEntries: number;
+  readonly maxDepth: number;
+  discoveredEntries: number;
 }
 
 interface BatchProgressReporter {
@@ -131,54 +155,152 @@ function markerPathForDirectory(remoteDirectoryPath: string): string {
   return `${normalizeB2Prefix(remoteDirectoryPath)}${EMPTY_FOLDER_MARKER}`;
 }
 
+function throwIfCollectionCanceled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new vscode.CancellationError();
+  }
+}
+
+function isPathInsideOrEqual(rootRealPath: string, candidateRealPath: string): boolean {
+  const relative = path.relative(rootRealPath, candidateRealPath);
+  return (
+    relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
+function localUploadLimitError(description: string): Error {
+  return new Error(`Local upload selection is too large: ${description}. Select a smaller batch.`);
+}
+
+function assertCollectionCapacity(context: LocalUploadCollectionContext): void {
+  if (context.entries.length >= context.maxEntries) {
+    throw localUploadLimitError(`exceeds the ${context.maxEntries} item limit`);
+  }
+}
+
+function addCollectedEntry(context: LocalUploadCollectionContext, entry: LocalUploadEntry): void {
+  assertCollectionCapacity(context);
+  context.entries.push(entry);
+  context.discoveredEntries++;
+  context.progress?.report({
+    message: `Preparing upload list: ${context.discoveredEntries} item(s) found`,
+  });
+}
+
+async function realPathInsideRoot(localPath: string, rootRealPath: string): Promise<string> {
+  const realPath = await fs.promises.realpath(localPath);
+  if (!isPathInsideOrEqual(rootRealPath, realPath)) {
+    throw new Error(`Local upload path resolves outside the selected folder: ${localPath}`);
+  }
+  return realPath;
+}
+
+async function verifiedDirectoryStats(
+  directoryPath: string,
+  rootRealPath: string,
+): Promise<fs.Stats> {
+  const stats = await fs.promises.lstat(directoryPath);
+  if (stats.isSymbolicLink()) {
+    throw new Error(
+      `Local upload path must be a real file or folder, not a symlink: ${directoryPath}`,
+    );
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Local upload path is not a folder: ${directoryPath}`);
+  }
+  await realPathInsideRoot(directoryPath, rootRealPath);
+  return stats;
+}
+
+async function verifiedFileStats(localPath: string, rootRealPath: string): Promise<fs.Stats> {
+  const stats = await fs.promises.lstat(localPath);
+  if (stats.isSymbolicLink()) {
+    throw new Error(`Local upload path must be a real file or folder, not a symlink: ${localPath}`);
+  }
+  if (!stats.isFile()) {
+    throw new Error(`Local upload path is not a regular file: ${localPath}`);
+  }
+  await realPathInsideRoot(localPath, rootRealPath);
+  return stats;
+}
+
+function createUploadCollectionContext(
+  options: LocalUploadCollectionOptions,
+): LocalUploadCollectionContext {
+  return {
+    entries: [],
+    signal: options.signal,
+    progress: options.progress,
+    maxEntries: options.maxEntries ?? MAX_LOCAL_UPLOAD_ENTRIES,
+    maxDepth: options.maxDepth ?? MAX_LOCAL_UPLOAD_DEPTH,
+    discoveredEntries: 0,
+  };
+}
+
 async function collectDirectoryUploadEntries(
   directoryPath: string,
   remoteDirectoryPath: string,
-  entries: LocalUploadEntry[],
+  rootRealPath: string,
+  context: LocalUploadCollectionContext,
+  depth: number,
 ): Promise<boolean> {
+  throwIfCollectionCanceled(context.signal);
+  if (depth > context.maxDepth) {
+    throw localUploadLimitError(`folder nesting is deeper than ${context.maxDepth} levels`);
+  }
+  await verifiedDirectoryStats(directoryPath, rootRealPath);
+
   const children = await fs.promises.readdir(directoryPath, { withFileTypes: true });
   children.sort((left, right) => left.name.localeCompare(right.name));
 
   let hasUploadableDescendant = false;
   for (const child of children) {
+    throwIfCollectionCanceled(context.signal);
     const childPath = path.join(directoryPath, child.name);
-    if (child.isSymbolicLink()) {
+    const childStats = await fs.promises.lstat(childPath);
+
+    if (childStats.isSymbolicLink()) {
       throw new Error(
         `Local upload path must be a real file or folder, not a symlink: ${childPath}`,
       );
     }
 
-    if (child.isDirectory()) {
+    if (childStats.isDirectory()) {
+      await verifiedDirectoryStats(childPath, rootRealPath);
       const childRemoteDirectoryPath = joinB2Path(remoteDirectoryPath, `${child.name}/`);
       const childHasEntries = await collectDirectoryUploadEntries(
         childPath,
         childRemoteDirectoryPath,
-        entries,
+        rootRealPath,
+        context,
+        depth + 1,
       );
       hasUploadableDescendant = childHasEntries || hasUploadableDescendant;
       continue;
     }
 
-    if (!child.isFile()) {
+    if (!childStats.isFile()) {
       throw new Error(`Local upload path is not a regular file: ${childPath}`);
     }
 
-    const stats = await fs.promises.stat(childPath);
-    entries.push({
+    await realPathInsideRoot(childPath, rootRealPath);
+    addCollectedEntry(context, {
       kind: "file",
       localPath: childPath,
       remotePath: joinB2Path(remoteDirectoryPath, child.name),
-      size: stats.size,
+      size: childStats.size,
+      rootRealPath,
     });
     hasUploadableDescendant = true;
   }
 
   if (!hasUploadableDescendant) {
-    entries.push({
+    addCollectedEntry(context, {
       kind: "emptyDirectory",
       localPath: directoryPath,
       remotePath: markerPathForDirectory(remoteDirectoryPath),
       size: 0,
+      rootRealPath,
     });
     return true;
   }
@@ -189,10 +311,12 @@ async function collectDirectoryUploadEntries(
 export async function collectLocalUploadEntries(
   localPaths: readonly string[],
   prefix: string,
+  options: LocalUploadCollectionOptions = {},
 ): Promise<LocalUploadEntry[]> {
-  const entries: LocalUploadEntry[] = [];
+  const context = createUploadCollectionContext(options);
 
   for (const localPath of localPaths) {
+    throwIfCollectionCanceled(context.signal);
     const stats = await fs.promises.lstat(localPath);
     if (stats.isSymbolicLink()) {
       throw new Error(
@@ -201,16 +325,20 @@ export async function collectLocalUploadEntries(
     }
 
     if (stats.isFile()) {
-      entries.push({
+      const rootRealPath = await fs.promises.realpath(localPath);
+      addCollectedEntry(context, {
         kind: "file",
         localPath,
         remotePath: joinB2Path(prefix, path.basename(localPath)),
         size: stats.size,
+        rootRealPath,
       });
       continue;
     }
 
     if (stats.isDirectory()) {
+      const rootRealPath = await fs.promises.realpath(localPath);
+      await verifiedDirectoryStats(localPath, rootRealPath);
       const directoryName = path.basename(path.resolve(localPath));
       if (!directoryName) {
         throw new Error("Cannot upload a filesystem root as a folder.");
@@ -218,7 +346,9 @@ export async function collectLocalUploadEntries(
       await collectDirectoryUploadEntries(
         localPath,
         joinB2Path(prefix, `${directoryName}/`),
-        entries,
+        rootRealPath,
+        context,
+        0,
       );
       continue;
     }
@@ -226,7 +356,7 @@ export async function collectLocalUploadEntries(
     throw new Error(`Local upload path is not a regular file or folder: ${localPath}`);
   }
 
-  return entries;
+  return context.entries;
 }
 
 function uriToLocalPath(uri: vscode.Uri): string {
@@ -410,6 +540,7 @@ async function uploadEntry(
   options: UploadFileFromDiskOptions | UploadEmptyObjectOptions,
 ): Promise<void> {
   if (entry.kind === "emptyDirectory") {
+    await verifiedDirectoryStats(entry.localPath, entry.rootRealPath);
     await uploadEmptyObject(bucket, entry.remotePath, {
       ...options,
       contentType: EMPTY_FOLDER_MARKER_CONTENT_TYPE,
@@ -417,10 +548,72 @@ async function uploadEntry(
     return;
   }
 
-  await uploadFileFromDisk(bucket, entry.localPath, entry.remotePath, {
-    ...options,
-    contentType: B2_AUTO_CONTENT_TYPE,
-  });
+  const realStats = await verifiedFileStats(entry.localPath, entry.rootRealPath);
+  let source: UploadSourceFile | undefined;
+  try {
+    source = await openUploadSourceFile(entry.localPath);
+    const realPathAfterOpen = await realPathInsideRoot(entry.localPath, entry.rootRealPath);
+    const realStatsAfterOpen = await fs.promises.stat(realPathAfterOpen);
+    if (
+      !sameFileIdentity(source.stats, realStats) ||
+      !sameFileIdentity(source.stats, realStatsAfterOpen)
+    ) {
+      throw new Error(`Local upload path changed while opening upload source: ${entry.localPath}`);
+    }
+
+    await uploadFileFromDisk(bucket, source, entry.remotePath, {
+      ...options,
+      contentType: B2_AUTO_CONTENT_TYPE,
+    });
+    source = undefined;
+  } finally {
+    if (source) {
+      await closeUploadSource(source);
+    }
+  }
+}
+
+async function collectLocalUploadEntriesWithProgress(
+  target: UploadTargetTreeItem,
+  localPaths: readonly string[],
+  token?: vscode.CancellationToken,
+): Promise<LocalUploadEntry[]> {
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Preparing upload to ${uploadTargetLabel(target)}...`,
+      cancellable: true,
+    },
+    async (progress, progressToken) => {
+      const controller = new AbortController();
+      const disposables: vscode.Disposable[] = [];
+      const cancel = () => {
+        if (!controller.signal.aborted) {
+          controller.abort(new vscode.CancellationError());
+        }
+      };
+
+      if (token?.isCancellationRequested || progressToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+
+      if (token) {
+        disposables.push(token.onCancellationRequested(cancel));
+      }
+      disposables.push(progressToken.onCancellationRequested(cancel));
+
+      try {
+        return await collectLocalUploadEntries(localPaths, uploadTargetPrefix(target), {
+          signal: controller.signal,
+          progress,
+        });
+      } finally {
+        for (const disposable of disposables) {
+          disposable.dispose();
+        }
+      }
+    },
+  );
 }
 
 async function uploadEntriesWithProgress(
@@ -529,9 +722,10 @@ export async function uploadLocalUrisToTarget(
 
   let uploadedCount = 0;
   try {
-    const entries = await collectLocalUploadEntries(
+    const entries = await collectLocalUploadEntriesWithProgress(
+      target,
       uris.map(uriToLocalPath),
-      uploadTargetPrefix(target),
+      token,
     );
     if (entries.length === 0) {
       vscode.window.showInformationMessage("B2: No files found to upload.");
