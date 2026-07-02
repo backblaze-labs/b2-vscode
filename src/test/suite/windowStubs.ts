@@ -37,6 +37,10 @@ export interface WindowUiStubOptions {
   readonly quickPickLabels?: readonly (string | undefined)[];
   readonly warningValues?: readonly (string | undefined)[];
   readonly openDialogValues?: readonly (readonly vscode.Uri[] | undefined)[];
+  readonly onProgressReport?: (report: {
+    readonly message?: string;
+    readonly increment?: number;
+  }) => void;
 }
 
 function labelForQuickPickItem(item: unknown): string {
@@ -189,7 +193,15 @@ export async function withWindowUiStubs(
     progress.push(progressOptions);
     const tokenSource = new vscode.CancellationTokenSource();
     try {
-      return await task({ report: (report) => progressReports.push(report) }, tokenSource.token);
+      return await task(
+        {
+          report: (report) => {
+            progressReports.push(report);
+            options.onProgressReport?.(report);
+          },
+        },
+        tokenSource.token,
+      );
     } finally {
       tokenSource.dispose();
     }
