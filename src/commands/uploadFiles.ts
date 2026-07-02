@@ -351,7 +351,7 @@ async function confirmPotentialOverwrites(
       ...(await existingRemotePaths(bucket, uniqueRemotePaths, progress, signal)),
       ...duplicateRemotePaths(entries),
     ]),
-  ];
+  ].sort((left, right) => left.localeCompare(right));
 
   if (overwritePaths.length === 0) {
     return true;

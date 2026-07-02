@@ -677,6 +677,25 @@ suite("B2 commands error handling", () => {
     assert.strictEqual(refreshes, 0);
   });
 
+  test("sorts overwrite warning paths deterministically", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "z.txt");
+    const secondPath = path.join(root, "a.txt");
+    fs.writeFileSync(firstPath, "first");
+    fs.writeFileSync(secondPath, "second");
+    const { bucket } = makeUploadBucket(["z.txt", "a.txt"]);
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+
+    assert.match(ui.warnings[0]?.message ?? "", /\("a\.txt", "z\.txt"\)/);
+  });
+
   test("warns and refreshes when canceling an in-flight zero-byte file upload", async () => {
     const root = tempDir();
     const filePath = path.join(root, "empty.txt");
