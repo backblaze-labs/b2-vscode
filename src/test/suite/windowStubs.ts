@@ -23,6 +23,7 @@ export interface WindowUiCalls {
   readonly warnings: readonly WarningMessageCall[];
   readonly openDialogs: readonly vscode.OpenDialogOptions[];
   readonly progress: readonly vscode.ProgressOptions[];
+  readonly progressReports: readonly { readonly message?: string; readonly increment?: number }[];
   readonly errors: readonly string[];
   readonly infos: readonly string[];
 }
@@ -130,6 +131,7 @@ export async function withWindowUiStubs(
   const warnings: WarningMessageCall[] = [];
   const openDialogs: vscode.OpenDialogOptions[] = [];
   const progress: vscode.ProgressOptions[] = [];
+  const progressReports: Array<{ readonly message?: string; readonly increment?: number }> = [];
   const errors: string[] = [];
   const infos: string[] = [];
 
@@ -187,7 +189,7 @@ export async function withWindowUiStubs(
     progress.push(progressOptions);
     const tokenSource = new vscode.CancellationTokenSource();
     try {
-      return await task({ report() {} }, tokenSource.token);
+      return await task({ report: (report) => progressReports.push(report) }, tokenSource.token);
     } finally {
       tokenSource.dispose();
     }
@@ -195,7 +197,7 @@ export async function withWindowUiStubs(
 
   try {
     await callback();
-    return { inputs, quickPicks, warnings, openDialogs, progress, errors, infos };
+    return { inputs, quickPicks, warnings, openDialogs, progress, progressReports, errors, infos };
   } finally {
     mutableWindow.withProgress = originalWithProgress;
     mutableWindow.showInformationMessage = originalShowInformationMessage;

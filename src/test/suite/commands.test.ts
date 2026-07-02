@@ -599,6 +599,34 @@ suite("B2 commands error handling", () => {
     assert.deepStrictEqual(ui.errors, []);
   });
 
+  test("reports aggregate upload progress without double-counting entries", async () => {
+    const root = tempDir();
+    const firstPath = path.join(root, "a.txt");
+    const secondPath = path.join(root, "b.txt");
+    fs.writeFileSync(firstPath, "12345");
+    fs.writeFileSync(secondPath, "abcde");
+    const { bucket } = makeUploadBucket();
+    const target = new BucketTreeItem(bucket);
+
+    const ui = await withWindowUiStubs({}, () =>
+      uploadLocalUrisToTarget(target, [vscode.Uri.file(firstPath), vscode.Uri.file(secondPath)], {
+        getClient: () => ({}) as unknown as B2Client,
+        treeProvider: { refresh: () => undefined },
+      }),
+    );
+    const positiveProgressReports = ui.progressReports.filter(
+      (report): report is { readonly message?: string; readonly increment: number } =>
+        typeof report.increment === "number" && report.increment > 0,
+    );
+
+    assert.deepStrictEqual(
+      positiveProgressReports.map((report) => report.increment),
+      [50, 50],
+    );
+    assert.match(positiveProgressReports[0]?.message ?? "", /a\.txt/);
+    assert.match(positiveProgressReports[1]?.message ?? "", /b\.txt/);
+  });
+
   test("warns and cancels before overwriting existing B2 objects", async () => {
     const root = tempDir();
     const filePath = path.join(root, "report.txt");

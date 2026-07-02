@@ -400,8 +400,8 @@ function createBatchProgressReporter(
       return (event) => report(event.bytesTransferred, entry, index);
     },
     markEntryDone(entry, index) {
-      completedBytes = Math.min(totalBytes, completedBytes + entry.size);
       report(entry.size, entry, index);
+      completedBytes = Math.min(totalBytes, completedBytes + entry.size);
     },
   };
 }
