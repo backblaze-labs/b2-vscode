@@ -155,6 +155,14 @@ function markerPathForDirectory(remoteDirectoryPath: string): string {
   return `${normalizeB2Prefix(remoteDirectoryPath)}${EMPTY_FOLDER_MARKER}`;
 }
 
+function directoryNameForUpload(localPath: string): string {
+  const resolvedPath = path.resolve(localPath);
+  if (resolvedPath === path.parse(resolvedPath).root) {
+    throw new Error("Cannot upload a filesystem root as a folder.");
+  }
+  return path.basename(resolvedPath);
+}
+
 function throwIfCollectionCanceled(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw signal.reason ?? new vscode.CancellationError();
@@ -266,7 +274,6 @@ async function collectDirectoryUploadEntries(
     }
 
     if (childStats.isDirectory()) {
-      await verifiedDirectoryStats(childPath, rootRealPath);
       const childRemoteDirectoryPath = joinB2Path(remoteDirectoryPath, `${child.name}/`);
       const childHasEntries = await collectDirectoryUploadEntries(
         childPath,
@@ -339,10 +346,7 @@ export async function collectLocalUploadEntries(
     if (stats.isDirectory()) {
       const rootRealPath = await fs.promises.realpath(localPath);
       await verifiedDirectoryStats(localPath, rootRealPath);
-      const directoryName = path.basename(path.resolve(localPath));
-      if (!directoryName) {
-        throw new Error("Cannot upload a filesystem root as a folder.");
-      }
+      const directoryName = directoryNameForUpload(localPath);
       await collectDirectoryUploadEntries(
         localPath,
         joinB2Path(prefix, `${directoryName}/`),
