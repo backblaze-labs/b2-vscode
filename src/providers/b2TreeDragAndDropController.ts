@@ -6,10 +6,9 @@
 
 import * as vscode from "vscode";
 import type { B2TreeItem } from "./b2TreeProvider";
-import { isUploadTargetTreeItem, type UploadTargetTreeItem } from "../commands/uploadFiles";
+import { isUploadTargetTreeItem, type UploadTargetTreeItem } from "../models/uploadTarget";
 
 export const FILES_MIME_TYPE = "files";
-export const URI_LIST_MIME_TYPE = "text/uri-list";
 
 export type DroppedFileUploader = (
   target: UploadTargetTreeItem,
@@ -26,42 +25,22 @@ function addUniqueUri(uris: vscode.Uri[], seen: Set<string>, uri: vscode.Uri): v
   uris.push(uri);
 }
 
-async function addUriList(
-  uris: vscode.Uri[],
-  seen: Set<string>,
-  item: vscode.DataTransferItem | undefined,
-): Promise<void> {
-  if (!item) {
-    return;
-  }
-
-  const value = await item.asString();
-  for (const line of value.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-    addUniqueUri(uris, seen, vscode.Uri.parse(trimmed));
-  }
-}
-
-export async function droppedFileUris(dataTransfer: vscode.DataTransfer): Promise<vscode.Uri[]> {
+export function droppedFileUris(dataTransfer: vscode.DataTransfer): vscode.Uri[] {
   const uris: vscode.Uri[] = [];
   const seen = new Set<string>();
 
   for (const [, item] of dataTransfer) {
     const file = item.asFile();
-    if (file?.uri) {
+    if (file?.uri?.scheme === "file") {
       addUniqueUri(uris, seen, file.uri);
     }
   }
 
-  await addUriList(uris, seen, dataTransfer.get(URI_LIST_MIME_TYPE));
   return uris;
 }
 
 export class B2TreeDragAndDropController implements vscode.TreeDragAndDropController<B2TreeItem> {
-  readonly dropMimeTypes = [FILES_MIME_TYPE, URI_LIST_MIME_TYPE];
+  readonly dropMimeTypes = [FILES_MIME_TYPE];
   readonly dragMimeTypes: readonly string[] = [];
 
   constructor(private readonly uploadDroppedFiles: DroppedFileUploader) {}
@@ -80,7 +59,7 @@ export class B2TreeDragAndDropController implements vscode.TreeDragAndDropContro
       return;
     }
 
-    const uris = await droppedFileUris(dataTransfer);
+    const uris = droppedFileUris(dataTransfer);
     if (uris.length === 0) {
       return;
     }

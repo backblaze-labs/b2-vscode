@@ -317,11 +317,6 @@
           "group": "inline@3"
         },
         {
-          "command": "b2.uploadFiles",
-          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
-          "group": "inline@4"
-        },
-        {
           "command": "b2.deleteBucket",
           "when": "view == b2Buckets && viewItem == bucket",
           "group": "3_destructive@1"

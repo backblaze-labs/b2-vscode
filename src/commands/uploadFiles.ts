@@ -9,10 +9,14 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { FileNotPresentError, type B2Client, type Bucket } from "@backblaze-labs/b2-sdk";
 import { BucketTreeItem } from "../models/bucketTreeItem";
-import { FolderTreeItem } from "../models/folderTreeItem";
+import {
+  type UploadTargetTreeItem,
+  uploadTargetLabel,
+  uploadTargetPrefix,
+} from "../models/uploadTarget";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
 import { B2PartialFailureError, formatB2UserMessage } from "../errors";
-import { logError } from "../logger";
+import { log, logError } from "../logger";
 import { humanSize } from "../utils/humanSize";
 import {
   uploadEmptyObject,
@@ -21,14 +25,15 @@ import {
   type UploadFileFromDiskOptions,
 } from "../services/fileTransfers";
 import { createTransferProgressReporter } from "../services/transferProgress";
+import { DEFAULT_TRANSFER_STALL_TIMEOUT_MS, withTimeout } from "../services/transferTimeout";
 
 export const B2_AUTO_CONTENT_TYPE = "b2/x-auto";
 export const OVERWRITE_UPLOAD_LABEL = "Overwrite";
 
 const EMPTY_FOLDER_MARKER = ".bzEmpty";
 const EMPTY_FOLDER_MARKER_CONTENT_TYPE = "application/x-bzEmpty";
-
-export type UploadTargetTreeItem = BucketTreeItem | FolderTreeItem;
+const OVERWRITE_PREFLIGHT_CONCURRENCY = 8;
+const OVERWRITE_PREFLIGHT_TIMEOUT_MS = DEFAULT_TRANSFER_STALL_TIMEOUT_MS;
 
 export interface UploadFilesCommandServices {
   readonly treeProvider: Pick<B2TreeProvider, "refresh">;
@@ -60,24 +65,58 @@ interface BatchProgressReporter {
   markEntryDone(entry: LocalUploadEntry, index: number): void;
 }
 
-export function isUploadTargetTreeItem(item: unknown): item is UploadTargetTreeItem {
-  return item instanceof BucketTreeItem || item instanceof FolderTreeItem;
+interface UploadRunOutcome {
+  readonly completed: boolean;
+  readonly uploadedCount: number;
 }
 
-export function uploadTargetPrefix(item: UploadTargetTreeItem): string {
-  return item instanceof FolderTreeItem ? item.prefix : "";
+class UploadCancellationAmbiguousError extends Error {
+  constructor(
+    readonly remotePath: string,
+    readonly uploadedCount: number,
+  ) {
+    super(
+      `Upload canceled while "${remotePath}" was in progress. It may have been uploaded to B2.`,
+    );
+    this.name = "UploadCancellationAmbiguousError";
+  }
 }
 
-export function uploadTargetLabel(item: UploadTargetTreeItem): string {
-  const prefix = uploadTargetPrefix(item);
-  return prefix ? `b2://${item.bucketName}/${prefix}` : `b2://${item.bucketName}`;
-}
-
-function selectedUploadTarget(
+async function selectedUploadTarget(
   item: UploadTargetTreeItem | undefined,
   services: UploadFilesCommandServices,
-): UploadTargetTreeItem | undefined {
-  return item ?? services.getSelectedUploadTarget?.();
+): Promise<UploadTargetTreeItem | undefined> {
+  const selected = item ?? services.getSelectedUploadTarget?.();
+  if (selected) {
+    return selected;
+  }
+
+  const client = services.getClient();
+  if (!client) {
+    vscode.window.showErrorMessage("B2: Not authenticated.");
+    return undefined;
+  }
+
+  const buckets = await client.listBuckets();
+  if (buckets.length === 0) {
+    vscode.window.showErrorMessage("B2: No buckets available for upload.");
+    return undefined;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    buckets.map((bucket) => ({
+      label: bucket.name,
+      description: bucket.info.bucketType,
+      target: new BucketTreeItem(bucket),
+    })),
+    {
+      title: "Upload Destination",
+      placeHolder: "Select a B2 bucket to upload into",
+      ignoreFocusOut: true,
+    },
+  );
+
+  return picked?.target;
 }
 
 function normalizeB2Prefix(prefix: string): string {
@@ -213,9 +252,18 @@ function isRemoteNotFound(error: unknown): boolean {
   );
 }
 
-async function remotePathExists(bucket: Bucket, remotePath: string): Promise<boolean> {
+async function remotePathExists(
+  bucket: Bucket,
+  remotePath: string,
+  signal: AbortSignal,
+): Promise<boolean> {
   try {
-    await bucket.head(remotePath);
+    await withTimeout(
+      (requestSignal) => bucket.head(remotePath, { signal: requestSignal }),
+      OVERWRITE_PREFLIGHT_TIMEOUT_MS,
+      `Overwrite check for b2://${bucket.name}/${remotePath}`,
+      { signal },
+    );
     return true;
   } catch (error) {
     if (isRemoteNotFound(error)) {
@@ -241,21 +289,41 @@ function duplicateRemotePaths(entries: readonly LocalUploadEntry[]): string[] {
 
 async function existingRemotePaths(
   bucket: Bucket,
-  entries: readonly LocalUploadEntry[],
+  remotePaths: readonly string[],
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  signal: AbortSignal,
 ): Promise<string[]> {
   const existing: string[] = [];
-  const checked = new Set<string>();
+  let nextIndex = 0;
+  let checkedCount = 0;
 
-  for (const entry of entries) {
-    if (checked.has(entry.remotePath)) {
-      continue;
-    }
-    checked.add(entry.remotePath);
-    if (await remotePathExists(bucket, entry.remotePath)) {
-      existing.push(entry.remotePath);
+  async function worker(): Promise<void> {
+    while (true) {
+      if (signal.aborted) {
+        throw signal.reason ?? new vscode.CancellationError();
+      }
+
+      const index = nextIndex++;
+      if (index >= remotePaths.length) {
+        return;
+      }
+
+      const remotePath = remotePaths[index];
+      progress.report({
+        message: `Checking for existing B2 files ${checkedCount + 1}/${remotePaths.length}: ${remotePath}`,
+      });
+      if (await remotePathExists(bucket, remotePath, signal)) {
+        existing.push(remotePath);
+      }
+      checkedCount++;
     }
   }
 
+  await Promise.all(
+    Array.from({ length: Math.min(OVERWRITE_PREFLIGHT_CONCURRENCY, remotePaths.length) }, () =>
+      worker(),
+    ),
+  );
   return existing;
 }
 
@@ -276,9 +344,15 @@ function overwriteWarningMessage(paths: readonly string[]): string {
 async function confirmPotentialOverwrites(
   bucket: Bucket,
   entries: readonly LocalUploadEntry[],
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  signal: AbortSignal,
 ): Promise<boolean> {
+  const uniqueRemotePaths = [...new Set(entries.map((entry) => entry.remotePath))];
   const overwritePaths = [
-    ...new Set([...(await existingRemotePaths(bucket, entries)), ...duplicateRemotePaths(entries)]),
+    ...new Set([
+      ...(await existingRemotePaths(bucket, uniqueRemotePaths, progress, signal)),
+      ...duplicateRemotePaths(entries),
+    ]),
   ];
 
   if (overwritePaths.length === 0) {
@@ -356,7 +430,7 @@ async function uploadEntriesWithProgress(
   entries: readonly LocalUploadEntry[],
   onEntryUploaded: () => void,
   token?: vscode.CancellationToken,
-): Promise<number> {
+): Promise<UploadRunOutcome> {
   return vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -382,28 +456,40 @@ async function uploadEntriesWithProgress(
       disposables.push(progressToken.onCancellationRequested(cancel));
 
       let uploadedCount = 0;
+      let currentEntry: LocalUploadEntry | undefined;
       const reporter = createBatchProgressReporter(progress, entries);
       try {
+        if (
+          !(await confirmPotentialOverwrites(target.bucket, entries, progress, controller.signal))
+        ) {
+          return { completed: false, uploadedCount };
+        }
+
         for (const [index, entry] of entries.entries()) {
           if (controller.signal.aborted) {
             throw new vscode.CancellationError();
           }
 
+          currentEntry = entry;
           await uploadEntry(target.bucket, entry, {
             signal: controller.signal,
             onProgress: reporter.forEntry(entry, index),
           });
+          currentEntry = undefined;
           reporter.markEntryDone(entry, index);
           uploadedCount++;
           onEntryUploaded();
         }
-        return uploadedCount;
+        return { completed: true, uploadedCount };
       } catch (error) {
         if (
           controller.signal.aborted ||
           token?.isCancellationRequested ||
           progressToken.isCancellationRequested
         ) {
+          if (currentEntry) {
+            throw new UploadCancellationAmbiguousError(currentEntry.remotePath, uploadedCount);
+          }
           throw new vscode.CancellationError();
         }
         if (uploadedCount > 0) {
@@ -454,16 +540,27 @@ export async function uploadLocalUrisToTarget(
       return;
     }
 
-    if (!(await confirmPotentialOverwrites(target.bucket, entries))) {
+    const outcome = await uploadEntriesWithProgress(target, entries, () => uploadedCount++, token);
+    uploadedCount = outcome.uploadedCount;
+    if (!outcome.completed) {
       return;
     }
 
-    uploadedCount = await uploadEntriesWithProgress(target, entries, () => uploadedCount++, token);
     services.treeProvider.refresh();
     vscode.window.showInformationMessage(
       `B2: Uploaded ${uploadedCount} item(s) to ${uploadTargetLabel(target)}.`,
     );
   } catch (error) {
+    if (error instanceof UploadCancellationAmbiguousError) {
+      services.treeProvider.refresh();
+      log(
+        `Upload canceled while ${error.remotePath} was in flight; the object may have been committed in B2.`,
+      );
+      await vscode.window.showWarningMessage(
+        `B2: Upload canceled while "${error.remotePath}" was in progress. It may have been uploaded, so the tree was refreshed. Verify before retrying to avoid duplicate versions.`,
+      );
+      return;
+    }
     if (error instanceof vscode.CancellationError) {
       if (uploadedCount > 0) {
         services.treeProvider.refresh();
@@ -481,14 +578,20 @@ export async function uploadFilesCommand(
   item: UploadTargetTreeItem | undefined,
   services: UploadFilesCommandServices,
 ): Promise<void> {
-  const target = selectedUploadTarget(item, services);
+  let target: UploadTargetTreeItem | undefined;
+  try {
+    target = await selectedUploadTarget(item, services);
+  } catch (error) {
+    showUploadError("B2: Failed to choose upload destination", error);
+    return;
+  }
+
   if (!target) {
-    vscode.window.showErrorMessage("B2: Select a bucket or folder first.");
     return;
   }
 
   const uris = await vscode.window.showOpenDialog({
-    title: "Upload Files to B2",
+    title: `Upload Files to ${uploadTargetLabel(target)}`,
     openLabel: "Upload",
     canSelectFiles: true,
     canSelectFolders: true,
