@@ -213,12 +213,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 2. Tree provider
   const treeProvider = new B2TreeProvider(authService);
-  let treeView: vscode.TreeView<B2TreeItem>;
+  let treeView: vscode.TreeView<B2TreeItem> | undefined;
   const uploadServices = {
     treeProvider,
     getClient: () => currentClient,
     getSelectedUploadTarget: () => {
-      const selected = treeView.selection[0];
+      const selected = treeView?.selection[0];
       return isUploadTargetTreeItem(selected) ? selected : undefined;
     },
   };
