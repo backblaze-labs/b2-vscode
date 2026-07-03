@@ -105,6 +105,19 @@ function makeNotificationProvider(
 }
 
 suite("B2 config file-system provider", () => {
+  test("uses kind-appropriate placeholder stat sizes before read", () => {
+    const { provider } = makeNotificationProvider([]);
+
+    assert.strictEqual(
+      provider.stat(buildB2ConfigUri("bucket", "bucketInfo")).size,
+      Buffer.byteLength("{}\n"),
+    );
+    assert.strictEqual(
+      provider.stat(buildB2ConfigUri("bucket", "notifications")).size,
+      Buffer.byteLength("[]\n"),
+    );
+  });
+
   test("masks notification secrets on read and restores them on save", async () => {
     const original = [
       notificationRule("webhook", "https://example.com/b2", {

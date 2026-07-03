@@ -115,13 +115,14 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       };
     }
 
-    this.parseUri(uri);
+    const location = this.parseUri(uri);
     const cacheEntry = this.getCacheEntry(this.cacheKey(uri));
+    const defaultConfig = location.kind === "bucketInfo" ? {} : [];
     return {
       type: vscode.FileType.File,
       ctime: 0,
       mtime: cacheEntry?.mtime ?? Date.now(),
-      size: cacheEntry?.size ?? Buffer.byteLength(prettyB2ConfigJson([])),
+      size: cacheEntry?.size ?? Buffer.byteLength(prettyB2ConfigJson(defaultConfig)),
     };
   }
 
@@ -187,7 +188,22 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       await this.rejectWrite(`B2: ${validationError}`);
     }
 
-    const snapshot = cacheEntry ?? (await this.createWriteSnapshot(uri, location));
+    let snapshot: B2ConfigCacheEntry;
+    try {
+      snapshot = cacheEntry ?? (await this.createWriteSnapshot(uri, location));
+    } catch (error) {
+      if (error instanceof B2ConfigRemoteTimeoutError) {
+        await this.rejectWrite(`B2: ${error.message}`, error);
+      }
+      if (isBucketRevisionConflict(error)) {
+        await this.rejectWrite(this.conflictMessage(location), error);
+      }
+      await this.rejectWrite(
+        `B2: Failed to prepare ${b2ConfigFileName(location.kind)} for "${location.bucketName}". ${formatB2UserMessage(error)}`,
+        error,
+      );
+      throw error;
+    }
     let mergedConfig: unknown;
     try {
       mergedConfig = mergeMaskedB2Config(location.kind, parsedConfig, snapshot.secretSnapshot);
@@ -396,12 +412,19 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     uri: vscode.Uri,
     location: B2ConfigLocation,
   ): Promise<B2ConfigCacheEntry> {
-    const bytes = await this.readFile(uri);
+    const bucket = await this.resolveBucket(location, uri);
+    const { config, revision } = await this.readLiveConfig(bucket, location);
+    const bytes = Buffer.from(
+      prettyB2ConfigJson(maskB2ConfigForRead(location.kind, config)),
+      "utf8",
+    );
+    this.rememberConfigSnapshot(uri, location, config, revision, bytes.byteLength);
+
     const entry = this.cache.get(this.cacheKey(uri));
     if (!entry) {
       throw new Error(`B2: Could not prepare ${b2ConfigFileName(location.kind)} for saving.`);
     }
-    return { ...entry, size: bytes.byteLength };
+    return entry;
   }
 
   private async persistConfig(
