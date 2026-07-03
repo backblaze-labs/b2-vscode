@@ -23,6 +23,10 @@ import { withTimeout } from "./services/transferTimeout";
 import { AuthService } from "./services/authService";
 import { cleanupStaleTempFileCache, TempFileManager } from "./services/tempFileManager";
 import { B2TreeProvider } from "./providers/b2TreeProvider";
+import {
+  B2_CONFIG_SCHEME,
+  B2ConfigFileSystemProvider,
+} from "./providers/b2ConfigFileSystemProvider";
 import { B2StatusBar } from "./ui/statusBar";
 import { registerCommands } from "./commands";
 import { registerB2Tools } from "./tools/registration";
@@ -220,7 +224,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 4. Status bar
   const statusBar = new B2StatusBar(authService);
 
-  // 5. Register commands
+  // 5. Register virtual bucket-configuration documents
+  const configFileSystemProvider = new B2ConfigFileSystemProvider(() => currentClient);
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(B2_CONFIG_SCHEME, configFileSystemProvider, {
+      isCaseSensitive: true,
+    }),
+    configFileSystemProvider,
+  );
+
+  // 6. Register commands
   const setAuthenticatedClient = createAuthenticatedClientSetter();
   registerCommands({
     context,
@@ -233,11 +246,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   registerB2Tools(context, () => currentClient);
 
-  // 6. Track disposables
+  // 7. Track disposables
   context.subscriptions.push(treeView, statusBar, authService, tempFileManager);
   scheduleTempCleanups(context);
 
-  // 7. Auto-auth: try to resolve stored/env credentials
+  // 8. Auto-auth: try to resolve stored/env credentials
   try {
     const credentials = await authService.resolveCredentials();
     if (credentials) {
