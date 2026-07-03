@@ -70,7 +70,7 @@
           },
           "customHeaders": {
             "type": "object",
-            "description": "Optional custom webhook request headers. Authorization header values are masked on read.",
+            "description": "Optional custom webhook request headers. Header values are masked on read.",
             "additionalProperties": {
               "type": "string"
             }

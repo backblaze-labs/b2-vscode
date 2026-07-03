@@ -13,20 +13,26 @@ import type {
   LifecycleRule,
 } from "@backblaze-labs/b2-sdk";
 import { formatB2UserMessage, isBucketRevisionConflict } from "../errors";
+import { log, logError } from "../logger";
 import {
   B2_CONFIG_KINDS,
   B2_CONFIG_SCHEME,
   b2ConfigFileName,
-  cloneB2ConfigJson,
+  createB2ConfigSecretSnapshot,
+  fingerprintB2ConfigJson,
   maskB2ConfigForRead,
   mergeMaskedB2Config,
   parseB2ConfigPath,
   prettyB2ConfigJson,
-  stableB2ConfigJson,
   validateB2ConfigJson,
   type B2ConfigKind,
   type B2ConfigLocation,
+  type B2ConfigSecretSnapshot,
 } from "./b2ConfigJson";
+
+export const B2_CONFIG_REMOTE_TIMEOUT_MS = 60_000;
+export const B2_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
+export const B2_CONFIG_CACHE_MAX_ENTRIES = 32;
 
 type BucketConfigUpdate = {
   readonly bucketInfo?: Record<string, string>;
@@ -51,17 +57,26 @@ export interface B2ConfigClient {
 }
 
 interface B2ConfigCacheEntry extends B2ConfigLocation {
-  readonly originalConfig: unknown;
   readonly originalFingerprint: string;
+  readonly secretSnapshot?: B2ConfigSecretSnapshot;
   readonly revision: number;
   readonly mtime: number;
   readonly size: number;
+  readonly expiresAt: number;
+  readonly lastAccessedAt: number;
 }
 
 class B2ConfigConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "B2ConfigConflictError";
+  }
+}
+
+class B2ConfigRemoteTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "B2ConfigRemoteTimeoutError";
   }
 }
 
@@ -100,7 +115,7 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     }
 
     this.parseUri(uri);
-    const cacheEntry = this.cache.get(this.cacheKey(uri));
+    const cacheEntry = this.getCacheEntry(this.cacheKey(uri));
     return {
       type: vscode.FileType.File,
       ctime: 0,
@@ -131,21 +146,21 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const location = this.parseUri(uri);
-    const bucket = await this.resolveBucket(location.bucketName, uri);
-    const { config, revision } = await this.readLiveConfig(bucket, location.kind);
-    const maskedConfig = maskB2ConfigForRead(location.kind, config);
-    const bytes = Buffer.from(prettyB2ConfigJson(maskedConfig), "utf8");
+    try {
+      const bucket = await this.resolveBucket(location, uri);
+      const { config, revision } = await this.readLiveConfig(bucket, location);
+      const maskedConfig = maskB2ConfigForRead(location.kind, config);
+      const bytes = Buffer.from(prettyB2ConfigJson(maskedConfig), "utf8");
 
-    this.cache.set(this.cacheKey(uri), {
-      ...location,
-      originalConfig: cloneB2ConfigJson(config),
-      originalFingerprint: stableB2ConfigJson(config),
-      revision,
-      mtime: Date.now(),
-      size: bytes.byteLength,
-    });
+      this.rememberConfigSnapshot(uri, location, config, revision, bytes.byteLength);
 
-    return bytes;
+      return bytes;
+    } catch (error) {
+      if (error instanceof B2ConfigRemoteTimeoutError) {
+        await vscode.window.showErrorMessage(`B2: ${error.message}`);
+      }
+      throw error;
+    }
   }
 
   async writeFile(
@@ -155,7 +170,7 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
   ): Promise<void> {
     const location = this.parseUri(uri);
     const key = this.cacheKey(uri);
-    const cacheEntry = this.cache.get(key);
+    const cacheEntry = this.getCacheEntry(key);
     if (!cacheEntry && !options.create) {
       await this.rejectWrite(
         `B2: Open or reload ${b2ConfigFileName(location.kind)} before saving it.`,
@@ -172,27 +187,35 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     }
 
     const snapshot = cacheEntry ?? (await this.createWriteSnapshot(uri, location));
-    const mergedConfig = mergeMaskedB2Config(location.kind, parsedConfig, snapshot.originalConfig);
-    const bucket = await this.resolveBucket(location.bucketName, uri);
+    let mergedConfig: unknown;
+    try {
+      mergedConfig = mergeMaskedB2Config(location.kind, parsedConfig, snapshot.secretSnapshot);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.rejectWrite(`B2: ${detail}`);
+    }
 
     try {
-      const updated = await this.persistConfig(bucket, location.kind, mergedConfig, snapshot);
+      const bucket = await this.resolveBucket(location, uri);
+      const updated = await this.persistConfig(bucket, location, mergedConfig, snapshot);
       const updatedBytes = Buffer.from(
         prettyB2ConfigJson(maskB2ConfigForRead(location.kind, updated.config)),
         "utf8",
       );
-      this.cache.set(key, {
-        ...location,
-        originalConfig: cloneB2ConfigJson(updated.config),
-        originalFingerprint: stableB2ConfigJson(updated.config),
-        revision: updated.revision,
-        mtime: Date.now(),
-        size: updatedBytes.byteLength,
-      });
+      this.rememberConfigSnapshot(
+        uri,
+        location,
+        updated.config,
+        updated.revision,
+        updatedBytes.byteLength,
+      );
       this.changeEmitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
     } catch (error) {
       if (error instanceof B2ConfigConflictError) {
         await this.rejectWrite(error.message);
+      }
+      if (error instanceof B2ConfigRemoteTimeoutError) {
+        await this.rejectWrite(`B2: ${error.message}`, error);
       }
       if (isBucketRevisionConflict(error)) {
         await this.rejectWrite(this.conflictMessage(location), error);
@@ -217,6 +240,14 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     this.cache.clear();
   }
 
+  clearCache(): void {
+    this.cache.clear();
+  }
+
+  deleteCacheEntry(uri: vscode.Uri): void {
+    this.cache.delete(this.cacheKey(uri));
+  }
+
   private parseUri(uri: vscode.Uri): B2ConfigLocation {
     if (uri.scheme !== B2_CONFIG_SCHEME) {
       throw vscode.FileSystemError.FileNotFound(uri);
@@ -234,13 +265,76 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     return uri.toString();
   }
 
-  private async resolveBucket(bucketName: string, uri: vscode.Uri): Promise<B2ConfigBucket> {
+  private getCacheEntry(key: string): B2ConfigCacheEntry | undefined {
+    this.pruneCache();
+    const entry = this.cache.get(key);
+    if (!entry) {
+      return undefined;
+    }
+
+    const now = Date.now();
+    if (entry.expiresAt <= now) {
+      this.cache.delete(key);
+      return undefined;
+    }
+
+    const touched = { ...entry, lastAccessedAt: now };
+    this.cache.set(key, touched);
+    return touched;
+  }
+
+  private rememberConfigSnapshot(
+    uri: vscode.Uri,
+    location: B2ConfigLocation,
+    config: unknown,
+    revision: number,
+    size: number,
+  ): void {
+    const now = Date.now();
+    this.cache.set(this.cacheKey(uri), {
+      ...location,
+      originalFingerprint: fingerprintB2ConfigJson(config),
+      secretSnapshot: createB2ConfigSecretSnapshot(location.kind, config),
+      revision,
+      mtime: now,
+      size,
+      expiresAt: now + B2_CONFIG_CACHE_TTL_MS,
+      lastAccessedAt: now,
+    });
+    this.pruneCache(now);
+  }
+
+  private pruneCache(now: number = Date.now()): void {
+    for (const [key, entry] of this.cache) {
+      if (entry.expiresAt <= now) {
+        this.cache.delete(key);
+      }
+    }
+
+    if (this.cache.size <= B2_CONFIG_CACHE_MAX_ENTRIES) {
+      return;
+    }
+
+    const entriesByAge = [...this.cache.entries()].sort(
+      ([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt,
+    );
+    for (const [key] of entriesByAge.slice(0, this.cache.size - B2_CONFIG_CACHE_MAX_ENTRIES)) {
+      this.cache.delete(key);
+    }
+  }
+
+  private async resolveBucket(
+    location: B2ConfigLocation,
+    uri: vscode.Uri,
+  ): Promise<B2ConfigBucket> {
     const client = this.getClient();
     if (!client) {
       throw vscode.FileSystemError.Unavailable("B2: Not authenticated.");
     }
 
-    const bucket = await client.getBucket(bucketName);
+    const bucket = await this.withRemoteTimeout(location, "fetch bucket metadata", () =>
+      client.getBucket(location.bucketName),
+    );
     if (!bucket) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
@@ -250,14 +344,14 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
 
   private async readLiveConfig(
     bucket: B2ConfigBucket,
-    kind: B2ConfigKind,
+    location: B2ConfigLocation,
   ): Promise<{ readonly config: unknown; readonly revision: number }> {
     const revision = bucket.info.revision;
     if (typeof revision !== "number") {
       throw new Error("B2 bucket metadata is missing a revision.");
     }
 
-    switch (kind) {
+    switch (location.kind) {
       case "bucketInfo":
         return { config: bucket.info.bucketInfo, revision };
       case "cors":
@@ -265,7 +359,9 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       case "lifecycle":
         return { config: bucket.info.lifecycleRules, revision };
       case "notifications": {
-        const response = await bucket.getNotificationRules();
+        const response = await this.withRemoteTimeout(location, "read notification rules", () =>
+          bucket.getNotificationRules(),
+        );
         return { config: response.eventNotificationRules, revision };
       }
     }
@@ -297,58 +393,180 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
 
   private async persistConfig(
     bucket: B2ConfigBucket,
-    kind: B2ConfigKind,
+    location: B2ConfigLocation,
     config: unknown,
     snapshot: B2ConfigCacheEntry,
   ): Promise<{ readonly config: unknown; readonly revision: number }> {
-    switch (kind) {
+    switch (location.kind) {
       case "bucketInfo": {
-        const updated = await bucket.update({
-          bucketInfo: config as Record<string, string>,
-          ifRevisionIs: snapshot.revision,
-        });
+        const updated = await this.withRemoteTimeout(
+          location,
+          "save bucketInfo",
+          () =>
+            bucket.update({
+              bucketInfo: config as Record<string, string>,
+              ifRevisionIs: snapshot.revision,
+            }),
+          { observeLateOutcome: true },
+        );
         return { config: updated.bucketInfo, revision: updated.revision };
       }
       case "cors": {
-        const updated = await bucket.update({
-          corsRules: config as CorsRule[],
-          ifRevisionIs: snapshot.revision,
-        });
+        const updated = await this.withRemoteTimeout(
+          location,
+          "save CORS rules",
+          () =>
+            bucket.update({
+              corsRules: config as CorsRule[],
+              ifRevisionIs: snapshot.revision,
+            }),
+          { observeLateOutcome: true },
+        );
         return { config: updated.corsRules, revision: updated.revision };
       }
       case "lifecycle": {
-        const updated = await bucket.update({
-          lifecycleRules: config as LifecycleRule[],
-          ifRevisionIs: snapshot.revision,
-        });
+        const updated = await this.withRemoteTimeout(
+          location,
+          "save lifecycle rules",
+          () =>
+            bucket.update({
+              lifecycleRules: config as LifecycleRule[],
+              ifRevisionIs: snapshot.revision,
+            }),
+          { observeLateOutcome: true },
+        );
         return { config: updated.lifecycleRules, revision: updated.revision };
       }
       case "notifications":
-        await this.assertNotificationSnapshotCurrent(bucket, snapshot);
-        return this.persistNotificationRules(bucket, config, snapshot.revision);
+        await this.assertNotificationSnapshotCurrent(bucket, location, snapshot);
+        return this.persistNotificationRules(bucket, location, config, snapshot.revision);
     }
   }
 
   private async persistNotificationRules(
     bucket: B2ConfigBucket,
+    location: B2ConfigLocation,
     config: unknown,
     revision: number,
   ): Promise<{ readonly config: unknown; readonly revision: number }> {
-    await bucket.setNotificationRules(config as EventNotificationRule[]);
+    try {
+      await this.withRemoteTimeout(
+        location,
+        "save notification rules",
+        () => bucket.setNotificationRules(config as EventNotificationRule[]),
+        { observeLateOutcome: true },
+      );
+    } catch (error) {
+      const reconciled = await this.reconcileNotificationSave(bucket, location, config, error);
+      if (reconciled) {
+        return { config: reconciled, revision };
+      }
+      throw error;
+    }
+
     return { config, revision };
+  }
+
+  private async reconcileNotificationSave(
+    bucket: B2ConfigBucket,
+    location: B2ConfigLocation,
+    intendedConfig: unknown,
+    originalError: unknown,
+  ): Promise<unknown | undefined> {
+    try {
+      const current = await this.withRemoteTimeout(
+        location,
+        "re-read notification rules after failed save",
+        () => bucket.getNotificationRules(),
+      );
+      if (
+        fingerprintB2ConfigJson(current.eventNotificationRules) ===
+        fingerprintB2ConfigJson(intendedConfig)
+      ) {
+        log(
+          `B2 config save for ${b2ConfigFileName(location.kind)} in bucket "${location.bucketName}" was reconciled after a failed response.`,
+        );
+        return current.eventNotificationRules;
+      }
+    } catch (reconcileError) {
+      logError(
+        `Could not reconcile B2 config save for ${b2ConfigFileName(location.kind)} in bucket "${location.bucketName}" after a failed response`,
+        reconcileError,
+      );
+    }
+
+    logError(
+      `B2 config save for ${b2ConfigFileName(location.kind)} in bucket "${location.bucketName}" could not be reconciled after failure`,
+      originalError,
+    );
+    return undefined;
   }
 
   private async assertNotificationSnapshotCurrent(
     bucket: B2ConfigBucket,
+    location: B2ConfigLocation,
     snapshot: B2ConfigCacheEntry,
   ): Promise<void> {
     if (bucket.info.revision !== snapshot.revision) {
       throw new B2ConfigConflictError(this.conflictMessage(snapshot));
     }
 
-    const current = await bucket.getNotificationRules();
-    if (stableB2ConfigJson(current.eventNotificationRules) !== snapshot.originalFingerprint) {
+    const current = await this.withRemoteTimeout(location, "check notification rules", () =>
+      bucket.getNotificationRules(),
+    );
+    if (fingerprintB2ConfigJson(current.eventNotificationRules) !== snapshot.originalFingerprint) {
       throw new B2ConfigConflictError(this.conflictMessage(snapshot));
+    }
+  }
+
+  private async withRemoteTimeout<T>(
+    location: B2ConfigLocation,
+    operation: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    options: { readonly observeLateOutcome?: boolean } = {},
+  ): Promise<T> {
+    const description = `B2 config ${operation} for ${b2ConfigFileName(location.kind)} in bucket "${location.bucketName}"`;
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    let timeoutError: B2ConfigRemoteTimeoutError | undefined;
+    const operationPromise = Promise.resolve().then(() => run(controller.signal));
+    void operationPromise.catch(() => undefined);
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        timeoutError = new B2ConfigRemoteTimeoutError(
+          `${description} timed out after ${B2_CONFIG_REMOTE_TIMEOUT_MS} ms.`,
+        );
+        if (!controller.signal.aborted) {
+          controller.abort(timeoutError);
+        }
+        reject(timeoutError);
+      }, B2_CONFIG_REMOTE_TIMEOUT_MS);
+      timer.unref?.();
+    });
+
+    try {
+      return await Promise.race([operationPromise, timeout]);
+    } catch (error) {
+      if (timedOut && error === timeoutError) {
+        logError(`${description} timed out`, error);
+        if (options.observeLateOutcome) {
+          void operationPromise.then(
+            () => {
+              log(`${description} completed after the client-side timeout.`);
+            },
+            (lateError) => {
+              logError(`${description} failed after the client-side timeout`, lateError);
+            },
+          );
+        }
+      }
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 

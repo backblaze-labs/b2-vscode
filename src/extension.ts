@@ -231,10 +231,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       isCaseSensitive: true,
     }),
     configFileSystemProvider,
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      if (document.uri.scheme === B2_CONFIG_SCHEME) {
+        configFileSystemProvider.deleteCacheEntry(document.uri);
+      }
+    }),
   );
 
   // 6. Register commands
-  const setAuthenticatedClient = createAuthenticatedClientSetter();
+  const setAuthenticatedClient = createAuthenticatedClientSetter(
+    scheduleAuthenticatedCleanups,
+    (client) => {
+      currentClient = client;
+      configFileSystemProvider.clearCache();
+    },
+  );
   registerCommands({
     context,
     authService,
