@@ -87,12 +87,14 @@ export function parseB2ConfigPath(path: string): B2ConfigLocation | undefined {
   }
 
   const [bucketName, fileName] = segments;
-  if (!bucketName || !fileName.endsWith(B2_CONFIG_FILE_EXTENSION)) {
+  if (!bucketName || !fileName) {
     return undefined;
   }
 
-  const kind = fileName.slice(0, -B2_CONFIG_FILE_EXTENSION.length);
-  if (!isB2ConfigKind(kind)) {
+  const kind = B2_CONFIG_KINDS.find(
+    (candidate) => B2_CONFIG_KIND_DESCRIPTORS[candidate].fileName === fileName,
+  );
+  if (!kind) {
     return undefined;
   }
 
