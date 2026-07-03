@@ -95,6 +95,12 @@ interface FakeRequest extends EventEmitter {
 const SQL_JS_RUNTIME_FIXTURE_PATH = resolveSqlJsRuntimeSourcePath(process.cwd());
 const SQL_WASM_FIXTURE_PATH = resolveSqlWasmSourcePath(process.cwd());
 const FIXTURE_ASSERT_OPTIONS = { skipSqlJsPackageProvenance: true };
+const B2_CONFIG_SCHEMA_PACKAGE_ENTRIES = [
+  "extension/resources/schemas/b2-config-bucketInfo.schema.json",
+  "extension/resources/schemas/b2-config-cors.schema.json",
+  "extension/resources/schemas/b2-config-lifecycle.schema.json",
+  "extension/resources/schemas/b2-config-notifications.schema.json",
+] as const;
 
 function loadVsixAssetAssertions(): VsixAssetAssertions {
   return require(path.join(process.cwd(), "scripts/assert-vsix-assets.js")) as VsixAssetAssertions;
@@ -169,6 +175,12 @@ function baseEntries(
     "extension/resources/b2-icon.png": "png",
     "extension/resources/b2-icon.svg": "<svg />",
     "extension/resources/b2-icons.woff": "woff",
+    ...Object.fromEntries(
+      B2_CONFIG_SCHEMA_PACKAGE_ENTRIES.map((entry) => [
+        entry,
+        fs.readFileSync(path.join(process.cwd(), entry.replace(/^extension\//u, ""))),
+      ]),
+    ),
   };
 }
 

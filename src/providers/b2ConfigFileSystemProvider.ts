@@ -34,6 +34,7 @@ export const B2_CONFIG_REMOTE_TIMEOUT_MS = 60_000;
 export const B2_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
 export const B2_CONFIG_CACHE_MAX_ENTRIES = 32;
 export const B2_CONFIG_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+export const B2_CONFIG_SAVE_CONFIRM_LABEL = "Save B2 Config";
 
 type BucketConfigUpdate = {
   readonly bucketInfo?: Record<string, string>;
@@ -91,6 +92,7 @@ export function buildB2ConfigUri(bucketName: string, kind: B2ConfigKind): vscode
 export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   private readonly cache = new Map<string, B2ConfigCacheEntry>();
+  private readonly notificationWriteLocks = new Map<string, Promise<unknown>>();
 
   readonly onDidChangeFile = this.changeEmitter.event;
 
@@ -173,10 +175,10 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     const location = this.parseUri(uri);
     const key = this.cacheKey(uri);
     const cacheEntry = this.getCacheEntry(key);
-    if (!cacheEntry && !options.create) {
-      await this.rejectWrite(
-        `B2: Open or reload ${b2ConfigFileName(location.kind)} before saving it.`,
-      );
+    if (!cacheEntry) {
+      const message = `B2: Open or reload ${b2ConfigFileName(location.kind)} before saving it.`;
+      await vscode.window.showErrorMessage(message);
+      throw new Error(message);
     }
     if (cacheEntry && !options.overwrite) {
       throw vscode.FileSystemError.FileExists(uri);
@@ -188,22 +190,7 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       await this.rejectWrite(`B2: ${validationError}`);
     }
 
-    let snapshot: B2ConfigCacheEntry;
-    try {
-      snapshot = cacheEntry ?? (await this.createWriteSnapshot(uri, location));
-    } catch (error) {
-      if (error instanceof B2ConfigRemoteTimeoutError) {
-        await this.rejectWrite(`B2: ${error.message}`, error);
-      }
-      if (isBucketRevisionConflict(error)) {
-        await this.rejectWrite(this.conflictMessage(location), error);
-      }
-      await this.rejectWrite(
-        `B2: Failed to prepare ${b2ConfigFileName(location.kind)} for "${location.bucketName}". ${formatB2UserMessage(error)}`,
-        error,
-      );
-      throw error;
-    }
+    const snapshot = cacheEntry;
     let mergedConfig: unknown;
     try {
       mergedConfig = mergeMaskedB2Config(location.kind, parsedConfig, snapshot.secretSnapshot);
@@ -211,6 +198,8 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       const detail = error instanceof Error ? error.message : String(error);
       await this.rejectWrite(`B2: ${detail}`);
     }
+
+    await this.confirmWrite(location);
 
     try {
       const bucket = await this.resolveBucket(location, uri);
@@ -412,23 +401,15 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     }
   }
 
-  private async createWriteSnapshot(
-    uri: vscode.Uri,
-    location: B2ConfigLocation,
-  ): Promise<B2ConfigCacheEntry> {
-    const bucket = await this.resolveBucket(location, uri);
-    const { config, revision } = await this.readLiveConfig(bucket, location);
-    const bytes = Buffer.from(
-      prettyB2ConfigJson(maskB2ConfigForRead(location.kind, config)),
-      "utf8",
+  private async confirmWrite(location: B2ConfigLocation): Promise<void> {
+    const confirmation = await vscode.window.showWarningMessage(
+      `B2: Save ${b2ConfigFileName(location.kind)} changes to bucket "${location.bucketName}"? This updates live bucket configuration.`,
+      { modal: true },
+      B2_CONFIG_SAVE_CONFIRM_LABEL,
     );
-    this.rememberConfigSnapshot(uri, location, config, revision, bytes.byteLength);
-
-    const entry = this.cache.get(this.cacheKey(uri));
-    if (!entry) {
-      throw new Error(`B2: Could not prepare ${b2ConfigFileName(location.kind)} for saving.`);
+    if (confirmation !== B2_CONFIG_SAVE_CONFIRM_LABEL) {
+      throw new Error(`B2: Save canceled for ${b2ConfigFileName(location.kind)}.`);
     }
-    return entry;
   }
 
   private async persistConfig(
@@ -478,8 +459,29 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
         return { config: updated.lifecycleRules, revision: updated.revision };
       }
       case "notifications":
-        await this.assertNotificationSnapshotCurrent(bucket, location, snapshot);
-        return this.persistNotificationRules(bucket, location, config, snapshot.revision);
+        return this.serializeNotificationWrite(location, async () => {
+          await this.assertNotificationSnapshotCurrent(bucket, location, snapshot);
+          return this.persistNotificationRules(bucket, location, config, snapshot.revision);
+        });
+    }
+  }
+
+  private async serializeNotificationWrite<T>(
+    location: B2ConfigLocation,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${location.bucketName}:${location.kind}`;
+    const previous = this.notificationWriteLocks.get(key) ?? Promise.resolve();
+    // B2 notification replacement has no server-side revision precondition, so
+    // serialize writes in this extension host and re-check immediately before set.
+    const guarded = previous.catch(() => undefined).then(run);
+    this.notificationWriteLocks.set(key, guarded);
+    try {
+      return await guarded;
+    } finally {
+      if (this.notificationWriteLocks.get(key) === guarded) {
+        this.notificationWriteLocks.delete(key);
+      }
     }
   }
 
@@ -571,7 +573,11 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       timer = setTimeout(() => {
         timedOut = true;
         timeoutError = new B2ConfigRemoteTimeoutError(
-          `${description} timed out after ${B2_CONFIG_REMOTE_TIMEOUT_MS} ms.`,
+          `${description} timed out after ${B2_CONFIG_REMOTE_TIMEOUT_MS} ms.${
+            options.observeLateOutcome
+              ? " The request may still complete in B2; reload the document before retrying."
+              : ""
+          }`,
         );
         if (!controller.signal.aborted) {
           controller.abort(timeoutError);
