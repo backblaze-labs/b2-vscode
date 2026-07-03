@@ -7,6 +7,7 @@
 import * as assert from "assert";
 import type { EventNotificationRule } from "@backblaze-labs/b2-sdk";
 import {
+  B2_CONFIG_CACHE_TTL_MS,
   B2ConfigFileSystemProvider,
   buildB2ConfigUri,
   type B2ConfigBucket,
@@ -207,6 +208,36 @@ suite("B2 config file-system provider", () => {
     (bucket.info as { revision: number }).revision = 2;
 
     await provider.writeFile(uri, encodeConfig(readConfig), { create: false, overwrite: true });
+
+    assert.strictEqual(savedRules.length, 1);
+  });
+
+  test("cache expiry is refreshed while config documents are accessed", async () => {
+    const original = [
+      notificationRule("webhook", "https://example.com/b2", {
+        signingSecret: "signing-secret",
+      }),
+    ];
+    const { provider, savedRules } = makeNotificationProvider(original);
+    const uri = buildB2ConfigUri("bucket", "notifications");
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      const readConfig = JSON.parse(Buffer.from(await provider.readFile(uri)).toString("utf8")) as
+        | EventNotificationRule[]
+        | undefined;
+      assert.ok(readConfig);
+      (readConfig[0] as { objectNamePrefix: string }).objectNamePrefix = "logs/";
+
+      now += B2_CONFIG_CACHE_TTL_MS - 1;
+      provider.stat(uri);
+      now += 2;
+
+      await provider.writeFile(uri, encodeConfig(readConfig), { create: false, overwrite: true });
+    } finally {
+      Date.now = originalNow;
+    }
 
     assert.strictEqual(savedRules.length, 1);
   });

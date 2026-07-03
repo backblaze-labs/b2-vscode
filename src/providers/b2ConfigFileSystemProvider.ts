@@ -295,7 +295,11 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       return undefined;
     }
 
-    const touched = { ...entry, lastAccessedAt: now };
+    const touched = {
+      ...entry,
+      expiresAt: now + B2_CONFIG_CACHE_TTL_MS,
+      lastAccessedAt: now,
+    };
     this.cache.set(key, touched);
     return touched;
   }
