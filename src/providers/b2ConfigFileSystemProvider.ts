@@ -450,12 +450,13 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     revision: number,
   ): Promise<{ readonly config: unknown; readonly revision: number }> {
     try {
-      await this.withRemoteTimeout(
+      const response = await this.withRemoteTimeout(
         location,
         "save notification rules",
         () => bucket.setNotificationRules(config as EventNotificationRule[]),
         { observeLateOutcome: true },
       );
+      return { config: response.eventNotificationRules, revision };
     } catch (error) {
       const reconciled = await this.reconcileNotificationSave(bucket, location, config, error);
       if (reconciled) {
@@ -463,8 +464,6 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       }
       throw error;
     }
-
-    return { config, revision };
   }
 
   private async reconcileNotificationSave(
@@ -507,10 +506,6 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
     location: B2ConfigLocation,
     snapshot: B2ConfigCacheEntry,
   ): Promise<void> {
-    if (bucket.info.revision !== snapshot.revision) {
-      throw new B2ConfigConflictError(this.conflictMessage(snapshot));
-    }
-
     const current = await this.withRemoteTimeout(location, "check notification rules", () =>
       bucket.getNotificationRules(),
     );

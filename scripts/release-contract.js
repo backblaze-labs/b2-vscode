@@ -21,7 +21,7 @@ const manifestContract = {
     type: "git",
     url: "https://github.com/backblaze-labs/b2-vscode.git",
   },
-  activationEvents: [],
+  activationEvents: ["onFileSystem:b2-config"],
   forbiddenTopLevelFields: ["extensionDependencies", "extensionPack"],
   requiredPackageEntries: [
     "extension/resources/b2-icon.png",
@@ -59,7 +59,7 @@ const manifestContract = {
     "b2_deleteFile",
     "b2_presignUrl",
   ],
-  contributesSha256: "40a5f09a30986dfcb974032113ec6afaa2a694fa9fd12421b222955dac64eda7",
+  contributesSha256: "ded59c90229a7abbf10894fb367ca48e6d4040a8069848ff076e7cf88cfd5b2c",
 };
 
 function stableStringify(value) {
