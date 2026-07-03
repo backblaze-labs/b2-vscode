@@ -19,6 +19,7 @@ import {
   maskB2ConfigForRead,
   mergeMaskedB2Config,
   parseB2ConfigPath,
+  prettyB2ConfigJson,
   stableB2ConfigJson,
   validateB2ConfigJson,
 } from "../../providers/b2ConfigJson";
@@ -363,11 +364,33 @@ test("validates config shapes before save", () => {
     ]) ?? "",
     /unsupported operation/u,
   );
+  assert.match(
+    validateB2ConfigJson("cors", [
+      {
+        corsRuleName: "browser",
+        allowedOrigins: ["https://example.com"],
+        allowedOperations: ["b2_download_file_by_name", "b2_download_file_by_name"],
+        allowedHeaders: null,
+        exposeHeaders: null,
+        maxAgeSeconds: 300,
+      },
+    ]) ?? "",
+    /duplicate value/u,
+  );
   assert.match(validateB2ConfigJson("bucketInfo", []) ?? "", /object/u);
   assert.match(validateB2ConfigJson("bucketInfo", { team: 1 }) ?? "", /string/u);
   assert.match(
     validateB2ConfigJson("notifications", [{ ...notificationRule("webhook", "not a url") }]) ?? "",
     /valid URL/u,
+  );
+  assert.match(
+    validateB2ConfigJson("notifications", [
+      {
+        ...notificationRule("webhook", "https://example.com/b2"),
+        eventTypes: ["b2:ObjectCreated:*", "b2:ObjectCreated:*"],
+      },
+    ]) ?? "",
+    /duplicate value/u,
   );
   assert.match(
     validateB2ConfigJson("notifications", [
@@ -394,6 +417,12 @@ test("stable config JSON and fingerprint ignore object key insertion order", () 
 
   assert.equal(stableB2ConfigJson(left), stableB2ConfigJson(right));
   assert.equal(fingerprintB2ConfigJson(left), fingerprintB2ConfigJson(right));
+});
+
+test("JSON helpers keep undefined values representable as JSON", () => {
+  assert.equal(prettyB2ConfigJson(undefined), "null\n");
+  assert.equal(stableB2ConfigJson(undefined), "null");
+  assert.equal(fingerprintB2ConfigJson(undefined), fingerprintB2ConfigJson(null));
 });
 
 test("config kind metadata matches package jsonValidation and schema files", () => {

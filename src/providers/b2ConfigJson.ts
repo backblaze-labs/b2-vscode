@@ -108,7 +108,7 @@ export function b2ConfigSchemaPath(kind: B2ConfigKind): string {
 }
 
 export function prettyB2ConfigJson(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
+  return `${JSON.stringify(value, null, 2) ?? "null"}\n`;
 }
 
 export function cloneB2ConfigJson(value: unknown): unknown {
@@ -130,6 +130,17 @@ function validateStringArray(value: unknown, path: string): string | undefined {
 
   const invalidIndex = value.findIndex((item) => typeof item !== "string");
   return invalidIndex === -1 ? undefined : `${path}[${invalidIndex}] must be a string.`;
+}
+
+function validateUniqueStrings(value: readonly string[], path: string): string | undefined {
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (seen.has(item)) {
+      return `${path} must not contain duplicate value "${item}".`;
+    }
+    seen.add(item);
+  }
+  return undefined;
 }
 
 function validateNullableStringArray(value: unknown, path: string): string | undefined {
@@ -431,6 +442,14 @@ function validateCorsRule(rule: unknown, index: number): string | undefined {
     return operationError;
   }
 
+  const duplicateOperationError = validateUniqueStrings(
+    rule.allowedOperations as string[],
+    `${path}.allowedOperations`,
+  );
+  if (duplicateOperationError) {
+    return duplicateOperationError;
+  }
+
   const invalidOperation = (rule.allowedOperations as unknown[]).find(
     (operation) => typeof operation === "string" && !CORS_OPERATIONS.has(operation),
   );
@@ -472,6 +491,14 @@ function validateNotificationRule(rule: unknown, index: number): string | undefi
   const eventTypeError = validateStringArray(rule.eventTypes, `${path}.eventTypes`);
   if (eventTypeError) {
     return eventTypeError;
+  }
+
+  const duplicateEventTypeError = validateUniqueStrings(
+    rule.eventTypes as string[],
+    `${path}.eventTypes`,
+  );
+  if (duplicateEventTypeError) {
+    return duplicateEventTypeError;
   }
 
   const invalidEventType = (rule.eventTypes as unknown[]).find(
@@ -599,7 +626,7 @@ function normalizeForStableJson(value: unknown): unknown {
 }
 
 export function stableB2ConfigJson(value: unknown): string {
-  return JSON.stringify(normalizeForStableJson(value));
+  return JSON.stringify(normalizeForStableJson(value)) ?? "null";
 }
 
 export function fingerprintB2ConfigJson(value: unknown): string {

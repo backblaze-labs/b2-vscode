@@ -33,6 +33,7 @@ import {
 export const B2_CONFIG_REMOTE_TIMEOUT_MS = 60_000;
 export const B2_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
 export const B2_CONFIG_CACHE_MAX_ENTRIES = 32;
+export const B2_CONFIG_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 
 type BucketConfigUpdate = {
   readonly bucketInfo?: Record<string, string>;
@@ -311,15 +312,27 @@ export class B2ConfigFileSystemProvider implements vscode.FileSystemProvider, vs
       }
     }
 
-    if (this.cache.size <= B2_CONFIG_CACHE_MAX_ENTRIES) {
+    const totalSize = [...this.cache.values()].reduce((sum, entry) => sum + entry.size, 0);
+    if (this.cache.size <= B2_CONFIG_CACHE_MAX_ENTRIES && totalSize <= B2_CONFIG_CACHE_MAX_BYTES) {
       return;
     }
 
     const entriesByAge = [...this.cache.entries()].sort(
       ([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt,
     );
-    for (const [key] of entriesByAge.slice(0, this.cache.size - B2_CONFIG_CACHE_MAX_ENTRIES)) {
+    let remainingSize = totalSize;
+    for (const [key, entry] of entriesByAge) {
+      if (
+        this.cache.size <= B2_CONFIG_CACHE_MAX_ENTRIES &&
+        remainingSize <= B2_CONFIG_CACHE_MAX_BYTES
+      ) {
+        break;
+      }
+      if (this.cache.size <= 1) {
+        break;
+      }
       this.cache.delete(key);
+      remainingSize -= entry.size;
     }
   }
 
