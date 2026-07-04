@@ -582,7 +582,7 @@
     "ttf2woff": "^3.0.0",
     "typedoc": "^0.28.19",
     "typescript": "^6.0.3",
-    "webpack": "^5.99.5",
+    "webpack": "^5.108.1",
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
