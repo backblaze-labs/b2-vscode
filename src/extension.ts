@@ -8,7 +8,7 @@
  */
 
 import * as vscode from "vscode";
-import { Capability, type B2Client } from "@backblaze-labs/b2-sdk";
+import type { B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
 import {
   cleanupStaleUnfinishedUploads,
@@ -250,13 +250,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       setAuthenticatedClient(client);
       treeProvider.setClient(client);
 
-      await authService.setAuthState({
-        isAuthenticated: true,
-        accountId: client.accountInfo.getAccountId(),
-        apiUrl: client.accountInfo.getApiUrl(),
-        downloadUrl: client.accountInfo.getDownloadUrl(),
-        canListFiles: client.hasCapabilities([Capability.ListFiles]).ok,
-      });
+      await authService.setAuthState(authService.createAuthenticatedState(client));
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
     } else {

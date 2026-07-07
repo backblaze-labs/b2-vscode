@@ -163,6 +163,29 @@ async function createB2CliCredentialDatabase(
 }
 
 suite("AuthService credential resolution and SQL.js loading", () => {
+  test("builds authenticated state from client metadata and capabilities", () => {
+    const service = new AuthService(createNoopSecretStorage());
+    const client = {
+      accountInfo: {
+        getAccountId: () => "account-id",
+        getApiUrl: () => "https://api.example.com",
+        getDownloadUrl: () => "https://download.example.com",
+      },
+      hasCapabilities(needed: readonly string[]) {
+        assert.deepStrictEqual(needed, ["listFiles"]);
+        return { ok: false, missing: ["listFiles"] };
+      },
+    } as unknown as Parameters<AuthService["createAuthenticatedState"]>[0];
+
+    assert.deepStrictEqual(service.createAuthenticatedState(client), {
+      isAuthenticated: true,
+      accountId: "account-id",
+      apiUrl: "https://api.example.com",
+      downloadUrl: "https://download.example.com",
+      canListFiles: false,
+    });
+  });
+
   test("reads CLI credentials from a packaged SQL.js WASM layout", async () => {
     const dir = tempDir();
     const packagedRuntimeDir = path.join(dir, "dist");

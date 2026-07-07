@@ -221,6 +221,16 @@ suite("B2 commands error handling", () => {
         async storeCredentials(keyId: string, appKey: string) {
           storedCredentials.push({ keyId, appKey });
         },
+        createAuthenticatedState(client: B2Client) {
+          assert.strictEqual(client, fakeClient);
+          return {
+            isAuthenticated: true,
+            accountId: "account-id",
+            apiUrl: "https://api.example.com",
+            downloadUrl: "https://download.example.com",
+            canListFiles: true,
+          };
+        },
         async setAuthState(state: unknown) {
           authStates.push(state);
         },

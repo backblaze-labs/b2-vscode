@@ -14,6 +14,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { Capability, type B2Client } from "@backblaze-labs/b2-sdk";
 import {
   ENV_KEY_ID,
   ENV_APP_KEY,
@@ -106,6 +107,17 @@ export class AuthService implements vscode.Disposable {
       state.canListFiles === true,
     );
     this._onAuthStateChanged.fire(state);
+  }
+
+  /** Build authenticated UI state and capability context from an authorized client. */
+  createAuthenticatedState(client: Pick<B2Client, "accountInfo" | "hasCapabilities">): B2AuthState {
+    return {
+      isAuthenticated: true,
+      accountId: client.accountInfo.getAccountId(),
+      apiUrl: client.accountInfo.getApiUrl(),
+      downloadUrl: client.accountInfo.getDownloadUrl(),
+      canListFiles: client.hasCapabilities([Capability.ListFiles]).ok,
+    };
   }
 
   // ── Credential Resolution ─────────────────────────────────────────────
