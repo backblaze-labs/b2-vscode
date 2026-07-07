@@ -108,12 +108,7 @@ suite("B2 Extension Test Suite", () => {
 
     assert.deepStrictEqual(
       submenus.map((submenu) => ({ id: submenu.id, label: submenu.label })),
-      [
-        { id: "b2.file.copy", label: "Copy" },
-        { id: "b2.file.objectLock", label: "Object Lock" },
-        { id: "b2.bucket.settings", label: "Bucket Settings" },
-        { id: "b2.bucket.copy", label: "Copy" },
-      ],
+      [{ id: "b2.file.copy", label: "Copy" }],
     );
   });
 

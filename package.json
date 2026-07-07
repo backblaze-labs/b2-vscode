@@ -189,18 +189,6 @@
       {
         "id": "b2.file.copy",
         "label": "Copy"
-      },
-      {
-        "id": "b2.file.objectLock",
-        "label": "Object Lock"
-      },
-      {
-        "id": "b2.bucket.settings",
-        "label": "Bucket Settings"
-      },
-      {
-        "id": "b2.bucket.copy",
-        "label": "Copy"
       }
     ],
     "menus": {
