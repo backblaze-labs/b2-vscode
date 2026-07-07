@@ -84,13 +84,17 @@ suite("B2 Extension Test Suite", () => {
     ] as MenuContribution[];
     const copyPathMenus = viewItemMenus.filter((entry) => entry.command === "b2.copyPath");
 
-    assert.strictEqual(copyPathMenus.length, 2);
+    assert.strictEqual(copyPathMenus.length, 3);
     assert.deepStrictEqual(
       copyPathMenus.map((entry) => ({ group: entry.group, when: entry.when })),
       [
         {
           group: "inline@1",
-          when: "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
+          when: "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+        },
+        {
+          group: "inline@1",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
         },
         {
           group: "1_copy@1",
@@ -123,6 +127,12 @@ suite("B2 Extension Test Suite", () => {
     const fileCopyMenus = extension.packageJSON.contributes.menus[
       "b2.file.copy"
     ] as MenuContribution[];
+    const inlineFileCopyMenus = viewItemMenus.filter(
+      (entry) =>
+        entry.group?.startsWith("inline") &&
+        (entry.command === "b2.copyPath" || entry.command === "b2.copyFileId") &&
+        entry.when?.includes("viewItem == file"),
+    );
 
     assert.strictEqual(fileCopyAnchors.length, 1);
     assert.deepStrictEqual(
@@ -144,6 +154,19 @@ suite("B2 Extension Test Suite", () => {
       [
         { command: "b2.copyPath", group: "1_copy@1", when: undefined },
         { command: "b2.copyFileId", group: "1_copy@2", when: undefined },
+      ],
+    );
+    assert.deepStrictEqual(
+      inlineFileCopyMenus.map((entry) => ({ command: entry.command, when: entry.when })),
+      [
+        {
+          command: "b2.copyPath",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+        },
+        {
+          command: "b2.copyFileId",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+        },
       ],
     );
   });

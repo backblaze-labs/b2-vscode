@@ -259,12 +259,17 @@
       "view/item/context": [
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "b2.copyPath",
+          "when": "view == b2Buckets && viewItem == file && b2.canListFiles",
           "group": "inline@1"
         },
         {
           "command": "b2.copyFileId",
-          "when": "view == b2Buckets && viewItem == file",
+          "when": "view == b2Buckets && viewItem == file && b2.canListFiles",
           "group": "inline@2"
         },
         {
