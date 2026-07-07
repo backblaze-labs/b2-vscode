@@ -8,7 +8,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client } from "@backblaze-labs/b2-sdk";
+import { Capability, type B2Client } from "@backblaze-labs/b2-sdk";
 import { createConfiguredB2Client } from "./services/b2";
 import {
   cleanupStaleUnfinishedUploads,
@@ -255,6 +255,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         accountId: client.accountInfo.getAccountId(),
         apiUrl: client.accountInfo.getApiUrl(),
         downloadUrl: client.accountInfo.getDownloadUrl(),
+        canListFiles: client.hasCapabilities([Capability.ListFiles]).ok,
       });
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);

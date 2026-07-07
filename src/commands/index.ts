@@ -10,7 +10,7 @@
  */
 
 import * as vscode from "vscode";
-import type { B2Client, Bucket, BucketType } from "@backblaze-labs/b2-sdk";
+import { Capability, type B2Client, type Bucket, type BucketType } from "@backblaze-labs/b2-sdk";
 import type { AuthService, B2Credentials } from "../services/authService";
 import type { B2TreeProvider } from "../providers/b2TreeProvider";
 import type { TempFileManager } from "../services/tempFileManager";
@@ -357,6 +357,7 @@ export async function authenticateCommand(services: CommandServices): Promise<vo
       accountId: client.accountInfo.getAccountId(),
       apiUrl: client.accountInfo.getApiUrl(),
       downloadUrl: client.accountInfo.getDownloadUrl(),
+      canListFiles: client.hasCapabilities([Capability.ListFiles]).ok,
     });
 
     vscode.window.showInformationMessage(

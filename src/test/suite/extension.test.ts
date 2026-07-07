@@ -132,7 +132,7 @@ suite("B2 Extension Test Suite", () => {
       },
       {
         group: "1_copy@1",
-        when: "view == b2Buckets && viewItem == file",
+        when: "view == b2Buckets && viewItem == file && b2.canListFiles",
       },
     );
     assert.deepStrictEqual(
