@@ -185,6 +185,24 @@
         "icon": "$(edit)"
       }
     ],
+    "submenus": [
+      {
+        "id": "b2.file.copy",
+        "label": "Copy"
+      },
+      {
+        "id": "b2.file.objectLock",
+        "label": "Object Lock"
+      },
+      {
+        "id": "b2.bucket.settings",
+        "label": "Bucket Settings"
+      },
+      {
+        "id": "b2.bucket.copy",
+        "label": "Copy"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {
@@ -312,13 +330,23 @@
           "group": "navigation@2"
         },
         {
+          "submenu": "b2.file.copy",
+          "when": "view == b2Buckets && viewItem == file",
+          "group": "1_copy@1"
+        },
+        {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+          "group": "1_copy@1"
+        }
+      ],
+      "b2.file.copy": [
+        {
+          "command": "b2.copyPath",
           "group": "1_copy@1"
         },
         {
           "command": "b2.copyFileId",
-          "when": "view == b2Buckets && viewItem == file",
           "group": "1_copy@2"
         }
       ]
