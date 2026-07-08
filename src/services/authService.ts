@@ -41,7 +41,7 @@ export interface B2Credentials {
 }
 
 export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
-  /** Override environment lookup for tests. Defaults to process.env. */
+  /** Override environment lookup for tests. Defaults to process.env in Node hosts. */
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
@@ -123,7 +123,7 @@ export class AuthService implements vscode.Disposable {
     }
 
     // 2. Environment variables
-    const environment = this.options.environment ?? process.env;
+    const environment = this.getEnvironment();
     const envKeyId = environment[ENV_KEY_ID];
     const envAppKey = environment[ENV_APP_KEY];
     if (envKeyId && envAppKey) {
@@ -222,6 +222,14 @@ export class AuthService implements vscode.Disposable {
     return typeof process !== "undefined" && Boolean(process.versions?.node);
   }
 
+  private getEnvironment(): Record<string, string | undefined> {
+    if (this.options.environment) {
+      return this.options.environment;
+    }
+
+    return this.isNodeExtensionHost() ? process.env : {};
+  }
+
   private formatCredentialErrorForLog(error: unknown): string {
     if (error instanceof SqlWasmInitializationError) {
       const originalCode = getErrorCode(error.originalError);
@@ -280,7 +288,7 @@ export class AuthService implements vscode.Disposable {
       return legacyPath;
     }
 
-    const environment = this.options.environment ?? process.env;
+    const environment = this.getEnvironment();
     const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
     const xdgPathExists = fs.existsSync(xdgPath);

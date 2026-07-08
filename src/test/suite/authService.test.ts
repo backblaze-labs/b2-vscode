@@ -55,6 +55,26 @@ function loadBundledCredentialSmoke(): BundledCredentialSmokeExports {
   return require(DIST_BUNDLED_CREDENTIAL_SMOKE_PATH) as BundledCredentialSmokeExports;
 }
 
+async function withUndefinedProcess<T>(action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "process");
+  const mutableGlobal = globalThis as Record<string, unknown>;
+
+  Object.defineProperty(globalThis, "process", {
+    configurable: true,
+    value: undefined,
+  });
+
+  try {
+    return await action();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "process", descriptor);
+    } else {
+      delete mutableGlobal.process;
+    }
+  }
+}
+
 async function withBundledCredentialSmokeEnv<T>(
   value: string | undefined,
   action: () => Promise<T>,
@@ -268,6 +288,31 @@ suite("AuthService credential resolution and SQL.js loading", () => {
       assert.strictEqual(credentials, null);
       assert.match(warning, /VS Code for the Web/i);
       assert.match(warning, /B2_APPLICATION_KEY_ID/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not read process.env when the extension host has no process", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      await createB2CliCredentialDatabase(dbPath, SQL_WASM_FIXTURE_PATH, "cli-key-id", "cli-key");
+      const credentials = await withUndefinedProcess(async () => {
+        const service = new AuthService(createNoopSecretStorage(), {
+          b2CliDatabasePaths: [dbPath],
+          sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+          sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+        });
+
+        const result = await service.resolveCredentials();
+        assert.strictEqual(result, null);
+        assert.match(service.getCredentialResolutionWarning() ?? "", /VS Code for the Web/i);
+        return result;
+      });
+
+      assert.strictEqual(credentials, null);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
