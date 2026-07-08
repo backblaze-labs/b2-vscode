@@ -20,9 +20,11 @@ The extension resolves credentials in this order:
 
 1. **VS Code SecretStorage** — persisted and encrypted (set via the Authenticate command)
 2. **Environment variables** — `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY`
-3. **B2 CLI database** — `~/.b2_account_info` (created by the `b2` CLI tool)
+3. **B2 CLI database** — `~/.b2_account_info` (created by the `b2` CLI tool, where supported)
 
 If you have the B2 CLI installed and have run `b2 account authorize`, the extension will automatically authenticate on startup.
+
+B2 CLI database auto-detection runs only when the extension has a Node host with normal filesystem access. In virtual workspaces or VS Code for the Web, this credential tier is skipped with a status-bar message; use **B2: Authenticate** or set `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY` instead.
 
 ### Manual Authentication
 
@@ -41,6 +43,18 @@ Custom values must be HTTPS URLs without embedded credentials, query strings, or
 Creating a public bucket or changing a private bucket to public requires a modal confirmation and typed bucket-name confirmation. Public B2 buckets can make current and future files accessible without authorization, so use public visibility only when object-level public access is intentional.
 
 If a public bucket create or visibility-change request fails in a way that leaves the final B2 state uncertain, the extension refreshes the bucket tree and shows a modal warning that the bucket may already be public.
+
+## Supported VS Code Hosts
+
+The extension is a Node/workspace extension and does not ship a browser entry point.
+
+| Host                                              | Support     | Notes                                                                                                                                                                                                                     |
+| ------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop VS Code with local files                  | Supported   | SecretStorage, environment variables, and local B2 CLI database auto-detection are available.                                                                                                                             |
+| Remote SSH, Dev Containers, and Codespaces        | Supported   | The extension runs on the workspace host. Environment variables and `~/.b2_account_info` are read from that remote host or container, not from the local desktop.                                                         |
+| Virtual workspaces such as GitHub Repositories    | Limited     | Browsing B2 and authenticating with SecretStorage or environment variables are supported. B2 CLI SQLite credential auto-detection is skipped, and workspace file upload/download actions require a file-backed workspace. |
+| VS Code for the Web (`vscode.dev` / `github.dev`) | Unsupported | No `browser` entry point is published; use desktop VS Code or a remote workspace host.                                                                                                                                    |
+| Untrusted workspaces                              | Disabled    | The extension can read and write workspace files and upload data to B2, so VS Code keeps it disabled until the workspace is trusted.                                                                                      |
 
 ## Commands
 

@@ -9,6 +9,19 @@
     "Cloud",
     "Other"
   ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Backblaze B2 browsing and authentication through SecretStorage or environment variables work in virtual workspaces, but B2 CLI credential auto-detection and local workspace file operations require a file-backed Node extension host."
+    },
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Backblaze B2 can read and write workspace files and upload data to B2, so the extension is disabled until the workspace is trusted."
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/backblaze-labs/b2-vscode.git"

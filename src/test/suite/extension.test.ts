@@ -68,6 +68,15 @@ suite("B2 Extension Test Suite", () => {
     }
   });
 
+  test("Extension declares workspace host capabilities", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    assert.deepStrictEqual(extension.packageJSON.extensionKind, ["workspace"]);
+    assert.strictEqual(extension.packageJSON.capabilities.virtualWorkspaces.supported, "limited");
+    assert.strictEqual(extension.packageJSON.capabilities.untrustedWorkspaces.supported, false);
+  });
+
   test("Copy path menus are scoped to pathable tree items", async () => {
     const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
     assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");

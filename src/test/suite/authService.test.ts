@@ -15,6 +15,7 @@ import {
   BUNDLED_CREDENTIAL_SMOKE_ENV,
   type BundledCredentialSmokeResolver,
 } from "../../testSupport/bundledCredentialSmoke";
+import { ENV_APP_KEY, ENV_KEY_ID } from "../../constants";
 import {
   resolveSqlJsRuntimeSourcePath,
   resolveSqlWasmSourcePath,
@@ -163,6 +164,74 @@ async function createB2CliCredentialDatabase(
 }
 
 suite("AuthService credential resolution and SQL.js loading", () => {
+  test("uses environment credentials when CLI lookup is unsupported", async () => {
+    const service = new AuthService(createNoopSecretStorage(), {
+      environment: {
+        [ENV_KEY_ID]: "env-key-id",
+        [ENV_APP_KEY]: "env-application-key",
+      },
+      isVirtualWorkspace: true,
+    });
+
+    const credentials = await service.resolveCredentials();
+
+    assert.deepStrictEqual(credentials, {
+      keyId: "env-key-id",
+      appKey: "env-application-key",
+    });
+    assert.strictEqual(service.getCredentialResolutionWarning(), undefined);
+  });
+
+  test("skips B2 CLI credential lookup in virtual workspaces", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      await createB2CliCredentialDatabase(dbPath, SQL_WASM_FIXTURE_PATH, "cli-key-id", "cli-key");
+      const service = new AuthService(createNoopSecretStorage(), {
+        environment: {},
+        b2CliDatabasePaths: [dbPath],
+        sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+        sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+        isVirtualWorkspace: true,
+      });
+
+      const credentials = await service.resolveCredentials();
+      const warning = service.getCredentialResolutionWarning() ?? "";
+
+      assert.strictEqual(credentials, null);
+      assert.match(warning, /virtual workspaces/i);
+      assert.match(warning, /B2: Authenticate/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips B2 CLI credential lookup in web extension hosts", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      await createB2CliCredentialDatabase(dbPath, SQL_WASM_FIXTURE_PATH, "cli-key-id", "cli-key");
+      const service = new AuthService(createNoopSecretStorage(), {
+        environment: {},
+        b2CliDatabasePaths: [dbPath],
+        sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+        sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+        isWebExtensionHost: true,
+      });
+
+      const credentials = await service.resolveCredentials();
+      const warning = service.getCredentialResolutionWarning() ?? "";
+
+      assert.strictEqual(credentials, null);
+      assert.match(warning, /VS Code for the Web/i);
+      assert.match(warning, /B2_APPLICATION_KEY_ID/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("reads CLI credentials from a packaged SQL.js WASM layout", async () => {
     const dir = tempDir();
     const packagedRuntimeDir = path.join(dir, "dist");

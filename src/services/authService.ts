@@ -45,6 +45,10 @@ export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
+  /** Override web extension host detection for tests. Defaults to Node runtime detection. */
+  isWebExtensionHost?: boolean;
+  /** Override virtual workspace detection for tests. Defaults to workspace folder schemes. */
+  isVirtualWorkspace?: boolean;
 }
 
 /**
@@ -166,6 +170,13 @@ export class AuthService implements vscode.Disposable {
    */
   private async resolveB2CliCredentials(): Promise<B2Credentials | null> {
     log("CLI-AUTH: Starting B2 CLI credential resolution...");
+    const unsupportedMessage = this.getB2CliCredentialLookupUnsupportedMessage();
+    if (unsupportedMessage) {
+      log(`CLI-AUTH: ${unsupportedMessage}`);
+      this.credentialResolutionWarning = unsupportedMessage;
+      return null;
+    }
+
     const dbPath = this.findB2CliDatabase();
     if (!dbPath) {
       log("CLI-AUTH: No B2 CLI database file found.");
@@ -192,6 +203,29 @@ export class AuthService implements vscode.Disposable {
     }
 
     return "B2 CLI credentials could not be read. Check file permissions, review the Backblaze B2 output log for details, or run B2: Authenticate to store credentials in VS Code.";
+  }
+
+  private getB2CliCredentialLookupUnsupportedMessage(): string | undefined {
+    const isWebExtensionHost = this.options.isWebExtensionHost ?? !this.isNodeExtensionHost();
+    if (isWebExtensionHost) {
+      return "B2 CLI credential auto-detection is unavailable in VS Code for the Web. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
+    }
+
+    const isVirtualWorkspace = this.options.isVirtualWorkspace ?? this.isCurrentWorkspaceVirtual();
+    if (isVirtualWorkspace) {
+      return "B2 CLI credential auto-detection is unavailable in virtual workspaces because the B2 CLI SQLite database requires local filesystem access. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
+    }
+
+    return undefined;
+  }
+
+  private isNodeExtensionHost(): boolean {
+    return typeof process !== "undefined" && Boolean(process.versions?.node);
+  }
+
+  private isCurrentWorkspaceVirtual(): boolean {
+    const folders = vscode.workspace.workspaceFolders;
+    return Boolean(folders?.length && folders.every((folder) => folder.uri.scheme !== "file"));
   }
 
   private formatCredentialErrorForLog(error: unknown): string {
