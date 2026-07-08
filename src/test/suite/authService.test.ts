@@ -12,6 +12,7 @@ import * as vscode from "vscode";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
 import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
+import { withWorkspaceFolderUri } from "../../testSupport/workspace";
 import {
   BUNDLED_CREDENTIAL_SMOKE_ENV,
   type BundledCredentialSmokeResolver,
@@ -42,31 +43,6 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
-}
-
-async function withWorkspaceFolderUri<T>(uri: vscode.Uri, action: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
-  const mutableWorkspace = vscode.workspace as unknown as { workspaceFolders?: unknown };
-  Object.defineProperty(vscode.workspace, "workspaceFolders", {
-    configurable: true,
-    value: [
-      {
-        uri,
-        name: "workspace",
-        index: 0,
-      },
-    ],
-  });
-
-  try {
-    return await action();
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(vscode.workspace, "workspaceFolders", descriptor);
-    } else {
-      delete mutableWorkspace.workspaceFolders;
-    }
-  }
 }
 
 function loadBundledExtension(): BundledExtensionSmokeExports {
