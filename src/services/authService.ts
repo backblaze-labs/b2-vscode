@@ -40,15 +40,22 @@ export interface B2Credentials {
   appKey: string;
 }
 
-export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
+type AuthServiceHostCapabilities =
+  | {
+      readonly extensionHost: "node";
+      readonly workspace: "file-backed" | "virtual";
+    }
+  | {
+      readonly extensionHost: "web";
+    };
+
+interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
   /** Override environment lookup for tests. Defaults to process.env in Node hosts. */
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
-  /** Override web extension host detection for tests. Defaults to Node runtime detection. */
-  isWebExtensionHost?: boolean;
-  /** Override virtual workspace handling for tests. Defaults to false because the manifest disables virtual workspaces. */
-  isVirtualWorkspace?: boolean;
+  /** Override detected host capabilities for tests and smoke harnesses. */
+  hostCapabilities?: AuthServiceHostCapabilities;
 }
 
 /**
@@ -206,12 +213,12 @@ export class AuthService implements vscode.Disposable {
   }
 
   private getB2CliCredentialLookupUnsupportedMessage(): string | undefined {
-    const isWebExtensionHost = this.options.isWebExtensionHost ?? !this.isNodeExtensionHost();
-    if (isWebExtensionHost) {
+    const hostCapabilities = this.getHostCapabilities();
+    if (hostCapabilities.extensionHost === "web") {
       return "B2 CLI credential auto-detection is unavailable in VS Code for the Web. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
     }
 
-    if (this.options.isVirtualWorkspace === true) {
+    if (hostCapabilities.workspace === "virtual") {
       return "B2 CLI credential auto-detection is unavailable in virtual workspaces because the B2 CLI SQLite database requires local filesystem access. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
     }
 
@@ -227,7 +234,22 @@ export class AuthService implements vscode.Disposable {
       return this.options.environment;
     }
 
-    return this.isNodeExtensionHost() ? process.env : {};
+    const hostCapabilities = this.getHostCapabilities();
+    return hostCapabilities.extensionHost === "node" && this.isNodeExtensionHost()
+      ? process.env
+      : {};
+  }
+
+  private getHostCapabilities(): AuthServiceHostCapabilities {
+    return this.options.hostCapabilities ?? this.detectHostCapabilities();
+  }
+
+  private detectHostCapabilities(): AuthServiceHostCapabilities {
+    if (!this.isNodeExtensionHost()) {
+      return { extensionHost: "web" };
+    }
+
+    return { extensionHost: "node", workspace: "file-backed" };
   }
 
   private formatCredentialErrorForLog(error: unknown): string {

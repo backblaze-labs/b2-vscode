@@ -45,6 +45,14 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
 }
 
+function nodeHostCapabilities(workspace: "file-backed" | "virtual") {
+  return { extensionHost: "node", workspace } as const;
+}
+
+function webHostCapabilities() {
+  return { extensionHost: "web" } as const;
+}
+
 function loadBundledExtension(): BundledExtensionSmokeExports {
   delete require.cache[require.resolve(DIST_EXTENSION_PATH)];
   return require(DIST_EXTENSION_PATH) as BundledExtensionSmokeExports;
@@ -192,7 +200,7 @@ suite("AuthService credential resolution and SQL.js loading", () => {
         [ENV_KEY_ID]: "env-key-id",
         [ENV_APP_KEY]: "env-application-key",
       },
-      isVirtualWorkspace: true,
+      hostCapabilities: nodeHostCapabilities("virtual"),
     });
 
     const credentials = await service.resolveCredentials();
@@ -215,7 +223,7 @@ suite("AuthService credential resolution and SQL.js loading", () => {
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
         sqlWasmPath: SQL_WASM_FIXTURE_PATH,
-        isVirtualWorkspace: true,
+        hostCapabilities: nodeHostCapabilities("virtual"),
       });
 
       const credentials = await service.resolveCredentials();
@@ -279,7 +287,7 @@ suite("AuthService credential resolution and SQL.js loading", () => {
         b2CliDatabasePaths: [dbPath],
         sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
         sqlWasmPath: SQL_WASM_FIXTURE_PATH,
-        isWebExtensionHost: true,
+        hostCapabilities: webHostCapabilities(),
       });
 
       const credentials = await service.resolveCredentials();
