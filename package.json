@@ -586,7 +586,7 @@
     "webpack-cli": "^7.0.3"
   },
   "dependencies": {
-    "@backblaze-labs/b2-sdk": "^0.1.0",
+    "@backblaze-labs/b2-sdk": "^0.2.0",
     "sql.js": "1.14.1"
   },
   "overrides": {

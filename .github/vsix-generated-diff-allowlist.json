@@ -1,4 +1,33 @@
 {
   "version": 1,
-  "reviewedDiffs": []
+  "reviewedDiffs": [
+    {
+      "reason": "Reviewed generated bundle change from @backblaze-labs/b2-sdk 0.1.0 to 0.2.0.",
+      "diffSha256": "26487d7992427eee2958c569f3b565b63e66593b1b9b6293c49a2af4e1efc8ab",
+      "generatedEntries": [
+        {
+          "path": "extension/dist/extension.js",
+          "base": {
+            "bytes": 152260,
+            "sha256": "f715357add4fed9def3b75e57ba8629f7ce548a988720df7e5f25edc521c2b39"
+          },
+          "head": {
+            "bytes": 191527,
+            "sha256": "bdf0ffec4fca5501dd024abdd437d0d9178aea9b5d48853946272c92ea0fde61"
+          }
+        },
+        {
+          "path": "extension/dist/extension.js.map",
+          "base": {
+            "bytes": 671074,
+            "sha256": "d9a7ea492edc9e430c8885695af53dde562f72ef1dd6d16980c90029ec640341"
+          },
+          "head": {
+            "bytes": 876985,
+            "sha256": "fd023f474bc1f933a71106f19fc338dc790c7fb827af3eb0628dcf94760aa540"
+          }
+        }
+      ]
+    }
+  ]
 }
