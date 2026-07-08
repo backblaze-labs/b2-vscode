@@ -8,6 +8,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as vscode from "vscode";
 import initSqlJs from "sql.js";
 import { AuthService } from "../../services/authService";
 import { createNoopSecretStorage } from "../../testSupport/noopSecretStorage";
@@ -41,6 +42,31 @@ const DIST_BUNDLED_CREDENTIAL_SMOKE_PATH = path.join(
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-auth-"));
+}
+
+async function withWorkspaceFolderUri<T>(uri: vscode.Uri, action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "workspaceFolders");
+  const mutableWorkspace = vscode.workspace as unknown as { workspaceFolders?: unknown };
+  Object.defineProperty(vscode.workspace, "workspaceFolders", {
+    configurable: true,
+    value: [
+      {
+        uri,
+        name: "workspace",
+        index: 0,
+      },
+    ],
+  });
+
+  try {
+    return await action();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(vscode.workspace, "workspaceFolders", descriptor);
+    } else {
+      delete mutableWorkspace.workspaceFolders;
+    }
+  }
 }
 
 function loadBundledExtension(): BundledExtensionSmokeExports {
@@ -202,6 +228,45 @@ suite("AuthService credential resolution and SQL.js loading", () => {
       assert.strictEqual(credentials, null);
       assert.match(warning, /virtual workspaces/i);
       assert.match(warning, /B2: Authenticate/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("allows CLI credential lookup from remote workspace schemes", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "account_info");
+
+    try {
+      await createB2CliCredentialDatabase(
+        dbPath,
+        SQL_WASM_FIXTURE_PATH,
+        "remote-key-id",
+        "remote-key",
+      );
+
+      const credentials = await withWorkspaceFolderUri(
+        vscode.Uri.from({
+          scheme: "vscode-remote",
+          authority: "ssh-remote+fixture",
+          path: "/workspace",
+        }),
+        async () => {
+          const service = new AuthService(createNoopSecretStorage(), {
+            environment: {},
+            b2CliDatabasePaths: [dbPath],
+            sqlJsRuntimePath: SQL_JS_RUNTIME_FIXTURE_PATH,
+            sqlWasmPath: SQL_WASM_FIXTURE_PATH,
+          });
+
+          return await service.resolveCredentials();
+        },
+      );
+
+      assert.deepStrictEqual(credentials, {
+        keyId: "remote-key-id",
+        appKey: "remote-key",
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

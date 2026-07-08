@@ -47,7 +47,7 @@ export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
   b2CliDatabasePaths?: readonly string[];
   /** Override web extension host detection for tests. Defaults to Node runtime detection. */
   isWebExtensionHost?: boolean;
-  /** Override virtual workspace detection for tests. Defaults to workspace folder schemes. */
+  /** Override virtual workspace handling for tests. Defaults to false because the manifest disables virtual workspaces. */
   isVirtualWorkspace?: boolean;
 }
 
@@ -211,8 +211,7 @@ export class AuthService implements vscode.Disposable {
       return "B2 CLI credential auto-detection is unavailable in VS Code for the Web. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
     }
 
-    const isVirtualWorkspace = this.options.isVirtualWorkspace ?? this.isCurrentWorkspaceVirtual();
-    if (isVirtualWorkspace) {
+    if (this.options.isVirtualWorkspace === true) {
       return "B2 CLI credential auto-detection is unavailable in virtual workspaces because the B2 CLI SQLite database requires local filesystem access. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
     }
 
@@ -221,11 +220,6 @@ export class AuthService implements vscode.Disposable {
 
   private isNodeExtensionHost(): boolean {
     return typeof process !== "undefined" && Boolean(process.versions?.node);
-  }
-
-  private isCurrentWorkspaceVirtual(): boolean {
-    const folders = vscode.workspace.workspaceFolders;
-    return Boolean(folders?.length && folders.every((folder) => folder.uri.scheme !== "file"));
   }
 
   private formatCredentialErrorForLog(error: unknown): string {
