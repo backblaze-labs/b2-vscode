@@ -14,8 +14,8 @@
   ],
   "capabilities": {
     "virtualWorkspaces": {
-      "supported": "limited",
-      "description": "Backblaze B2 browsing and authentication through SecretStorage or environment variables work in virtual workspaces, but B2 CLI credential auto-detection and local workspace file operations require a file-backed Node extension host."
+      "supported": false,
+      "description": "Backblaze B2 requires a file-backed workspace because upload, download, open-file, and cleanup operations use local workspace filesystem paths."
     },
     "untrustedWorkspaces": {
       "supported": false,

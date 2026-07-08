@@ -73,7 +73,7 @@ suite("B2 Extension Test Suite", () => {
     assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
 
     assert.deepStrictEqual(extension.packageJSON.extensionKind, ["workspace"]);
-    assert.strictEqual(extension.packageJSON.capabilities.virtualWorkspaces.supported, "limited");
+    assert.strictEqual(extension.packageJSON.capabilities.virtualWorkspaces.supported, false);
     assert.strictEqual(extension.packageJSON.capabilities.untrustedWorkspaces.supported, false);
   });
 
