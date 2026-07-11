@@ -580,7 +580,7 @@
     "svgicons2svgfont": "^15.0.1",
     "ts-loader": "^9.6.2",
     "ttf2woff": "^3.0.0",
-    "typedoc": "^0.28.19",
+    "typedoc": "^0.28.20",
     "typescript": "^6.0.3",
     "webpack": "^5.108.1",
     "webpack-cli": "^7.0.3"
