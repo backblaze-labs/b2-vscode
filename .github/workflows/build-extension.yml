@@ -51,6 +51,7 @@ permissions: {}
 jobs:
   build:
     name: Build & Package VSIX
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # needed to check out and build the extension
@@ -175,6 +176,7 @@ jobs:
   test-installation:
     name: Verify Packaged VSIX
     needs: build
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -214,7 +216,7 @@ jobs:
   post-pr-comment:
     name: PR Comment
     needs: build
-    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+    if: ${{ github.actor != 'dependabot[bot]' && github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write # posts the VSIX artifact link on same-repo PRs

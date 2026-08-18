@@ -42,6 +42,7 @@ permissions:
 jobs:
   quality:
     name: Format, Lint & Type Check
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
 
     steps:
