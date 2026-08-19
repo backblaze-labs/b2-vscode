@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "vscode://schemas/b2-config/cors",
+  "title": "Backblaze B2 CORS Rules",
+  "description": "CORS rules for browser access to a Backblaze B2 bucket.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "corsRuleName": {
+        "type": "string",
+        "description": "Unique name for this CORS rule."
+      },
+      "allowedOrigins": {
+        "type": "array",
+        "description": "Origins allowed to make cross-origin requests.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "allowedOperations": {
+        "type": "array",
+        "description": "B2 or S3 operations permitted by this CORS rule.",
+        "items": {
+          "type": "string",
+          "enum": [
+            "b2_download_file_by_id",
+            "b2_download_file_by_name",
+            "b2_upload_file",
+            "b2_upload_part",
+            "s3_delete",
+            "s3_get",
+            "s3_head",
+            "s3_post",
+            "s3_put"
+          ]
+        },
+        "uniqueItems": true
+      },
+      "allowedHeaders": {
+        "description": "Request headers allowed in preflight requests, or null if none are allowed.",
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "exposeHeaders": {
+        "description": "Response headers exposed to browsers, or null if none are exposed.",
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "maxAgeSeconds": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Maximum time browsers may cache the preflight response."
+      }
+    },
+    "required": [
+      "corsRuleName",
+      "allowedOrigins",
+      "allowedOperations",
+      "allowedHeaders",
+      "exposeHeaders",
+      "maxAgeSeconds"
+    ]
+  },
+  "default": []
+}

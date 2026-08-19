@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "vscode://schemas/b2-config/bucketInfo",
+  "title": "Backblaze B2 Bucket Info",
+  "description": "Custom key-value metadata stored on a Backblaze B2 bucket.",
+  "type": "object",
+  "additionalProperties": {
+    "type": "string"
+  },
+  "default": {}
+}

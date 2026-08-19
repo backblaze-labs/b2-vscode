@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "vscode://schemas/b2-config/notifications",
+  "title": "Backblaze B2 Event Notification Rules",
+  "description": "Event notification rules for a Backblaze B2 bucket. Masked secret values are preserved when left unchanged.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Unique name for this notification rule."
+      },
+      "eventTypes": {
+        "type": "array",
+        "description": "B2 event types that trigger this rule.",
+        "items": {
+          "type": "string",
+          "enum": [
+            "b2:ObjectCreated:*",
+            "b2:ObjectCreated:Upload",
+            "b2:ObjectCreated:MultipartUpload",
+            "b2:ObjectCreated:Copy",
+            "b2:ObjectCreated:Replica",
+            "b2:ObjectCreated:Hide",
+            "b2:ObjectDeleted:*",
+            "b2:ObjectDeleted:Delete",
+            "b2:ObjectDeleted:LifecycleRule"
+          ]
+        },
+        "uniqueItems": true
+      },
+      "isEnabled": {
+        "type": "boolean",
+        "description": "Whether this rule is actively sending notifications."
+      },
+      "isSuspended": {
+        "type": "boolean",
+        "description": "Whether B2 has suspended this rule due to delivery failures."
+      },
+      "objectNamePrefix": {
+        "type": "string",
+        "description": "Only events for objects with this prefix trigger the rule. Use an empty string to match every object."
+      },
+      "suspensionReason": {
+        "type": "string",
+        "description": "Reason for suspension, or an empty string if not suspended."
+      },
+      "targetConfiguration": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "targetType": {
+            "type": "string",
+            "description": "Webhook target type, usually url."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Webhook URL that receives event notifications."
+          },
+          "hmacSha256SigningSecret": {
+            "type": "string",
+            "description": "Optional HMAC-SHA256 signing secret. Leave __B2_CONFIG_MASKED_SECRET__ unchanged to preserve the existing secret."
+          },
+          "hmacSha256": {
+            "type": "string",
+            "description": "Optional HMAC-SHA256 signing secret. Leave __B2_CONFIG_MASKED_SECRET__ unchanged to preserve the existing secret."
+          },
+          "customHeaders": {
+            "type": "object",
+            "description": "Optional custom webhook request headers. Header values are masked on read.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["targetType", "url"]
+      }
+    },
+    "required": [
+      "name",
+      "eventTypes",
+      "isEnabled",
+      "isSuspended",
+      "objectNamePrefix",
+      "suspensionReason",
+      "targetConfiguration"
+    ]
+  },
+  "default": []
+}
