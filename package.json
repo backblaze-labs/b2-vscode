@@ -161,6 +161,12 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "b2.uploadFiles",
+        "title": "Upload Files...",
+        "category": "B2",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "b2.deleteBucket",
         "title": "Delete Bucket",
         "category": "B2",
@@ -212,6 +218,10 @@
           "when": "false"
         },
         {
+          "command": "b2.uploadFiles",
+          "when": "false"
+        },
+        {
           "command": "b2.deleteBucket",
           "when": "false"
         },
@@ -243,6 +253,11 @@
           "command": "b2.createBucket",
           "when": "view == b2Buckets && b2.authenticated",
           "group": "navigation@2"
+        },
+        {
+          "command": "b2.uploadFiles",
+          "when": "view == b2Buckets && b2.authenticated",
+          "group": "navigation@3"
         },
         {
           "command": "b2.logout",
@@ -282,9 +297,19 @@
           "group": "2_bucket@3"
         },
         {
+          "command": "b2.uploadFiles",
+          "when": "view == b2Buckets && viewItem == bucket",
+          "group": "2_bucket@4"
+        },
+        {
           "command": "b2.createFolder",
           "when": "view == b2Buckets && viewItem == folder",
           "group": "2_bucket@1"
+        },
+        {
+          "command": "b2.uploadFiles",
+          "when": "view == b2Buckets && viewItem == folder",
+          "group": "2_bucket@2"
         },
         {
           "command": "b2.createFolder",

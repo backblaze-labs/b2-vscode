@@ -52,6 +52,8 @@ import {
   type PublicBucketVisibilityAction,
 } from "./publicBucketVisibility";
 import { renameFileVersion } from "./renameFile";
+import { isUploadTargetTreeItem, type UploadTargetTreeItem } from "../models/uploadTarget";
+import { uploadFilesCommand } from "./uploadFiles";
 
 const BUCKET_MUTATION_TIMEOUT_MS = 2 * 60 * 1000;
 const BUCKET_MUTATION_POST_TIMEOUT_SETTLE_MS = 1_000;
@@ -257,6 +259,7 @@ export interface CommandServices extends CreateBucketCommandServices {
   context: vscode.ExtensionContext;
   getClient: () => B2Client | null;
   setClient: (client: B2Client | null) => void;
+  getSelectedUploadTarget?: () => UploadTargetTreeItem | undefined;
   createClient?: ConfiguredB2ClientFactory;
 }
 
@@ -655,6 +658,17 @@ export function registerCommands(services: CommandServices): void {
       "b2.createFolder",
       async (item?: BucketTreeItem | FolderTreeItem) =>
         createFolderCommand(item, { treeProvider, getClient }),
+    ),
+  );
+
+  // ── Upload Files ─────────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("b2.uploadFiles", async (item?: unknown) =>
+      uploadFilesCommand(isUploadTargetTreeItem(item) ? item : undefined, {
+        treeProvider,
+        getClient,
+        getSelectedUploadTarget: services.getSelectedUploadTarget,
+      }),
     ),
   );
 

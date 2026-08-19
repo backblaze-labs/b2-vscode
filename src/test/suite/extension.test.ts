@@ -15,6 +15,7 @@ import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits
 
 interface MenuContribution {
   command: string;
+  group: string;
   when?: string;
 }
 
@@ -57,6 +58,7 @@ suite("B2 Extension Test Suite", () => {
       "b2.createBucket",
       "b2.changeBucketVisibility",
       "b2.createFolder",
+      "b2.uploadFiles",
       "b2.deleteBucket",
       "b2.deleteFolder",
       "b2.deleteFile",
@@ -81,6 +83,23 @@ suite("B2 Extension Test Suite", () => {
     for (const entry of copyPathMenus) {
       assert.strictEqual(entry.when, "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/");
     }
+  });
+
+  test("upload command stays out of inline tree item actions", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const viewItemMenus = extension.packageJSON.contributes.menus[
+      "view/item/context"
+    ] as MenuContribution[];
+    const uploadMenus = viewItemMenus.filter((entry) => entry.command === "b2.uploadFiles");
+
+    assert.ok(uploadMenus.some((entry) => entry.when?.includes("viewItem == bucket") === true));
+    assert.ok(uploadMenus.some((entry) => entry.when?.includes("viewItem == folder") === true));
+    assert.strictEqual(
+      uploadMenus.some((entry) => entry.group.startsWith("inline")),
+      false,
+    );
   });
 
   test("listFiles package contribution declares an integer limit schema", () => {
