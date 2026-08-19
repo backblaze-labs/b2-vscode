@@ -113,6 +113,13 @@ export class B2ToolInputError extends Error {
   }
 }
 
+export class B2ShareLinkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "B2ShareLinkError";
+  }
+}
+
 /** Error used when extension-side lookup confirms a B2 resource is absent. */
 export class B2ResourceNotFoundError extends Error {
   constructor(message: string) {
@@ -449,6 +456,10 @@ export function formatB2UserMessage(error: unknown): string {
     error instanceof B2ResourceNotFoundError ||
     matchesErrorName(error, "B2ResourceNotFoundError")
   ) {
+    return redactSensitiveText(getErrorMessage(error));
+  }
+
+  if (error instanceof B2ShareLinkError || matchesErrorName(error, "B2ShareLinkError")) {
     return redactSensitiveText(getErrorMessage(error));
   }
 
