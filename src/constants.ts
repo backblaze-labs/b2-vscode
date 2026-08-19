@@ -19,6 +19,7 @@ export const SECRET_APP_KEY = "b2.applicationKey";
 // ── VS Code Context Keys ────────────────────────────────────────────────────
 
 export const CTX_AUTHENTICATED = "b2.authenticated";
+export const CTX_CAN_LIST_FILES = "b2.canListFiles";
 
 // ── View IDs ────────────────────────────────────────────────────────────────
 

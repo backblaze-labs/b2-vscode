@@ -352,12 +352,7 @@ export async function authenticateCommand(services: CommandServices): Promise<vo
     setClient(client);
     treeProvider.setClient(client);
 
-    await authService.setAuthState({
-      isAuthenticated: true,
-      accountId: client.accountInfo.getAccountId(),
-      apiUrl: client.accountInfo.getApiUrl(),
-      downloadUrl: client.accountInfo.getDownloadUrl(),
-    });
+    await authService.setAuthState(authService.createAuthenticatedState(client));
 
     vscode.window.showInformationMessage(
       `B2: Authenticated as ${client.accountInfo.getAccountId()}`,

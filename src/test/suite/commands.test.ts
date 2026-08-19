@@ -207,6 +207,7 @@ suite("B2 commands error handling", () => {
         getApiUrl: () => "https://api.example.com",
         getDownloadUrl: () => "https://download.example.com",
       },
+      hasCapabilities: () => ({ ok: true, missing: [] }),
     } as unknown as B2Client;
     const scheduledClients: B2Client[] = [];
     const treeClients: Array<B2Client | null> = [];
@@ -219,6 +220,16 @@ suite("B2 commands error handling", () => {
       authService: {
         async storeCredentials(keyId: string, appKey: string) {
           storedCredentials.push({ keyId, appKey });
+        },
+        createAuthenticatedState(client: B2Client) {
+          assert.strictEqual(client, fakeClient);
+          return {
+            isAuthenticated: true,
+            accountId: "account-id",
+            apiUrl: "https://api.example.com",
+            downloadUrl: "https://download.example.com",
+            canListFiles: true,
+          };
         },
         async setAuthState(state: unknown) {
           authStates.push(state);
@@ -255,6 +266,13 @@ suite("B2 commands error handling", () => {
       assert.deepStrictEqual(scheduledClients, [fakeClient]);
       assert.deepStrictEqual(treeClients, [fakeClient]);
       assert.strictEqual(authStates.length, 1);
+      assert.deepStrictEqual(authStates[0], {
+        isAuthenticated: true,
+        accountId: "account-id",
+        apiUrl: "https://api.example.com",
+        downloadUrl: "https://download.example.com",
+        canListFiles: true,
+      });
       assert.deepStrictEqual(ui.errors, []);
       assert.deepStrictEqual(ui.infos, ["B2: Authenticated as account-id"]);
     } finally {
