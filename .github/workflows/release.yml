@@ -405,7 +405,7 @@ jobs:
         run: echo "path=$(node scripts/resolve-vsix-artifact.js ./vsix-artifacts --verify-checksum)" >> "$GITHUB_OUTPUT"
 
       - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.vsix.outputs.path }}
 
