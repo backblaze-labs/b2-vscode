@@ -24,7 +24,7 @@ files ([`CLAUDE.md`](CLAUDE.md)) point here rather than duplicating it.
 Run the full local gate before proposing a change — it mirrors CI:
 
 ```bash
-npm run check   # prettier + eslint + tsc --noEmit + package-metadata + release-workflow
+npm run check   # format, lint, types, layers, docs, metadata, release gates
 ```
 
 Tests: `npm test` (VS Code integration) and `npm run test:unit`. Hooks install via
