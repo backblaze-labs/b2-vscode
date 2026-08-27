@@ -3,21 +3,21 @@
  * filesystem paths. Containment and safe-write primitives live in
  * services/pathSafety.
  *
- * @module utils/localPaths
+ * @module services/localPaths
  */
 
 import { Buffer } from "buffer";
 import { createHash } from "crypto";
 import * as path from "path";
-import { toWellFormedString } from "./strings";
+import { toWellFormedString } from "../utils/strings";
 import {
   assertNoNul,
   assertSafeFileWritePath,
   isAbsolutePortable,
   resolveInsideRoot,
   UnsafePathError,
-} from "../services/pathSafety";
-import { isWorkspaceControlDirectorySegment } from "./workspaceControlDirectories";
+} from "./pathSafety";
+import { isWorkspaceControlDirectorySegment } from "../utils/workspaceControlDirectories";
 
 const ENCODED_SEGMENT_PREFIX = "__b2_";
 const HASHED_ENCODED_SEGMENT_PREFIX = "__b2h_";

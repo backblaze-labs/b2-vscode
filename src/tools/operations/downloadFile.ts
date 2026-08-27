@@ -28,7 +28,7 @@ import {
 } from "../../services/transferProgress";
 import { B2ResourceNotFoundError, B2ToolInputError } from "../../errors";
 import { normalizeB2ObjectNameInput } from "../b2ObjectName";
-import { sanitizeLocalPathSegment } from "../../utils/localPaths";
+import { sanitizeLocalPathSegment } from "../../services/localPaths";
 import { isWorkspaceControlDirectorySegment } from "../../utils/workspaceControlDirectories";
 import {
   resolveToolLocalPathDetails,

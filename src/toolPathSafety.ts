@@ -3,7 +3,7 @@
  * untrusted B2 object names and language model tool inputs.
  *
  * These helpers are intentionally separate from services/pathSafety, which owns
- * transfer and service filesystem containment, and utils/localPaths, which owns
+ * transfer and service filesystem containment, and services/localPaths, which owns
  * B2 object-name to workspace filename encoding.
  *
  * @module toolPathSafety

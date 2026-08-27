@@ -31,7 +31,7 @@ import {
 import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
 import { tempDir } from "../../testSupport/tempDir";
 import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/workspace";
-import { sanitizeLocalPathSegment } from "../../utils/localPaths";
+import { sanitizeLocalPathSegment } from "../../services/localPaths";
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";

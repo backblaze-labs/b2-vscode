@@ -27,7 +27,7 @@ import {
   prepareSafeFileWritePath,
   UnsafePathError,
 } from "./pathSafety";
-import { buildTempFilePath } from "../utils/localPaths";
+import { buildTempFilePath } from "./localPaths";
 import { createPrivateTempRoot, releasePrivateTempRoot } from "../utils/privateTempRoot";
 
 const STALE_TEMP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;

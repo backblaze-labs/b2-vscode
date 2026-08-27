@@ -23,12 +23,9 @@ any layer below it, **never up**.
 | —   | Cross-cutting    | `src/logger.ts`, `src/toolPathSafety.ts`                                        | Utils                      | structured logging; shared path-safety entry used by tools  |
 | —   | Harness          | `scripts/`, `.github/workflows/`, `test-harness.config.mjs`, `.vscode-test.mjs` | —                          | gates, release, audit, VSIX, and test tooling               |
 
-**Verified invariants** (grep-checkable today): Services do not import from any
-Integration layer; extension.ts is the only importer that spans all layers.
-
-**Known deviation** (tracked): `src/utils/localPaths.ts` imports
-`src/services/pathSafety.ts` — an upward edge. See
-[`docs/exec-plans/tech-debt-tracker.md`](docs/exec-plans/tech-debt-tracker.md#td-1).
+**Enforced invariants** (`scripts/assert-layers.js`, run by `npm run check`):
+`src/utils/**` imports nothing above Utils; `src/services/**` imports nothing
+from the Integration layer. Only `extension.ts` spans all layers.
 
 ## Integration layer detail
 
@@ -50,7 +47,8 @@ facade — see [`docs/transfer-architecture.md`](docs/transfer-architecture.md))
 `pathSafety.ts` + `pathErrorSanitization.ts` (contained-path + real-directory
 enforcement), `tempFileManager.ts` / `transferTempFiles.ts` /
 `transferTimeout.ts` / `transferProgress.ts` (transfer machinery),
-`errorCode.ts`, `sqlJsLoader.ts` (reads the B2 CLI SQLite credential DB).
+`errorCode.ts`, `localPaths.ts` (B2 object name → contained local path),
+`sqlJsLoader.ts` (reads the B2 CLI SQLite credential DB).
 
 ## Enforcement (invariants, not implementations)
 
@@ -65,8 +63,8 @@ repo's own assertions in `scripts/`:
   command/tool surface so `package.json` changes are deliberate.
 
 When a doc rule needs teeth, promote it into a `scripts/assert-*.js` check whose
-failure message tells the agent how to fix it. A layer/dependency linter for the
-table above is desirable but not yet built — see the tech-debt tracker.
+failure message tells the agent how to fix it. The layering table above is
+enforced by `scripts/assert-layers.js` (`npm run check:layers`).
 
 ## UI/UX conventions
 

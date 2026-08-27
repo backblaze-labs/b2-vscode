@@ -6,7 +6,7 @@
 
 import type { B2ToolDefinition } from "../types";
 import { inputText } from "./inputText";
-import { portablePathBasename } from "../../utils/localPaths";
+import { portablePathBasename } from "../../services/localPaths";
 
 function remotePathFor(input: Record<string, unknown>): string {
   if (input.remotePath !== undefined && input.remotePath !== null) {

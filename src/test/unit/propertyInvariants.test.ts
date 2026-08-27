@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { after } from "node:test";
 import * as fc from "fast-check";
-import { buildTempFilePath, resolveDownloadSavePath } from "../../utils/localPaths";
+import { buildTempFilePath, resolveDownloadSavePath } from "../../services/localPaths";
 import {
   assertSafeFileWritePath,
   assertSafeWritePath,
