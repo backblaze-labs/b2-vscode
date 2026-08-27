@@ -84,6 +84,9 @@ Large uploads tag in-progress multipart sessions so the extension can cancel its
 Use Node.js 22.13.0 or newer. CI runs the declared lower bound so the
 development contract stays aligned with the toolchain dependency graph.
 
+Contributors and AI assistants: start from [`AGENTS.md`](AGENTS.md) — the map
+into the [`docs/`](docs/README.md) system of record.
+
 ```bash
 # Install dependencies
 npm install
@@ -110,7 +113,7 @@ npm run audit:ci
 npm run check:fix
 
 # Generate API documentation
-npm run docs
+npm run api-docs
 
 # Package VSIX
 npm run vsix
@@ -133,6 +136,9 @@ See [SECURITY.md](SECURITY.md) for the dependency audit policy and accepted
 advisory process.
 
 ## Architecture
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the authoritative layers and
+dependency rules. The tree below is a quick orientation.
 
 ```
 src/

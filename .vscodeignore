@@ -4,6 +4,7 @@
 src/**
 out/**
 docs/**
+api-docs/**
 scripts/**
 resources/icons/**
 dist/bundledCredentialSmoke.js

@@ -2,7 +2,7 @@
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": ["src/extension.ts"],
   "entryPointStrategy": "expand",
-  "out": "docs/api",
+  "out": "api-docs",
   "exclude": ["**/test/**", "**/node_modules/**"],
   "excludePrivate": true,
   "excludeInternal": true,

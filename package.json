@@ -54,7 +54,7 @@
     "contract:hash": "node scripts/print-contributes-hash.js",
     "resolve:vsix-artifact": "node scripts/resolve-vsix-artifact.js",
     "smoke:vsix-install": "node scripts/smoke-install-vsix.js",
-    "docs": "typedoc",
+    "api-docs": "typedoc",
     "vsix": "npm run clean:vsix && npm run package && npm exec --no-install -- vsce package --no-yarn --no-dependencies && npm run assert:vsix-assets",
     "vsix:install": "code --install-extension ./b2-vscode-*.vsix --force",
     "vscode:prepublish": "npm run build:icons && npm run package && npm run assert:dist-assets"

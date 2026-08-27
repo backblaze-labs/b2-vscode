@@ -43,11 +43,11 @@ jobs:
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
       - name: Generate documentation
-        run: npm run docs
+        run: npm run api-docs
 
       - name: Upload docs artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: api-docs
-          path: docs/api/
+          path: api-docs/
           retention-days: 14
