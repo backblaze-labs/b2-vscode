@@ -33,22 +33,18 @@ surface.
 
 <a id="ci-invariants"></a>
 
-**Dependabot PRs must never run CI.** Every job in every workflow under
-`.github/workflows/` that reacts to `pull_request` or `pull_request_target` is
-guarded with:
+**Dependabot PRs must report required checks.** Workflows that provide required
+PR checks must run for every `pull_request` or trusted `pull_request_target`
+event, including Dependabot-authored events. Do not add a Dependabot actor guard
+to the VS Code Extension Tests job or the trusted dependency-audit gate; skipped
+required jobs can leave dependency PRs without the checks needed to merge.
 
-```yaml
-if: ${{ github.actor != 'dependabot[bot]' }}
-```
+The trusted audit workflow (`test.yml`) must keep PR code isolated: it checks out
+the protected base as `trusted-source`, downloads only PR dependency metadata,
+and audits that metadata through trusted scripts. Untrusted PR code runs only in
+unprivileged `pull_request` workflows.
 
-so a Dependabot-authored event skips all jobs and no CI runs. `release.yml` is
-tag / `workflow_dispatch` only and is not Dependabot-reachable, so it carries no
-guard.
-
-When adding a new workflow or job, add the same guard to preserve this
-invariant. For a job that already has an `if:`, AND the guard into the existing
-condition (see `post-pr-comment` in `build-extension.yml`).
-
-This intentionally also skips the trusted dependency-audit gate (`test.yml`,
-`pull_request_target`) for Dependabot PRs. Vet Dependabot dependency bumps
-manually, or temporarily re-enable that one job, before merging them.
+Only non-required helper jobs that should avoid bot-authored events may carry a
+Dependabot actor guard. For example, `post-pr-comment` in `build-extension.yml`
+is guarded because it writes a PR comment and is not a required build or test
+check.
