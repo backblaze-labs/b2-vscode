@@ -14,12 +14,14 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { Capability, type B2Client } from "@backblaze-labs/b2-sdk";
 import {
   ENV_KEY_ID,
   ENV_APP_KEY,
   SECRET_KEY_ID,
   SECRET_APP_KEY,
   CTX_AUTHENTICATED,
+  CTX_CAN_LIST_FILES,
 } from "../constants";
 import type { B2AuthState } from "../types";
 import { log, logError } from "../logger";
@@ -99,7 +101,23 @@ export class AuthService implements vscode.Disposable {
   async setAuthState(state: B2AuthState): Promise<void> {
     this.state = state;
     await vscode.commands.executeCommand("setContext", CTX_AUTHENTICATED, state.isAuthenticated);
+    await vscode.commands.executeCommand(
+      "setContext",
+      CTX_CAN_LIST_FILES,
+      state.canListFiles === true,
+    );
     this._onAuthStateChanged.fire(state);
+  }
+
+  /** Build authenticated UI state and capability context from an authorized client. */
+  createAuthenticatedState(client: Pick<B2Client, "accountInfo" | "hasCapabilities">): B2AuthState {
+    return {
+      isAuthenticated: true,
+      accountId: client.accountInfo.getAccountId(),
+      apiUrl: client.accountInfo.getApiUrl(),
+      downloadUrl: client.accountInfo.getDownloadUrl(),
+      canListFiles: client.hasCapabilities([Capability.ListFiles]).ok,
+    };
   }
 
   // ── Credential Resolution ─────────────────────────────────────────────

@@ -14,8 +14,15 @@ import { uploadFileTool } from "../../tools/definitions/uploadFile";
 import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
 
 interface MenuContribution {
-  command: string;
+  command?: string;
+  submenu?: string;
   when?: string;
+  group?: string;
+}
+
+interface SubmenuContribution {
+  id: string;
+  label: string;
 }
 
 interface LanguageModelToolContribution {
@@ -77,9 +84,111 @@ suite("B2 Extension Test Suite", () => {
     ] as MenuContribution[];
     const copyPathMenus = viewItemMenus.filter((entry) => entry.command === "b2.copyPath");
 
-    assert.strictEqual(copyPathMenus.length, 2);
-    for (const entry of copyPathMenus) {
-      assert.strictEqual(entry.when, "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/");
+    assert.strictEqual(copyPathMenus.length, 3);
+    assert.deepStrictEqual(
+      copyPathMenus.map((entry) => ({ group: entry.group, when: entry.when })),
+      [
+        {
+          group: "inline@1",
+          when: "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+        },
+        {
+          group: "inline@1",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+        },
+        {
+          group: "1_copy@1",
+          when: "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+        },
+      ],
+    );
+  });
+
+  test("Context menu submenus declare the proposed menu structure", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const submenus = extension.packageJSON.contributes.submenus as SubmenuContribution[];
+
+    assert.deepStrictEqual(
+      submenus.map((submenu) => ({ id: submenu.id, label: submenu.label })),
+      [{ id: "b2.file.copy", label: "Copy" }],
+    );
+  });
+
+  test("File copy submenu commands are behind a gated anchor", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const viewItemMenus = extension.packageJSON.contributes.menus[
+      "view/item/context"
+    ] as MenuContribution[];
+    const fileCopyAnchors = viewItemMenus.filter((entry) => entry.submenu === "b2.file.copy");
+    const fileCopyMenus = extension.packageJSON.contributes.menus[
+      "b2.file.copy"
+    ] as MenuContribution[];
+    const inlineFileCopyMenus = viewItemMenus.filter(
+      (entry) =>
+        entry.group?.startsWith("inline") &&
+        (entry.command === "b2.copyPath" || entry.command === "b2.copyFileId") &&
+        entry.when?.includes("viewItem == file"),
+    );
+
+    assert.strictEqual(fileCopyAnchors.length, 1);
+    assert.deepStrictEqual(
+      {
+        group: fileCopyAnchors[0].group,
+        when: fileCopyAnchors[0].when,
+      },
+      {
+        group: "1_copy@1",
+        when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+      },
+    );
+    assert.deepStrictEqual(
+      fileCopyMenus.map((entry) => ({
+        command: entry.command,
+        group: entry.group,
+        when: entry.when,
+      })),
+      [
+        { command: "b2.copyPath", group: "1_copy@1", when: undefined },
+        { command: "b2.copyFileId", group: "1_copy@2", when: undefined },
+      ],
+    );
+    assert.deepStrictEqual(
+      inlineFileCopyMenus.map((entry) => ({ command: entry.command, when: entry.when })),
+      [
+        {
+          command: "b2.copyPath",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+        },
+        {
+          command: "b2.copyFileId",
+          when: "view == b2Buckets && viewItem == file && b2.canListFiles",
+        },
+      ],
+    );
+  });
+
+  test("Anchored context menu submenus have at least two members", () => {
+    const extension = vscode.extensions.getExtension("backblaze.b2-vscode");
+    assert.ok(extension, "Backblaze B2 extension should be discoverable by ID");
+
+    const menus = extension.packageJSON.contributes.menus as Record<string, MenuContribution[]>;
+    const viewItemMenus = menus["view/item/context"];
+    const submenus = extension.packageJSON.contributes.submenus as SubmenuContribution[];
+
+    for (const submenu of submenus) {
+      const isAnchored = viewItemMenus.some((entry) => entry.submenu === submenu.id);
+
+      if (!isAnchored) {
+        continue;
+      }
+
+      const memberCount =
+        menus[submenu.id]?.filter((entry) => entry.command || entry.submenu).length ?? 0;
+      assert.ok(memberCount >= 2, `${submenu.id} should not be anchored with one item`);
     }
   });
 

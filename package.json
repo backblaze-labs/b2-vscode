@@ -187,6 +187,12 @@
         "icon": "$(edit)"
       }
     ],
+    "submenus": [
+      {
+        "id": "b2.file.copy",
+        "label": "Copy"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {
@@ -255,12 +261,17 @@
       "view/item/context": [
         {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "b2.copyPath",
+          "when": "view == b2Buckets && viewItem == file && b2.canListFiles",
           "group": "inline@1"
         },
         {
           "command": "b2.copyFileId",
-          "when": "view == b2Buckets && viewItem == file",
+          "when": "view == b2Buckets && viewItem == file && b2.canListFiles",
           "group": "inline@2"
         },
         {
@@ -314,13 +325,23 @@
           "group": "navigation@2"
         },
         {
+          "submenu": "b2.file.copy",
+          "when": "view == b2Buckets && viewItem == file && b2.canListFiles",
+          "group": "1_copy@1"
+        },
+        {
           "command": "b2.copyPath",
-          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder|file)$/",
+          "when": "view == b2Buckets && viewItem =~ /^(bucket|folder)$/",
+          "group": "1_copy@1"
+        }
+      ],
+      "b2.file.copy": [
+        {
+          "command": "b2.copyPath",
           "group": "1_copy@1"
         },
         {
           "command": "b2.copyFileId",
-          "when": "view == b2Buckets && viewItem == file",
           "group": "1_copy@2"
         }
       ]

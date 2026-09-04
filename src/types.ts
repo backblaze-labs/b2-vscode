@@ -14,5 +14,6 @@ export interface B2AuthState {
   accountId?: string;
   apiUrl?: string;
   downloadUrl?: string;
+  canListFiles?: boolean;
   error?: string;
 }

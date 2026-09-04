@@ -250,12 +250,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       setAuthenticatedClient(client);
       treeProvider.setClient(client);
 
-      await authService.setAuthState({
-        isAuthenticated: true,
-        accountId: client.accountInfo.getAccountId(),
-        apiUrl: client.accountInfo.getApiUrl(),
-        downloadUrl: client.accountInfo.getDownloadUrl(),
-      });
+      await authService.setAuthState(authService.createAuthenticatedState(client));
 
       log(`Auto-authenticated as ${client.accountInfo.getAccountId()}`);
     } else {
