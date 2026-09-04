@@ -40,11 +40,22 @@ export interface B2Credentials {
   appKey: string;
 }
 
-export interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
-  /** Override environment lookup for tests. Defaults to process.env. */
+type AuthServiceHostCapabilities =
+  | {
+      readonly extensionHost: "node";
+      readonly workspace: "file-backed" | "virtual";
+    }
+  | {
+      readonly extensionHost: "web";
+    };
+
+interface AuthServiceOptions extends SqlJsRuntimeLoaderOptions {
+  /** Override environment lookup for tests. Defaults to process.env in Node hosts. */
   environment?: Record<string, string | undefined>;
   /** Override B2 CLI database search paths for tests. */
   b2CliDatabasePaths?: readonly string[];
+  /** Override detected host capabilities for tests and smoke harnesses. */
+  hostCapabilities?: AuthServiceHostCapabilities;
 }
 
 /**
@@ -119,7 +130,7 @@ export class AuthService implements vscode.Disposable {
     }
 
     // 2. Environment variables
-    const environment = this.options.environment ?? process.env;
+    const environment = this.getEnvironment();
     const envKeyId = environment[ENV_KEY_ID];
     const envAppKey = environment[ENV_APP_KEY];
     if (envKeyId && envAppKey) {
@@ -166,6 +177,13 @@ export class AuthService implements vscode.Disposable {
    */
   private async resolveB2CliCredentials(): Promise<B2Credentials | null> {
     log("CLI-AUTH: Starting B2 CLI credential resolution...");
+    const unsupportedMessage = this.getB2CliCredentialLookupUnsupportedMessage();
+    if (unsupportedMessage) {
+      log(`CLI-AUTH: ${unsupportedMessage}`);
+      this.credentialResolutionWarning = unsupportedMessage;
+      return null;
+    }
+
     const dbPath = this.findB2CliDatabase();
     if (!dbPath) {
       log("CLI-AUTH: No B2 CLI database file found.");
@@ -192,6 +210,46 @@ export class AuthService implements vscode.Disposable {
     }
 
     return "B2 CLI credentials could not be read. Check file permissions, review the Backblaze B2 output log for details, or run B2: Authenticate to store credentials in VS Code.";
+  }
+
+  private getB2CliCredentialLookupUnsupportedMessage(): string | undefined {
+    const hostCapabilities = this.getHostCapabilities();
+    if (hostCapabilities.extensionHost === "web") {
+      return "B2 CLI credential auto-detection is unavailable in VS Code for the Web. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
+    }
+
+    if (hostCapabilities.workspace === "virtual") {
+      return "B2 CLI credential auto-detection is unavailable in virtual workspaces because the B2 CLI SQLite database requires local filesystem access. Run B2: Authenticate to store credentials in VS Code SecretStorage, or set B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY in the extension host environment.";
+    }
+
+    return undefined;
+  }
+
+  private isNodeExtensionHost(): boolean {
+    return typeof process !== "undefined" && Boolean(process.versions?.node);
+  }
+
+  private getEnvironment(): Record<string, string | undefined> {
+    if (this.options.environment) {
+      return this.options.environment;
+    }
+
+    const hostCapabilities = this.getHostCapabilities();
+    return hostCapabilities.extensionHost === "node" && this.isNodeExtensionHost()
+      ? process.env
+      : {};
+  }
+
+  private getHostCapabilities(): AuthServiceHostCapabilities {
+    return this.options.hostCapabilities ?? this.detectHostCapabilities();
+  }
+
+  private detectHostCapabilities(): AuthServiceHostCapabilities {
+    if (!this.isNodeExtensionHost()) {
+      return { extensionHost: "web" };
+    }
+
+    return { extensionHost: "node", workspace: "file-backed" };
   }
 
   private formatCredentialErrorForLog(error: unknown): string {
@@ -252,7 +310,7 @@ export class AuthService implements vscode.Disposable {
       return legacyPath;
     }
 
-    const environment = this.options.environment ?? process.env;
+    const environment = this.getEnvironment();
     const xdgHome = environment.XDG_CONFIG_HOME ?? path.join(home, ".config");
     const xdgPath = path.join(xdgHome, "b2", "account_info");
     const xdgPathExists = fs.existsSync(xdgPath);

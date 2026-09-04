@@ -9,6 +9,19 @@
     "Cloud",
     "Other"
   ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Backblaze B2 requires a file-backed workspace because upload, download, open-file, and cleanup operations use local workspace filesystem paths."
+    },
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Backblaze B2 can read and write workspace files and upload data to B2, so the extension is disabled until the workspace is trusted."
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/backblaze-labs/b2-vscode.git"
