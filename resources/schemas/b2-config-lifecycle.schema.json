@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "vscode://schemas/b2-config/lifecycle",
+  "title": "Backblaze B2 Lifecycle Rules",
+  "description": "Lifecycle rules for a Backblaze B2 bucket.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "fileNamePrefix": {
+        "type": "string",
+        "description": "File name prefix this lifecycle rule applies to. Use an empty string to match every object."
+      },
+      "daysFromUploadingToHiding": {
+        "description": "Days after upload before B2 hides matching objects. Use null to disable automatic hiding.",
+        "anyOf": [
+          {
+            "type": "integer",
+            "minimum": 1
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "daysFromHidingToDeleting": {
+        "description": "Days after an object is hidden before B2 deletes it. Use null to keep hidden versions.",
+        "anyOf": [
+          {
+            "type": "integer",
+            "minimum": 1
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": ["fileNamePrefix", "daysFromUploadingToHiding", "daysFromHidingToDeleting"]
+  },
+  "default": []
+}

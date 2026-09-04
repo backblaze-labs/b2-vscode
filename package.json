@@ -18,7 +18,9 @@
     "node": ">=22.13.0"
   },
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onFileSystem:b2-config"
+  ],
   "scripts": {
     "build:icons": "node scripts/build-icons.js",
     "clean:dist": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
@@ -337,6 +339,32 @@
         }
       }
     },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "b2-config:/**/lifecycle.json"
+        ],
+        "url": "./resources/schemas/b2-config-lifecycle.schema.json"
+      },
+      {
+        "fileMatch": [
+          "b2-config:/**/cors.json"
+        ],
+        "url": "./resources/schemas/b2-config-cors.schema.json"
+      },
+      {
+        "fileMatch": [
+          "b2-config:/**/notifications.json"
+        ],
+        "url": "./resources/schemas/b2-config-notifications.schema.json"
+      },
+      {
+        "fileMatch": [
+          "b2-config:/**/bucketInfo.json"
+        ],
+        "url": "./resources/schemas/b2-config-bucketInfo.schema.json"
+      }
+    ],
     "languageModelTools": [
       {
         "name": "b2_listBuckets",
