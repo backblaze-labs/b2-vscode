@@ -577,7 +577,7 @@
     "husky": "^9.1.7",
     "js-yaml": "^4.2.0",
     "jszip": "3.10.1",
-    "prettier": "^3.5.3",
+    "prettier": "^3.9.6",
     "svg2ttf": "^6.1.0",
     "svgicons2svgfont": "^15.0.1",
     "ts-loader": "^9.6.2",
