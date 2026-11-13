@@ -2,5 +2,14 @@
   "_comment": "Strict JSON only: comments and trailing commas are not allowed despite the .jsonc extension.",
   "auditLevel": "moderate",
   "includeDev": true,
-  "acceptedAdvisories": []
+  "acceptedAdvisories": [
+    {
+      "id": "GHSA-g3hv-75wg-m249",
+      "package": "minimatch",
+      "owner": "security-team",
+      "reason": "Dev-only: typedoc 0.28 needs minimatch 10 (it calls matchOne, removed in 11) and no patched 10.x exists. Only the API docs build uses it; drop this once typedoc supports minimatch 11.",
+      "reviewBy": "2026-12-12",
+      "paths": ["node_modules/typedoc/node_modules/minimatch"]
+    }
+  ]
 }
