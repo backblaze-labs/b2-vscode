@@ -585,7 +585,7 @@
     "typedoc": "^0.28.19",
     "typescript": "^6.0.3",
     "webpack": "^5.108.1",
-    "webpack-cli": "^7.0.3"
+    "webpack-cli": "^7.2.3"
   },
   "dependencies": {
     "@backblaze-labs/b2-sdk": "^0.2.0",
