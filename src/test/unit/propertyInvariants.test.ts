@@ -22,6 +22,7 @@ import { createPrivateTempRoot, releasePrivateTempRoot } from "../../utils/priva
 import { buildB2DownloadUrl, encodeB2FileNameForUrl } from "../../utils/urlEncoding";
 import { humanSize } from "../../utils/humanSize";
 import { presignUrlOperation } from "../../tools/operations/presignUrl";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 import type { ToolExtras } from "../../tools/types";
 
 const PROPERTY_RUNS = 1000;
@@ -594,7 +595,7 @@ test("presign operation rejects empty and folder-prefix paths before B2 calls", 
 });
 
 test("presign operation rejects invalid expiresIn before B2 calls", async () => {
-  for (const expiresIn of [-1, 0, 1.5, 3601, Number.NaN]) {
+  for (const expiresIn of [-1, 0, 1.5, MAX_PRESIGN_URL_EXPIRES_IN_SECONDS + 1, Number.NaN]) {
     let bucketLookupWasCalled = false;
     const extras = {
       getClient: () => ({

@@ -41,6 +41,7 @@ const manifestContract = {
     "b2.loadMore",
     "b2.copyPath",
     "b2.copyFileId",
+    "b2.copyShareLink",
     "b2.openFile",
     "b2.createBucket",
     "b2.changeBucketVisibility",
@@ -59,7 +60,7 @@ const manifestContract = {
     "b2_deleteFile",
     "b2_presignUrl",
   ],
-  contributesSha256: "40a5f09a30986dfcb974032113ec6afaa2a694fa9fd12421b222955dac64eda7",
+  contributesSha256: "7bce248c46603d2f26fde83914d6f5a146ce56bb4eea5ea8a6c617848609cc22",
 };
 
 function stableStringify(value) {

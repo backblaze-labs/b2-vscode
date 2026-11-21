@@ -29,7 +29,7 @@ import { downloadFileOperation } from "../../tools/operations/downloadFile";
 import { getFileInfoOperation } from "../../tools/operations/getFileInfo";
 import { listFilesOperation } from "../../tools/operations/listFiles";
 import { uploadFileOperation } from "../../tools/operations/uploadFile";
-import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../tools/presignUrlLimits";
+import { MAX_PRESIGN_URL_EXPIRES_IN_SECONDS } from "../../services/shareLinkLimits";
 import {
   resolveWorkspaceRelativePath,
   resolveToolLocalPath,
