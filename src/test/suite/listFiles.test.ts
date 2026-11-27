@@ -16,8 +16,7 @@ import {
   type Bucket,
   type FileVersion,
 } from "@backblaze-labs/b2-sdk";
-// @ts-expect-error Classic moduleResolution does not read this package export map.
-import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
+import { useStandaloneSimulator } from "./standaloneSimulatorHooks";
 import {
   LIST_FILES_DEFAULT_LIMIT,
   LIST_FILES_LIMIT_CAP,
@@ -74,6 +73,8 @@ function makeExtras(pages: ListFileNamesPage[]): {
 }
 
 suite("B2 listFiles tool paging", () => {
+  const simulator = useStandaloneSimulator();
+
   test("returns empty bucket metadata without a continuation token", async () => {
     const { extras, calls } = makeExtras([{ files: [], nextFileName: null }]);
 
@@ -209,7 +210,7 @@ suite("B2 listFiles tool paging", () => {
   });
 
   test("works with SDK rate-limit retry on bounded list pages", async () => {
-    const sim = new B2Simulator();
+    const sim = simulator();
     const client = new B2Client({
       applicationKeyId: "test",
       applicationKey: "test",
@@ -225,7 +226,7 @@ suite("B2 listFiles tool paging", () => {
       fileName: "retry/file.txt",
       source: new BufferSource(new Uint8Array([1, 2, 3])),
     });
-    sim.injectFailure({
+    await sim.injectFailure({
       on: "b2_list_file_names",
       status: 429,
       code: "too_many_requests",
