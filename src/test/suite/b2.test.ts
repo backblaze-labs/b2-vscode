@@ -19,8 +19,7 @@ import {
   largeFileId,
   type FileVersion,
 } from "@backblaze-labs/b2-sdk";
-// @ts-expect-error Classic moduleResolution does not read this package export map.
-import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
+import { useStandaloneSimulator } from "./standaloneSimulatorHooks";
 import {
   buildCustomApiUrlWarningMessage,
   CONFIRM_CUSTOM_API_URL_LABEL,
@@ -586,6 +585,8 @@ suite("B2 API URL configuration", () => {
 });
 
 suite("B2 transfer helpers", () => {
+  const simulator = useStandaloneSimulator();
+
   test("streams downloads directly to the destination file", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "b2-vscode-download-"));
     const destination = path.join(dir, "nested", "file.bin");
@@ -3271,7 +3272,8 @@ suite("B2 transfer helpers", () => {
     const localPath = path.join(dir, "large.bin");
     fs.writeFileSync(localPath, Buffer.alloc(STREAMING_UPLOAD_PART_SIZE + 1, 7));
 
-    const sim = new B2Simulator({
+    const sim = simulator();
+    await sim.reset({
       minimumPartSize: 1024,
       recommendedPartSize: STREAMING_UPLOAD_PART_SIZE,
     });
@@ -3286,7 +3288,7 @@ suite("B2 transfer helpers", () => {
       bucketName: "bucket",
       bucketType: "allPrivate",
     });
-    sim.injectFailure({
+    await sim.injectFailure({
       on: "b2_upload_part",
       status: 503,
       code: "service_unavailable",

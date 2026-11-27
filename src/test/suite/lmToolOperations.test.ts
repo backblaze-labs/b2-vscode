@@ -29,9 +29,11 @@ import {
   type SimulatorBucketFixture,
 } from "../../testSupport/b2Simulator";
 import { createDirectorySymlink, createFileSymlink } from "../../testSupport/symlinks";
+import type { StandaloneSimulator } from "../../testSupport/standaloneSimulator";
 import { tempDir } from "../../testSupport/tempDir";
 import { withWorkspaceFolder, withWorkspaceFolders } from "../../testSupport/workspace";
 import { sanitizeLocalPathSegment } from "../../services/localPaths";
+import { useStandaloneSimulator } from "./standaloneSimulatorHooks";
 
 const REMOTE_PATH = "folder/source file.txt";
 const CONTENT = "hello from the simulator";
@@ -42,8 +44,8 @@ interface UploadedToolFixture extends SimulatorBucketFixture {
   readonly uploaded: FileVersion;
 }
 
-async function createUploadedToolFixture(): Promise<UploadedToolFixture> {
-  const fixture = await createSimulatorBucket();
+async function createUploadedToolFixture(sim: StandaloneSimulator): Promise<UploadedToolFixture> {
+  const fixture = await createSimulatorBucket(sim);
   const uploaded = await fixture.bucket.upload({
     fileName: REMOTE_PATH,
     source: new BufferSource(Buffer.from(CONTENT)),
@@ -57,8 +59,10 @@ async function createUploadedToolFixture(): Promise<UploadedToolFixture> {
 }
 
 suite("B2 LM tool operations with simulator", () => {
+  const sim = useStandaloneSimulator();
+
   test("listBuckets returns simulator bucket metadata", async () => {
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     const result = await listBucketsOperation.execute({}, { getClient: () => client });
 
@@ -72,7 +76,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("uploadFile uploads a local file to B2", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
     const localPath = path.join(workspaceRoot, "source file.txt");
 
     try {
@@ -96,7 +100,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("uploadFile accepts absolute paths inside the first workspace", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
     const localPath = path.join(workspaceRoot, "source file.txt");
 
     try {
@@ -121,7 +125,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const localPath = path.join(workspaceRoot, "nested", "source.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     try {
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
@@ -149,7 +153,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const toolsSourcePath = path.join(TOOLS_TEMP_ROOT, "other-session", "secret.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -181,7 +185,7 @@ suite("B2 LM tool operations with simulator", () => {
     const workspaceRoot = path.join(dir, "workspace");
     const outsideRoot = path.join(dir, "outside");
     const localPath = path.join(outsideRoot, "secret.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -207,7 +211,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const localPath = path.join(dir, "secret.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -234,7 +238,7 @@ suite("B2 LM tool operations with simulator", () => {
     const outsideRoot = path.join(dir, "outside");
     const symlinkPath = path.join(workspaceRoot, "link");
     const localPath = path.join(outsideRoot, "secret.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -265,7 +269,7 @@ suite("B2 LM tool operations with simulator", () => {
     const outsideRoot = path.join(dir, "outside");
     const localPath = path.join(workspaceRoot, "export.txt");
     const outsidePath = path.join(outsideRoot, "id_ed25519");
-    const { bucket, client } = await createSimulatorBucket();
+    const { bucket, client } = await createSimulatorBucket(sim());
     const originalOpen = fs.promises.open;
     const mutableFs = fs.promises as unknown as { open: typeof fs.promises.open };
     let swapped = false;
@@ -313,7 +317,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("listFiles returns uploaded files under a prefix", async () => {
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     const result = await listFilesOperation.execute(
       { bucket: SIMULATOR_BUCKET_NAME, prefix: "folder/", limit: 10 },
@@ -328,7 +332,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("getFileInfo returns uploaded file metadata", async () => {
-    const { extras, uploaded } = await createUploadedToolFixture();
+    const { extras, uploaded } = await createUploadedToolFixture(sim());
 
     const info = await getFileInfoOperation.execute(
       { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH },
@@ -343,7 +347,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("downloadFile writes the requested B2 object to localPath", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
     const downloadPath = path.join(workspaceRoot, "downloads", "source file.txt");
 
     try {
@@ -371,7 +375,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("downloadFile accepts absolute paths inside the first workspace", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
     const downloadPath = path.join(workspaceRoot, "downloads", "source file.txt");
 
     try {
@@ -399,7 +403,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("downloadFile accepts absolute paths inside the extension tools temp root", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
     const downloadPath = path.join(TOOLS_TEMP_ROOT, `download-${Date.now()}.txt`);
 
     try {
@@ -430,7 +434,7 @@ suite("B2 LM tool operations with simulator", () => {
   test("downloadFile does not re-encode resolved localPath segments", async () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
     const encodedLikeSegment = "__b2_existing.txt";
     const expectedSegment = sanitizeLocalPathSegment(encodedLikeSegment);
     const doubleEncodedSegment = sanitizeLocalPathSegment(expectedSegment);
@@ -608,7 +612,7 @@ suite("B2 LM tool operations with simulator", () => {
     const workspaceRoot = path.join(dir, "workspace");
     const outsideRoot = path.join(dir, "outside");
     const escapePath = path.join(outsideRoot, "escape.txt");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -640,7 +644,7 @@ suite("B2 LM tool operations with simulator", () => {
     const firstWorkspace = path.join(dir, "workspace-a");
     const secondWorkspace = path.join(dir, "workspace-b");
     const downloadPath = path.join(secondWorkspace, "downloads", "source file.txt");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     try {
       fs.mkdirSync(firstWorkspace, { recursive: true });
@@ -667,7 +671,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const escapePath = path.join(dir, "escape.txt");
-    const { client } = await createSimulatorBucket();
+    const { client } = await createSimulatorBucket(sim());
     const extras: ToolExtras = { getClient: () => client };
 
     try {
@@ -700,7 +704,7 @@ suite("B2 LM tool operations with simulator", () => {
     const outsideRoot = path.join(dir, "outside");
     const symlinkPath = path.join(workspaceRoot, "link");
     const escapePath = path.join(outsideRoot, "outside.txt");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -795,7 +799,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const expectedPath = path.join(workspaceRoot, "..notes.txt");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -822,7 +826,7 @@ suite("B2 LM tool operations with simulator", () => {
     const dir = tempDir();
     const workspaceRoot = path.join(dir, "workspace");
     const expectedPath = path.join(workspaceRoot, "downloads", "payload.txt");
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     try {
       fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -846,7 +850,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("presignUrl returns an encoded object URL with an authorization query parameter", async () => {
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     const presigned = await presignUrlOperation.execute(
       { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH, expiresIn: 123 },
@@ -865,7 +869,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("presignUrl rejects bucket and folder prefix authorizations", async () => {
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     for (const unsafePath of ["", "folder/"]) {
       await assert.rejects(
@@ -1305,7 +1309,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("presignUrl rejects expirations beyond the B2 maximum", async () => {
-    const { extras } = await createUploadedToolFixture();
+    const { extras } = await createUploadedToolFixture(sim());
 
     await assert.rejects(
       () =>
@@ -1325,7 +1329,7 @@ suite("B2 LM tool operations with simulator", () => {
   });
 
   test("deleteFile removes the requested file version", async () => {
-    const { bucket, extras } = await createUploadedToolFixture();
+    const { bucket, extras } = await createUploadedToolFixture(sim());
 
     const deleted = await deleteFileOperation.execute(
       { bucket: SIMULATOR_BUCKET_NAME, path: REMOTE_PATH },

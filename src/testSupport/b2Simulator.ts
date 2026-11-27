@@ -1,11 +1,10 @@
 import { B2Client, type Bucket } from "@backblaze-labs/b2-sdk";
-// @ts-expect-error Legacy Node moduleResolution does not read this package export map.
-import { B2Simulator } from "@backblaze-labs/b2-sdk/simulator";
+import type { StandaloneSimulator } from "./standaloneSimulator";
 
 export const SIMULATOR_BUCKET_NAME = "bucket";
 
 export interface SimulatorClientFixture {
-  readonly sim: B2Simulator;
+  readonly sim: StandaloneSimulator;
   readonly client: B2Client;
 }
 
@@ -13,8 +12,9 @@ export interface SimulatorBucketFixture extends SimulatorClientFixture {
   readonly bucket: Bucket;
 }
 
-export async function createSimulatorClient(): Promise<SimulatorClientFixture> {
-  const sim = new B2Simulator();
+export async function createSimulatorClient(
+  sim: StandaloneSimulator,
+): Promise<SimulatorClientFixture> {
   const client = new B2Client({
     applicationKeyId: "test-key-id",
     applicationKey: "test-application-key",
@@ -26,9 +26,10 @@ export async function createSimulatorClient(): Promise<SimulatorClientFixture> {
 }
 
 export async function createSimulatorBucket(
+  sim: StandaloneSimulator,
   bucketName = SIMULATOR_BUCKET_NAME,
 ): Promise<SimulatorBucketFixture> {
-  const { sim, client } = await createSimulatorClient();
+  const { client } = await createSimulatorClient(sim);
   const bucket = await client.createBucket({ bucketName, bucketType: "allPrivate" });
 
   return { sim, client, bucket };
