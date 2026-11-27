@@ -857,7 +857,9 @@ function assertBuildExtensionWorkflow(buildWorkflow) {
   const stickyCommentIndex = stepIndex(
     postPrCommentJob,
     "build-extension sticky PR comment",
-    (step) => String(step.uses ?? "").startsWith("marocchino/sticky-pull-request-comment@"),
+    (step) =>
+      String(step.uses ?? "").startsWith("actions/github-script@") &&
+      String(step.with?.script ?? "").includes("<!-- Sticky Pull Request Comment"),
   );
   assert(
     stepByIndex(postPrCommentJob, stickyCommentIndex)["continue-on-error"] === true,

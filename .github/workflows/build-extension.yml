@@ -241,10 +241,10 @@ jobs:
 
       - name: Post PR comment
         continue-on-error: true
-        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
-        with:
-          header: extension-artifact
-          message: |
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          COMMENT_HEADER: extension-artifact
+          COMMENT_BODY: |
             ## Extension Build Ready
 
             Download the VSIX from the workflow artifacts above.
@@ -259,3 +259,44 @@ jobs:
             code --install-extension b2-vscode-*.vsix
             ```
             </details>
+        with:
+          script: |
+            // Same marker and matching as marocchino/sticky-pull-request-comment, so existing comments are updated.
+            const marker = `<!-- Sticky Pull Request Comment${process.env.COMMENT_HEADER} -->`;
+            const body = `${process.env.COMMENT_BODY.trim()}\n${marker}`;
+            const { owner, repo } = context.repo;
+            const number = context.issue.number;
+            let previous;
+            let after = null;
+            do {
+              const data = await github.graphql(
+                `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                  viewer { login }
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      comments(first: 100, after: $after) {
+                        nodes { id author { login } isMinimized body }
+                        pageInfo { endCursor hasNextPage }
+                      }
+                    }
+                  }
+                }`,
+                { owner, repo, number, after },
+              );
+              const viewer = data.viewer.login.replace("[bot]", "");
+              const comments = data.repository.pullRequest.comments;
+              previous = comments.nodes.find(
+                (c) => c?.author?.login === viewer && !c.isMinimized && c.body?.includes(marker),
+              );
+              after = comments.pageInfo.hasNextPage ? comments.pageInfo.endCursor : null;
+            } while (!previous && after);
+            if (previous) {
+              await github.graphql(
+                `mutation($id: ID!, $body: String!) {
+                  updateIssueComment(input: { id: $id, body: $body }) { issueComment { id } }
+                }`,
+                { id: previous.id, body },
+              );
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+            }
