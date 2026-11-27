@@ -21,3 +21,4 @@
 /.github/workflows/pr-tests.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/test.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
 /.github/workflows/release.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav
+/.github/actions/b2-simulator/action.yml @goanpeca @jeronimodeleon @sophiecarreras @EduPav

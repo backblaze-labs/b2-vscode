@@ -159,7 +159,15 @@ jobs:
       - name: Install dependencies without lifecycle scripts
         run: bash scripts/retry.sh npm ci --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/tmp/b2-vscode-empty-npm-globalconfig
 
+      - name: Set up the standalone B2 simulator
+        id: simulator
+        uses: ./.github/actions/b2-simulator
+        with:
+          deploy-key: ${{ secrets.SIMULATOR_DEPLOY_KEY }}
+
       - name: Run VS Code tests
+        env:
+          B2_SIMULATOR_DIR: ${{ steps.simulator.outputs.dir }}
         run: xvfb-run -a npm test
 
   audit:
