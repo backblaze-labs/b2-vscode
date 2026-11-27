@@ -617,11 +617,24 @@ jobs:
           } >> CHANGELOG.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
-        with:
-          name: Release ${{ steps.version.outputs.version }}
-          body_path: CHANGELOG.txt
-          files: ./vsix-artifacts/**
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mapfile -t files < <(find ./vsix-artifacts -type f | sort)
+          prerelease=false
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease=true
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Rerun on an existing release: refresh title, notes and assets in place.
+            notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+            printf '%s\n\n%s\n' "$(cat CHANGELOG.txt)" "$notes" > RELEASE_NOTES.md
+            gh release edit "$TAG" --title "Release $VERSION" --notes-file RELEASE_NOTES.md --prerelease="$prerelease"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "Release $VERSION" \
+              --notes-file CHANGELOG.txt --generate-notes --prerelease="$prerelease"
+          fi
